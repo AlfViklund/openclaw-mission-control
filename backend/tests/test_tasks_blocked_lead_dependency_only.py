@@ -58,7 +58,15 @@ async def test_lead_dependency_only_update_allowed_when_task_blocked() -> None:
                     openclaw_session_id="agent:lead:session",
                 ),
             )
-            session.add(Task(id=dep_id, board_id=board_id, title="dep", description=None))
+            session.add(
+                Task(
+                    id=dep_id,
+                    board_id=board_id,
+                    title="dep",
+                    description=None,
+                    status="inbox",
+                ),
+            )
             session.add(
                 Task(
                     id=task_id,
@@ -107,6 +115,15 @@ async def test_lead_dependency_only_update_allowed_when_task_blocked() -> None:
             assert reloaded is not None
             assert reloaded.status == "review"
             assert reloaded.assigned_agent_id is None
+            dependency_rows = (
+                await session.exec(
+                    select(TaskDependency).where(
+                        col(TaskDependency.task_id) == task_id,
+                        col(TaskDependency.depends_on_task_id) == dep_id,
+                    ),
+                )
+            ).all()
+            assert len(dependency_rows) == 1
 
     finally:
         await engine.dispose()

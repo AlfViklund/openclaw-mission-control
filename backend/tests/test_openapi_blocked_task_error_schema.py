@@ -18,12 +18,17 @@ def test_openapi_blocked_task_error_includes_code_field() -> None:
 
     code_schema = props["code"]
     any_of = code_schema.get("anyOf")
-    assert isinstance(any_of, list) and any_of
+    if any_of:
+        assert isinstance(any_of, list)
 
-    has_string_branch = any(branch.get("type") == "string" for branch in any_of)
-    assert has_string_branch
+        has_string_branch = any(branch.get("type") == "string" for branch in any_of)
+        assert has_string_branch
 
-    has_null_branch = any(
-        branch.get("type") == "null" or branch.get("nullable") is True for branch in any_of
-    )
-    assert has_null_branch
+        has_null_branch = any(
+            branch.get("type") == "null" or branch.get("nullable") is True for branch in any_of
+        )
+        assert has_null_branch
+    else:
+        # Alternative encoding used by some schema versions for Optional[str].
+        assert code_schema.get("type") == "string"
+        assert code_schema.get("nullable") is True
