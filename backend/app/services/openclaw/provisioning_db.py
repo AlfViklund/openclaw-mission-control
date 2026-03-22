@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from uuid import UUID, uuid4
@@ -357,7 +361,12 @@ def _parse_tools_md(content: str) -> dict[str, str]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        match = _TOOLS_KV_RE.match(line)
+        normalized = line
+        if normalized.startswith('- '):
+            normalized = normalized[2:].strip()
+        if normalized.startswith('`') and normalized.endswith('`') and len(normalized) >= 2:
+            normalized = normalized[1:-1].strip()
+        match = _TOOLS_KV_RE.match(normalized)
         if not match:
             continue
         values[match.group("key")] = match.group("value").strip()
@@ -393,8 +402,34 @@ async def _get_agent_file(
     return None
 
 
+def _host_workspace_tools_path(agent: Agent) -> Path | None:
+    root = (os.getenv('OPENCLAW_HOST_WORKSPACE_ROOT') or '/Users/arslek/.openclaw/workspace').strip()
+    if not root:
+        return None
+    base = Path(root)
+    if agent.is_board_lead and agent.board_id:
+        return base / f'workspace-lead-{agent.board_id}' / 'TOOLS.md'
+    return base / f'workspace-mc-{agent.id}' / 'TOOLS.md'
+
+
+def _read_existing_auth_token_from_host_workspace(agent: Agent) -> str | None:
+    tools_path = _host_workspace_tools_path(agent)
+    if not tools_path or not tools_path.exists():
+        return None
+    try:
+        values = _parse_tools_md(tools_path.read_text(errors='ignore'))
+    except OSError:
+        return None
+    token = values.get('AUTH_TOKEN')
+    if not token:
+        return None
+    token = token.strip()
+    return token or None
+
+
 async def _get_existing_auth_token(
     *,
+    agent: Agent,
     agent_gateway_id: str,
     control_plane: OpenClawGatewayControlPlane,
     backoff: GatewayBackoff | None = None,
@@ -405,14 +440,61 @@ async def _get_existing_auth_token(
         control_plane=control_plane,
         backoff=backoff,
     )
-    if not tools:
-        return None
-    values = _parse_tools_md(tools)
-    token = values.get("AUTH_TOKEN")
-    if not token:
-        return None
-    token = token.strip()
-    return token or None
+    if tools:
+        values = _parse_tools_md(tools)
+        token = values.get("AUTH_TOKEN")
+        if token:
+            token = token.strip()
+            if token:
+                return token
+    return _read_existing_auth_token_from_host_workspace(agent)
+
+
+async def resolve_existing_agent_auth_token_or_raise(
+    *,
+    session: AsyncSession,
+    agent: Agent,
+    gateway: Gateway,
+    timeout_context: str,
+) -> str:
+    control_plane = OpenClawGatewayControlPlane(
+        GatewayClientConfig(
+            url=gateway.url,
+            token=gateway.token,
+            allow_insecure_tls=gateway.allow_insecure_tls,
+            disable_device_pairing=gateway.disable_device_pairing,
+        ),
+    )
+    auth_token = await _get_existing_auth_token(
+        agent=agent,
+        agent_gateway_id=_agent_key(agent),
+        control_plane=control_plane,
+        backoff=GatewayBackoff(timeout_s=60, timeout_context=timeout_context),
+    )
+    if not auth_token:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'Worker update requires an existing AUTH_TOKEN in workspace. '
+                'Use an explicit rotate/re-key path if the worker must be re-keyed.'
+            ),
+        )
+    if agent.agent_token_hash and not verify_agent_token(auth_token, agent.agent_token_hash):
+        agent.last_provision_error = (
+            'Worker AUTH_TOKEN drift detected before update. '
+            'Use an explicit rotate/re-key path; normal update preserves token.'
+        )
+        agent.updated_at = utcnow()
+        session.add(agent)
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'Worker AUTH_TOKEN drift detected; normal update will not rotate token. '
+                'Run an explicit rotate/re-key recovery path first.'
+            ),
+        )
+    return auth_token
 
 
 async def _paused_board_ids(session: AsyncSession, board_ids: list[UUID]) -> set[UUID]:
@@ -462,6 +544,33 @@ async def _rotate_agent_token(session: AsyncSession, agent: Agent) -> str:
     await session.commit()
     await session.refresh(agent)
     return token
+
+
+def _agent_api_base_url() -> str:
+    raw = os.getenv('MISSION_CONTROL_ACCEPTANCE_BASE_URL', 'http://127.0.0.1:8000').strip()
+    return raw.rstrip('/')
+
+
+async def _http_agent_acceptance_request(
+    *,
+    method: str,
+    url: str,
+    auth_token: str,
+) -> tuple[int, str]:
+    def _do() -> tuple[int, str]:
+        req = urllib.request.Request(
+            url,
+            method=method.upper(),
+            headers={'X-Agent-Token': auth_token},
+            data=b'{}' if method.upper() == 'POST' else None,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, resp.read().decode(errors='ignore')
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode(errors='ignore')
+
+    return await asyncio.to_thread(_do)
 
 
 async def _ping_gateway(ctx: _SyncContext, result: GatewayTemplatesSyncResult) -> bool:
@@ -518,6 +627,7 @@ async def _resolve_agent_auth_token(
 ) -> tuple[str | None, bool]:
     try:
         auth_token = await _get_existing_auth_token(
+            agent=agent,
             agent_gateway_id=agent_gateway_id,
             control_plane=ctx.control_plane,
             backoff=ctx.backoff,
@@ -1071,6 +1181,149 @@ class AgentLifecycleService(OpenClawDBService):
         await self.add_commit_refresh(agent)
         return agent, raw_token
 
+    async def _refresh_agent(self, agent_id: UUID) -> Agent:
+        agent = await Agent.objects.by_id(agent_id).first(self.session)
+        if agent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Agent disappeared during provisioning')
+        return agent
+
+    async def _mark_agent_acceptance_ready(self, agent: Agent) -> None:
+        if agent.status in {'provisioning', 'updating', 'offline'}:
+            agent.status = 'online'
+        agent.last_provision_error = None
+        agent.updated_at = utcnow()
+        self.session.add(agent)
+        await self.session.commit()
+        await self.session.refresh(agent)
+
+    async def _validate_board_agent_acceptance(
+        self,
+        *,
+        agent: Agent,
+        board: Board,
+        auth_token: str,
+    ) -> tuple[bool, dict[str, int], str | None]:
+        base_url = _agent_api_base_url()
+        checks = [
+            ('heartbeat', 'POST', f'{base_url}/api/v1/agent/heartbeat'),
+            ('boards', 'GET', f'{base_url}/api/v1/agent/boards'),
+            ('tasks', 'GET', f'{base_url}/api/v1/agent/boards/{board.id}/tasks'),
+        ]
+        statuses: dict[str, int] = {}
+        failed_endpoint: str | None = None
+        for label, method, url in checks:
+            code, _body = await _http_agent_acceptance_request(method=method, url=url, auth_token=auth_token)
+            statuses[label] = code
+            if code >= 400 and failed_endpoint is None:
+                failed_endpoint = url
+        agent = await self._refresh_agent(agent.id)
+        healthy = agent.last_seen_at is not None and failed_endpoint is None
+        if healthy:
+            await self._mark_agent_acceptance_ready(agent)
+        return healthy, statuses, failed_endpoint
+
+    async def _rotate_sync_and_reprovision_agent(
+        self,
+        *,
+        agent: Agent,
+        board: Board,
+        gateway: Gateway,
+        user: User | None,
+        force_bootstrap: bool,
+    ) -> str:
+        await self.sync_gateway_templates(
+            gateway,
+            GatewayTemplateSyncOptions(
+                user=user,
+                include_main=True,
+                lead_only=False,
+                reset_sessions=False,
+                rotate_tokens=True,
+                force_bootstrap=force_bootstrap,
+                overwrite=False,
+                board_id=board.id,
+            ),
+        )
+        control_plane = OpenClawGatewayControlPlane(
+            GatewayClientConfig(
+                url=gateway.url,
+                token=gateway.token,
+                allow_insecure_tls=gateway.allow_insecure_tls,
+                disable_device_pairing=gateway.disable_device_pairing,
+            ),
+        )
+        auth_token = await _get_existing_auth_token(
+            agent=agent,
+            agent_gateway_id=_agent_key(agent),
+            control_plane=control_plane,
+            backoff=GatewayBackoff(timeout_s=60, timeout_context='agent acceptance gate'),
+        )
+        if not auth_token:
+            auth_token = await _rotate_agent_token(self.session, agent)
+        await AgentLifecycleOrchestrator(self.session).run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=user,
+            action='update',
+            auth_token=auth_token,
+            force_bootstrap=force_bootstrap,
+            reset_session=True,
+            wake=True,
+            deliver_wakeup=True,
+            wakeup_verb='updated',
+            clear_confirm_token=True,
+            raise_gateway_errors=True,
+        )
+        return auth_token
+
+    async def _enforce_board_agent_acceptance_gate(
+        self,
+        *,
+        agent: Agent,
+        board: Board,
+        gateway: Gateway,
+        auth_token: str,
+        user: User | None,
+        force_bootstrap: bool,
+    ) -> None:
+        healthy, statuses, failed_endpoint = await self._validate_board_agent_acceptance(
+            agent=agent,
+            board=board,
+            auth_token=auth_token,
+        )
+        if healthy:
+            return
+        if any(code == status.HTTP_401_UNAUTHORIZED for code in statuses.values()):
+            auth_token = await self._rotate_sync_and_reprovision_agent(
+                agent=agent,
+                board=board,
+                gateway=gateway,
+                user=user,
+                force_bootstrap=force_bootstrap,
+            )
+            healthy, statuses, failed_endpoint = await self._validate_board_agent_acceptance(
+                agent=agent,
+                board=board,
+                auth_token=auth_token,
+            )
+            if healthy:
+                return
+        agent = await self._refresh_agent(agent.id)
+        agent.last_provision_error = (
+            f'Post-create acceptance gate failed: statuses={statuses}, failed_endpoint={failed_endpoint}'
+        )
+        agent.updated_at = utcnow()
+        self.session.add(agent)
+        await self.session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                'Agent acceptance gate failed after provisioning. '
+                f'Endpoint statuses: {statuses}. Failed endpoint: {failed_endpoint}'
+            ),
+        )
+
     async def _apply_gateway_provisioning(
         self,
         *,
@@ -1126,6 +1379,15 @@ class AgentLifecycleService(OpenClawDBService):
                 board_id=provisioned.board_id,
             )
             await self.session.commit()
+            if not target.is_main_agent and target.board is not None:
+                await self._enforce_board_agent_acceptance_gate(
+                    agent=provisioned,
+                    board=target.board,
+                    gateway=target.gateway,
+                    auth_token=auth_token,
+                    user=user,
+                    force_bootstrap=force_bootstrap,
+                )
             self.logger.info(
                 "agent.provision.success action=%s agent_id=%s",
                 action,
@@ -1630,7 +1892,12 @@ class AgentLifecycleService(OpenClawDBService):
             main_gateway=main_gateway,
             gateway_for_main=gateway_for_main,
         )
-        raw_token = self.mark_agent_update_pending(agent)
+        raw_token = await resolve_existing_agent_auth_token_or_raise(
+            session=self.session,
+            agent=agent,
+            gateway=target.gateway,
+            timeout_context='worker update auth token lookup',
+        )
         self.session.add(agent)
         await self.session.commit()
         await self.session.refresh(agent)

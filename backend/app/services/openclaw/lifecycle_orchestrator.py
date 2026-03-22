@@ -85,7 +85,18 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                     ),
                 )
 
-        raw_token = auth_token or mint_agent_token(locked)
+        if auth_token is None:
+            if action == "update":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Worker update requires an explicit existing AUTH_TOKEN. "
+                        "Implicit token rotation on normal update is forbidden."
+                    ),
+                )
+            raw_token = mint_agent_token(locked)
+        else:
+            raw_token = auth_token
         mark_provision_requested(
             locked,
             action=action,

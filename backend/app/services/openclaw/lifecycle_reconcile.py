@@ -13,6 +13,7 @@ from app.models.gateways import Gateway
 from app.services.openclaw.constants import MAX_WAKE_ATTEMPTS_WITHOUT_CHECKIN
 from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
 from app.services.openclaw.lifecycle_queue import decode_lifecycle_task, defer_lifecycle_reconcile
+from app.services.openclaw.provisioning_db import resolve_existing_agent_auth_token_or_raise
 from app.services.queue import QueuedTask
 
 logger = get_logger(__name__)
@@ -115,6 +116,12 @@ async def process_lifecycle_queue_task(task: QueuedTask) -> None:
                 )
                 return
 
+        auth_token = await resolve_existing_agent_auth_token_or_raise(
+            session=session,
+            agent=agent,
+            gateway=gateway,
+            timeout_context='lifecycle reconcile auth token lookup',
+        )
         orchestrator = AgentLifecycleOrchestrator(session)
         await asyncio.wait_for(
             orchestrator.run_lifecycle(
@@ -123,7 +130,7 @@ async def process_lifecycle_queue_task(task: QueuedTask) -> None:
                 board=board,
                 user=None,
                 action="update",
-                auth_token=None,
+                auth_token=auth_token,
                 force_bootstrap=False,
                 reset_session=True,
                 wake=True,
