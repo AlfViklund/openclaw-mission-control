@@ -375,6 +375,9 @@ Rule of thumb:
 - Ongoing coordination loop -> heartbeat.
 - Precise scheduled job -> cron.
 
+Board agents must NOT use cron for wake/bootstrap/liveness recovery.
+If an agent is woken from board activity, it must re-enter through the normal heartbeat/check-in lifecycle instead of trying to self-schedule cron jobs.
+
 ## Memory Maintenance (During Heartbeats)
 Periodically (every few days), use a heartbeat to:
 - Read through recent `memory/YYYY-MM-DD.md` files.

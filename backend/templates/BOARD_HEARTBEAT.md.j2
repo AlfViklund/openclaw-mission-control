@@ -127,6 +127,7 @@ jq -r '
 - Heartbeat cadence is controlled by gateway heartbeat config.
 - On first cycle after wake/bootstrap, run heartbeat check-in immediately (do not wait for cadence).
 - Keep cadence conservative unless there is a clear latency need.
+- Do NOT use cron to recover liveness after wake/bootstrap. Re-entry must happen through normal agent heartbeat/check-in only.
 
 ## Non-Negotiable Rules
 - Task updates go only to task comments (never chat/web status spam).

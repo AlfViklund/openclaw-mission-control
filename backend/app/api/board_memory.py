@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -30,6 +31,8 @@ from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.mentions import extract_mentions, matches_agent_mention
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
+from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+from app.services.openclaw.provisioning_db import OFFLINE_AFTER, resolve_existing_agent_auth_token_or_raise
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -40,6 +43,7 @@ if TYPE_CHECKING:
     from app.models.boards import Board
 
 router = APIRouter(prefix="/boards/{board_id}/memory", tags=["board-memory"])
+logger = logging.getLogger(__name__)
 MAX_SNIPPET_LENGTH = 800
 STREAM_POLL_SECONDS = 2
 IS_CHAT_QUERY = Query(default=None)
@@ -150,6 +154,49 @@ def _actor_display_name(actor: ActorContext) -> str:
     return "User"
 
 
+def _target_needs_wake(agent: Agent) -> bool:
+    if agent.status in {"offline", "provisioning", "updating"}:
+        return True
+    if agent.last_seen_at is None:
+        return True
+    return utcnow() - agent.last_seen_at > OFFLINE_AFTER
+
+
+async def _wake_chat_target_if_needed(
+    *,
+    session: AsyncSession,
+    board: Board,
+    agent: Agent,
+    actor: ActorContext,
+) -> bool:
+    if not _target_needs_wake(agent):
+        return True
+    gateway = await GatewayDispatchService(session).require_gateway_config_for_board(board)
+    gateway_model, _config = gateway
+    auth_token = await resolve_existing_agent_auth_token_or_raise(
+        session=session,
+        agent=agent,
+        gateway=gateway_model,
+        timeout_context='board chat wake auth token lookup',
+    )
+    await AgentLifecycleOrchestrator(session).run_lifecycle(
+        gateway=gateway_model,
+        agent_id=agent.id,
+        board=board,
+        user=actor.user,
+        action='update',
+        auth_token=auth_token,
+        force_bootstrap=False,
+        reset_session=True,
+        wake=True,
+        deliver_wakeup=True,
+        wakeup_verb='updated',
+        clear_confirm_token=True,
+        raise_gateway_errors=True,
+    )
+    return False
+
+
 async def _notify_chat_targets(
     *,
     session: AsyncSession,
@@ -193,6 +240,26 @@ async def _notify_chat_targets(
         snippet = f"{snippet[: MAX_SNIPPET_LENGTH - 3]}..."
     base_url = settings.base_url
     for agent in targets.values():
+        try:
+            can_deliver_to_existing_session = await _wake_chat_target_if_needed(
+                session=session,
+                board=board,
+                agent=agent,
+                actor=actor,
+            )
+        except Exception as exc:
+            logger.warning(
+                "board.chat.wake.failed board_id=%s agent_id=%s agent_name=%s exc_type=%s exc=%s",
+                board.id,
+                agent.id,
+                agent.name,
+                type(exc).__name__,
+                exc,
+            )
+            # Do not route board chat into a stale session if controlled wake/reset failed.
+            continue
+        if not can_deliver_to_existing_session:
+            continue
         if not agent.openclaw_session_id:
             continue
         mentioned = matches_agent_mention(agent, mentions)
@@ -211,6 +278,7 @@ async def _notify_chat_targets(
             config=config,
             agent_name=agent.name,
             message=message,
+            deliver=True,
         )
         if error is not None:
             continue
