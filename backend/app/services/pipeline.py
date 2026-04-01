@@ -8,6 +8,7 @@ from uuid import UUID
 
 from app.core.time import utcnow
 from app.models.agents import Agent
+from app.models.approvals import Approval
 from app.models.boards import Board
 from app.models.runs import Run
 from app.models.tasks import Task
@@ -61,6 +62,8 @@ class PipelineService:
         Returns dict with run info, execution result, and any pipeline warnings.
         """
         validation = await validate_pipeline_stage(self._session, task_id, stage)
+        if validation.blockers:
+            raise ValueError("; ".join(validation.blockers))
 
         task = await Task.objects.by_id(task_id).first(self._session)
         if not task:
@@ -124,6 +127,8 @@ class PipelineService:
             )
 
             if result.success:
+                if stage == "plan":
+                    await self._ensure_build_approval_request(task=task, agent=agent)
                 await self._update_task_after_success(task=task, stage=stage)
                 await self._auto_run_next_stage(run.id)
 
@@ -172,6 +177,15 @@ class PipelineService:
             return None
 
         next_stage = STAGE_ORDER[current_idx + 1]
+
+        if next_stage == "build":
+            task = await Task.objects.by_id(run.task_id).first(self._session)
+            if task is None or not await self._has_approved_build_approval(task.id):
+                return {
+                    "auto_triggered": False,
+                    "stage": "build",
+                    "reason": "awaiting_approval",
+                }
 
         next_run = await create_run(
             self._session,
@@ -260,11 +274,11 @@ class PipelineService:
         from app.services.runtime_adapters.factory import RuntimeAdapterFactory
 
         adapter_kwargs: dict[str, Any] = {"runtime": runtime}
+        board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
 
         if runtime == "acp":
             if agent is None or task.board_id is None:
                 raise ValueError("ACP runtime requires an assigned agent and board context")
-            board = board or await Board.objects.by_id(task.board_id).first(self._session)
             if board is None or not agent.openclaw_session_id:
                 raise ValueError("ACP runtime requires gateway-backed board and active agent session")
             dispatch = GatewayDispatchService(self._session)
@@ -281,7 +295,6 @@ class PipelineService:
         elif runtime == "opencode_cli":
             if agent is None:
                 raise ValueError("OpenCode CLI runtime requires an assigned agent")
-            board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
             gateway = None
             workdir = None
             if board is not None and board.gateway_id:
@@ -311,3 +324,40 @@ class PipelineService:
             task.status = "review"
             self._session.add(task)
             await self._session.commit()
+
+    async def _has_approved_build_approval(self, task_id: UUID) -> bool:
+        approval = await (
+            Approval.objects.filter_by(task_id=task_id, action_type="pipeline.build", status="approved")
+            .order_by(desc(col(Approval.created_at)))
+            .first(self._session)
+        )
+        return approval is not None
+
+    async def _ensure_build_approval_request(self, *, task: Task, agent: Agent | None) -> None:
+        existing = await (
+            Approval.objects.filter_by(task_id=task.id, action_type="pipeline.build")
+            .filter(col(Approval.status).in_(["pending", "approved"]))
+            .first(self._session)
+        )
+        if existing is not None:
+            return
+
+        board_id = task.board_id
+        if board_id is None:
+            return
+
+        approval = Approval(
+            board_id=board_id,
+            task_id=task.id,
+            agent_id=agent.id if agent else None,
+            action_type="pipeline.build",
+            payload={
+                "reason": "Plan completed. Human approval required before build stage.",
+                "task_title": task.title,
+                "stage": "build",
+            },
+            confidence=90.0,
+            status="pending",
+        )
+        self._session.add(approval)
+        await self._session.commit()

@@ -224,29 +224,37 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
 
 
 async def template_sync_agent(session: AsyncSession, agent_id: UUID) -> dict:
-    """Trigger template sync for an agent via gateway RPC."""
+    """Trigger template sync for an agent via real lifecycle provisioning."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
-    agent.status = "provisioning"
-    session.add(agent)
-    await session.commit()
-
     try:
-        from app.models.boards import Board
-        from app.services.openclaw.provisioning_db import AgentLifecycleService
+        from app.models.gateways import Gateway
+        from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+        from app.services.organizations import get_org_owner_user
 
-        board = await Board.objects.by_id(agent.board_id).first(session)
-        if board:
-            lifecycle = AgentLifecycleService(session)
-            await lifecycle.sync_agent_templates(agent_id=str(agent_id), board_id=str(board.id))
-            sync_status = "sync_completed"
-        else:
-            sync_status = "sync_db_only_no_board"
+        board = await Board.objects.by_id(agent.board_id).first(session) if agent.board_id else None
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise ValueError("Gateway not found")
+        template_user = await get_org_owner_user(session, organization_id=gateway.organization_id)
+        orchestrator = AgentLifecycleOrchestrator(session)
+        await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            force_bootstrap=False,
+            reset_session=False,
+            wake=False,
+            raise_gateway_errors=True,
+        )
+        sync_status = "sync_completed"
     except Exception as exc:
         logger.warning("Template sync gateway call failed for agent %s: %s", agent_id, exc)
-        sync_status = "sync_db_only_gateway_failed"
+        sync_status = "sync_gateway_failed"
 
     return {
         "agent_id": str(agent.id),
@@ -256,30 +264,38 @@ async def template_sync_agent(session: AsyncSession, agent_id: UUID) -> dict:
 
 
 async def rotate_agent_tokens(session: AsyncSession, agent_id: UUID) -> dict:
-    """Rotate auth tokens for an agent via gateway RPC."""
+    """Rotate auth tokens for an agent via real lifecycle reprovisioning."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
-    agent.agent_token_hash = None
-    agent.status = "provisioning"
-    session.add(agent)
-    await session.commit()
-
     try:
-        from app.models.boards import Board
-        from app.services.openclaw.provisioning_db import AgentLifecycleService
+        from app.models.gateways import Gateway
+        from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+        from app.services.organizations import get_org_owner_user
 
-        board = await Board.objects.by_id(agent.board_id).first(session)
-        if board:
-            lifecycle = AgentLifecycleService(session)
-            await lifecycle.rotate_agent_token(agent_id=str(agent_id), board_id=str(board.id))
-            rotate_status = "rotation_completed"
-        else:
-            rotate_status = "rotation_db_only_no_board"
+        board = await Board.objects.by_id(agent.board_id).first(session) if agent.board_id else None
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise ValueError("Gateway not found")
+        template_user = await get_org_owner_user(session, organization_id=gateway.organization_id)
+        orchestrator = AgentLifecycleOrchestrator(session)
+        await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            auth_token=None,
+            force_bootstrap=False,
+            reset_session=False,
+            wake=False,
+            raise_gateway_errors=True,
+        )
+        rotate_status = "rotation_completed"
     except Exception as exc:
         logger.warning("Token rotation gateway call failed for agent %s: %s", agent_id, exc)
-        rotate_status = "rotation_db_only_gateway_failed"
+        rotate_status = "rotation_gateway_failed"
 
     return {
         "agent_id": str(agent.id),
@@ -289,30 +305,37 @@ async def rotate_agent_tokens(session: AsyncSession, agent_id: UUID) -> dict:
 
 
 async def reset_agent_session(session: AsyncSession, agent_id: UUID) -> dict:
-    """Reset an agent's session via gateway RPC."""
+    """Reset an agent's session via real lifecycle reprovisioning."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
-    agent.openclaw_session_id = None
-    agent.status = "provisioning"
-    session.add(agent)
-    await session.commit()
-
     try:
-        from app.models.boards import Board
-        from app.services.openclaw.provisioning_db import AgentLifecycleService
+        from app.models.gateways import Gateway
+        from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+        from app.services.organizations import get_org_owner_user
 
-        board = await Board.objects.by_id(agent.board_id).first(session)
-        if board:
-            lifecycle = AgentLifecycleService(session)
-            await lifecycle.reset_agent_session(agent_id=str(agent_id), board_id=str(board.id))
-            reset_status = "reset_completed"
-        else:
-            reset_status = "reset_db_only_no_board"
+        board = await Board.objects.by_id(agent.board_id).first(session) if agent.board_id else None
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise ValueError("Gateway not found")
+        template_user = await get_org_owner_user(session, organization_id=gateway.organization_id)
+        orchestrator = AgentLifecycleOrchestrator(session)
+        await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            force_bootstrap=False,
+            reset_session=True,
+            wake=False,
+            raise_gateway_errors=True,
+        )
+        reset_status = "reset_completed"
     except Exception as exc:
         logger.warning("Session reset gateway call failed for agent %s: %s", agent_id, exc)
-        reset_status = "reset_db_only_gateway_failed"
+        reset_status = "reset_gateway_failed"
 
     return {
         "agent_id": str(agent.id),
@@ -322,31 +345,38 @@ async def reset_agent_session(session: AsyncSession, agent_id: UUID) -> dict:
 
 
 async def wake_agent(session: AsyncSession, agent_id: UUID) -> dict:
-    """Wake a sleeping/offline agent via gateway RPC."""
+    """Wake a sleeping/offline agent via real lifecycle wake."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
-    agent.wake_attempts = (agent.wake_attempts or 0) + 1
-    agent.last_wake_sent_at = utcnow()
-    agent.checkin_deadline_at = utcnow() + timedelta(seconds=30)
-    session.add(agent)
-    await session.commit()
-
     try:
-        from app.models.boards import Board
-        from app.services.openclaw.provisioning_db import AgentLifecycleService
+        from app.models.gateways import Gateway
+        from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+        from app.services.organizations import get_org_owner_user
 
-        board = await Board.objects.by_id(agent.board_id).first(session)
-        if board:
-            lifecycle = AgentLifecycleService(session)
-            await lifecycle.wake_agent(agent_id=str(agent_id), board_id=str(board.id))
-            wake_status = "wake_completed"
-        else:
-            wake_status = "wake_db_only_no_board"
+        board = await Board.objects.by_id(agent.board_id).first(session) if agent.board_id else None
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise ValueError("Gateway not found")
+        template_user = await get_org_owner_user(session, organization_id=gateway.organization_id)
+        orchestrator = AgentLifecycleOrchestrator(session)
+        updated = await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            force_bootstrap=False,
+            reset_session=False,
+            wake=True,
+            raise_gateway_errors=True,
+        )
+        wake_status = "wake_completed"
+        agent = updated
     except Exception as exc:
         logger.warning("Wake gateway call failed for agent %s: %s", agent_id, exc)
-        wake_status = "wake_db_only_gateway_failed"
+        wake_status = "wake_gateway_failed"
 
     return {
         "agent_id": str(agent.id),

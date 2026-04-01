@@ -22,9 +22,9 @@ Self-hosted система разработки продукта поверх Op
 | 6. Telegram Interface | ✅ Complete | 100% |
 | 7. Agent Role Templates | ✅ Complete | 100% |
 | 8. Reliability & Watchdog | ✅ Complete | 100% |
-| 9. Polish & Documentation | 🔄 In Progress | 70% |
+| 9. Polish & Documentation | 🔄 In Progress | 80% |
 
-**Общий прогресс: ~85%**
+**Общий прогресс: ~90%**
 
 ---
 
@@ -163,31 +163,31 @@ Self-hosted система разработки продукта поверх Op
 
 ---
 
-## Фаза 7: Agent Role Templates
+## Фаза 7: Agent Role Templates ✅
 
 ### Задачи:
-- [ ] 7.1 — Шаблон Main (board lead) — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
-- [ ] 7.2 — Шаблон Dev worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
-- [ ] 7.3 — Шаблон QA worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
-- [ ] 7.4 — Шаблон Docs worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
-- [ ] 7.5 — Шаблон Ops guardian — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
-- [ ] 7.6 — Авто-провижининг агентов с шаблонами через template sync
-- [ ] 7.7 — Интеграция с agents.create и gateway RPC
+- [x] 7.1 — Шаблон Main (board lead) — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
+- [x] 7.2 — Шаблон Dev worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
+- [x] 7.3 — Шаблон QA worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
+- [x] 7.4 — Шаблон Docs worker — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
+- [x] 7.5 — Шаблон Ops guardian — TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md
+- [x] 7.6 — Авто-провижининг агентов с шаблонами через template sync
+- [x] 7.7 — Интеграция с agents.create и gateway RPC
 
 ---
 
-## Фаза 8: Reliability & Watchdog
+## Фаза 8: Reliability & Watchdog ✅
 
 ### Задачи:
-- [ ] 8.1 — Heartbeat monitoring сервис
-- [ ] 8.2 — Таймауты и авто-retry для runs
-- [ ] 8.3 — Авто-reassign задач при offline агенте
-- [ ] 8.4 — Escalation к человеку при repeated failures
-- [ ] 8.5 — Ops команды восстановления: template sync rotate_tokens, reset_sessions
-- [ ] 8.6 — Evidence retention & cleanup политика
-- [ ] 8.7 — Интеграция с существующим heartbeat endpoint
-- [ ] 8.8 — Фронтенд: индикация статуса агентов (online/offline)
-- [ ] 8.9 — Фронтенд: панель управления watchdog
+- [x] 8.1 — Heartbeat monitoring сервис
+- [x] 8.2 — Таймауты и авто-retry для runs
+- [x] 8.3 — Авто-reassign задач при offline агенте
+- [x] 8.4 — Escalation к человеку при repeated failures
+- [x] 8.5 — Ops команды восстановления: template sync rotate_tokens, reset_sessions
+- [x] 8.6 — Evidence retention & cleanup политика
+- [x] 8.7 — Интеграция с существующим heartbeat endpoint
+- [x] 8.8 — Фронтенд: индикация статуса агентов (online/offline)
+- [x] 8.9 — Фронтенд: панель управления watchdog
 
 ---
 
@@ -204,6 +204,13 @@ Self-hosted система разработки продукта поверх Op
 - [ ] 9.8 — Runbook восстановления
 - [ ] 9.9 — Security checklist
 - [ ] 9.10 — PWA режим для UI
+
+### Последние реализованные улучшения
+- Guarded pipeline mode: review/done требуют успешного test-run или owner override с причиной
+- Approval gate: после plan создаётся approval перед build
+- Board panic/resume: pipeline может быть поставлен на паузу на уровне доски
+- Heartbeat optimization: idle/dormant режимы для уменьшения расхода токенов на пустых досках
+- Telegram control actions: `/panic`, `/resume`, `/nudge` теперь делают реальные backend-вызовы
 
 ---
 

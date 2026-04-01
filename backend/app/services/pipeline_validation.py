@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from sqlmodel import col
+
+from app.models.approvals import Approval
 from app.models.runs import Run
 from app.models.tasks import Task
 
@@ -47,6 +50,7 @@ async def validate_pipeline_stage(
     Returns warnings for out-of-order execution but does NOT block.
     """
     warnings: list[PipelineWarning] = []
+    blockers: list[str] = []
 
     task = await Task.objects.by_id(task_id).first(session)
     if not task:
@@ -66,17 +70,20 @@ async def validate_pipeline_stage(
         successful_runs = [r for r in runs if r.status == "succeeded"]
 
         if not runs:
-            warnings.append(PipelineWarning(
-                stage=stage,
-                message=f"No '{prev_stage}' run exists. Recommended order: {' → '.join(PIPELINE_ORDER)}.",
-            ))
+            blockers.append(f"Missing required '{prev_stage}' run before '{stage}'.")
         elif not successful_runs:
-            warnings.append(PipelineWarning(
-                stage=stage,
-                message=f"No successful '{prev_stage}' run found. Last status: {runs[0].status}.",
-            ))
+            blockers.append(f"No successful '{prev_stage}' run found before '{stage}'.")
 
-    return PipelineValidation(valid=True, warnings=warnings)
+    if stage == "build":
+        approval = await (
+            Approval.objects.filter_by(task_id=task_id, action_type="pipeline.build", status="approved")
+            .order_by(col(Approval.created_at).desc())
+            .first(session)
+        )
+        if approval is None:
+            blockers.append("Build requires an approved pipeline.build approval after planning.")
+
+    return PipelineValidation(valid=not blockers, warnings=warnings, blockers=blockers)
 
 
 async def validate_task_status_change(
