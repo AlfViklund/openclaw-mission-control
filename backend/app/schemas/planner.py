@@ -8,8 +8,6 @@ from uuid import UUID
 from pydantic import Field as PydanticField
 from sqlmodel import SQLModel
 
-RUNTIME_ANNOTATION_TYPES = (datetime, UUID)
-
 
 class PlannerTaskItem(SQLModel):
     """Single task within a planner output."""

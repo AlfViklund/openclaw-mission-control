@@ -93,8 +93,21 @@ class PlaywrightRunner:
             )
             stdout, stderr = await proc.communicate()
 
-            report = self._parse_report(stdout, report_path)
+            report = self._parse_report(stdout)
             report.duration = (time.time() - start) * 1000
+            report.raw_path = str(report_path)
+
+            report_path.write_text(json.dumps({
+                "total": report.total,
+                "passed": report.passed,
+                "failed": report.failed,
+                "skipped": report.skipped,
+                "duration_ms": report.duration,
+                "tests": [
+                    {"title": t.title, "status": t.status, "duration_ms": t.duration, "error": t.error}
+                    for t in report.tests
+                ],
+            }, indent=2))
 
             screenshots = list(screenshot_dir.glob("*.png"))
             report.screenshot_paths = [str(s) for s in screenshots]
@@ -122,7 +135,7 @@ class PlaywrightRunner:
                 )],
             )
 
-    def _parse_report(self, stdout: bytes, report_path: Path) -> TestReport:
+    def _parse_report(self, stdout: bytes) -> TestReport:
         """Parse Playwright JSON report output."""
         report = TestReport()
 
@@ -173,7 +186,7 @@ class PlaywrightRunner:
 class QAService:
     """Orchestrates QA test execution for tasks."""
 
-    def __init__(self, session: Any):
+    def __init__(self, session: AsyncSession):
         self._session = session
         self._test_dir: str | None = None
 

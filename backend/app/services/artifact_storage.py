@@ -100,16 +100,20 @@ def save_artifact_file(
 def read_artifact_file(storage_path: str) -> bytes:
     """Read an artifact file from storage and return its bytes."""
     full_path = _storage_root() / storage_path
-    if not full_path.exists():
+    resolved = full_path.resolve()
+    if not resolved.is_relative_to(_storage_root().resolve()):
+        raise ValueError(f"Invalid storage path: {storage_path}")
+    if not resolved.exists():
         raise FileNotFoundError(f"Artifact file not found: {full_path}")
-    return full_path.read_bytes()
+    return resolved.read_bytes()
 
 
 def delete_artifact_file(storage_path: str) -> None:
     """Delete an artifact file from storage."""
     full_path = _storage_root() / storage_path
-    if full_path.exists():
-        full_path.unlink()
+    resolved = full_path.resolve()
+    if resolved.is_relative_to(_storage_root().resolve()) and resolved.exists():
+        resolved.unlink()
 
 
 def get_artifact_preview(storage_path: str, max_bytes: int = 65536) -> str | None:
@@ -118,11 +122,14 @@ def get_artifact_preview(storage_path: str, max_bytes: int = 65536) -> str | Non
     Returns None for binary files or if the file cannot be decoded.
     """
     full_path = _storage_root() / storage_path
-    if not full_path.exists():
+    resolved = full_path.resolve()
+    if not resolved.is_relative_to(_storage_root().resolve()):
+        return None
+    if not resolved.exists():
         return None
 
     try:
-        raw = full_path.read_bytes()[:max_bytes]
+        raw = resolved.read_bytes()[:max_bytes]
         return raw.decode("utf-8")
     except (UnicodeDecodeError, OSError):
         return None

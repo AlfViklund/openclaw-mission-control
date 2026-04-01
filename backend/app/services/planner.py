@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING
+import time
+import asyncio
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from app.core.time import utcnow
@@ -101,13 +103,6 @@ async def generate_backlog_from_text(
     This is the core generation logic. The caller is responsible for
     obtaining the spec text (from artifact storage, Telegram, etc.).
     """
-    artifact = await get_artifact_by_id(session, artifact_id)
-    if not artifact:
-        raise ValueError(f"Artifact {artifact_id} not found")
-
-    if artifact.board_id != board_id:
-        raise ValueError(f"Artifact {artifact_id} does not belong to board {board_id}")
-
     board = await Board.objects.by_id(board_id).first(session)
     if not board:
         raise ValueError(f"Board {board_id} not found")
@@ -228,10 +223,14 @@ async def _call_llm_via_gateway(
     """Send a planning request through the OpenClaw Gateway to a board lead agent.
 
     Uses the gateway WebSocket RPC to send a message to the board lead agent
-    and waits for a response.
+    and waits for a response by polling chat history.
     """
+    import asyncio
+    import time
+
     from app.models.agents import Agent
     from app.services.openclaw.gateway_dispatch import GatewayDispatchService
+    from app.services.openclaw.gateway_rpc import openclaw_call
 
     dispatch = GatewayDispatchService(session)
     gateway, config = await dispatch.require_gateway_config_for_board(board)
@@ -260,11 +259,46 @@ async def _call_llm_via_gateway(
         deliver=True,
     )
 
-    return (
-        f"[Planner request sent to agent '{lead.name}' via gateway. "
-        f"Response will be captured through the chat stream. "
-        f"Use the board memory stream to retrieve the agent's response.]"
+    response_text = await _wait_for_agent_response(
+        session_key=lead.openclaw_session_id,
+        config=config,
+        timeout=300,
     )
+    return response_text
+
+
+async def _wait_for_agent_response(
+    session_key: str,
+    config: Any,
+    timeout: int = 300,
+) -> str:
+    """Poll gateway chat history until the agent responds."""
+    from app.services.openclaw.gateway_rpc import openclaw_call
+
+    start = time.time()
+    last_count = 0
+
+    while time.time() - start < timeout:
+        try:
+            history = await openclaw_call(
+                "chat.history",
+                {"session_key": session_key, "limit": 20},
+                config=config,
+            )
+            messages = history.get("messages", []) if isinstance(history, dict) else []
+            if len(messages) > last_count:
+                last_msg = messages[-1]
+                if isinstance(last_msg, dict):
+                    content = last_msg.get("content", "")
+                    role = last_msg.get("role", "")
+                    if role in ("assistant", "agent", "model") and content:
+                        return content
+                last_count = len(messages)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+    raise RuntimeError("Timeout waiting for agent response")
 
 
 async def apply_planner_output(

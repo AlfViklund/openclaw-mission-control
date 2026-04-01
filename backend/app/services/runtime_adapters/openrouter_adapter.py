@@ -22,16 +22,8 @@ class OpenRouterAdapter(RuntimeAdapter):
     """
 
     def __init__(self, api_key: str | None = None) -> None:
-        if not getattr(settings, "enable_openrouter", False):
-            raise RuntimeAdapterError(
-                "OpenRouter adapter is disabled. Set ENABLE_OPENROUTER=true to enable."
-            )
         self._api_key = api_key or getattr(settings, "openrouter_api_key", "")
-        if not self._api_key:
-            raise RuntimeAdapterError(
-                "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
-            )
-        self._active_runs: dict[str, dict[str, Any]] = {}
+        self._enabled = bool(getattr(settings, "enable_openrouter", False))
 
     @property
     def runtime_name(self) -> str:
@@ -46,7 +38,17 @@ class OpenRouterAdapter(RuntimeAdapter):
         permissions_profile: str | None = None,
         **kwargs: Any,
     ) -> RunResult:
+        if not self._enabled:
+            raise RuntimeAdapterError(
+                "OpenRouter adapter is disabled. Set ENABLE_OPENROUTER=true to enable."
+            )
+        if not self._api_key:
+            raise RuntimeAdapterError(
+                "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
+            )
+
         run_id = str(uuid4())
+        self._active_runs: dict[str, dict[str, Any]] = {}
         self._active_runs[run_id] = {
             "started_at": time.time(),
             "model": model or "anthropic/claude-sonnet-4-20260325",

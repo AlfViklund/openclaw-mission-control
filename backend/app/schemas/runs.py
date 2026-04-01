@@ -7,8 +7,6 @@ from uuid import UUID
 
 from sqlmodel import SQLModel
 
-RUNTIME_ANNOTATION_TYPES = (datetime, UUID)
-
 
 class RunCreate(SQLModel):
     """Payload for creating and starting a run."""
@@ -20,7 +18,6 @@ class RunCreate(SQLModel):
     model: str | None = None
     temperature: float | None = None
     permissions_profile: str | None = None
-    prompt: str | None = None
 
 
 class RunUpdate(SQLModel):

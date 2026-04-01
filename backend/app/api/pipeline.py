@@ -90,21 +90,3 @@ async def validate_task_pipeline(
         ],
         "blockers": result.blockers,
     }
-
-
-@router.post("/tasks/{task_id}/status-validate")
-async def validate_status_change(
-    task_id: UUID,
-    new_status: str = Query(..., description="Target status"),
-    session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
-) -> dict:
-    """Validate whether a task status change complies with pipeline discipline."""
-    result = await validate_task_status_change(session, task_id, new_status)
-    return {
-        "valid": result.valid,
-        "warnings": [
-            {"stage": w.stage, "message": w.message, "severity": w.severity}
-            for w in result.warnings
-        ],
-    }

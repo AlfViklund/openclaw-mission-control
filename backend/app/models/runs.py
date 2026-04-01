@@ -11,8 +11,6 @@ from sqlmodel import Field
 from app.core.time import utcnow
 from app.models.base import QueryModel
 
-RUNTIME_ANNOTATION_TYPES = (datetime,)
-
 RUN_RUNTIMES = frozenset({"acp", "opencode_cli", "openrouter"})
 RUN_STAGES = frozenset({"plan", "build", "test"})
 RUN_STATUSES = frozenset({"queued", "running", "failed", "succeeded", "canceled"})

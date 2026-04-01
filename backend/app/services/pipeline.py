@@ -91,20 +91,17 @@ class PipelineService:
 
         next_stage = stage_order[current_idx + 1]
 
-        if next_stage == "test":
-            test_run = await create_run(
-                self._session,
-                task_id=run.task_id,
-                agent_id=run.agent_id,
-                runtime=run.runtime,
-                stage="test",
-                model=run.model,
-            )
-            test_run = await start_run(self._session, test_run)
-            return {
-                "run_id": str(test_run.id),
-                "stage": "test",
-                "auto_triggered": True,
-            }
-
-        return None
+        test_run = await create_run(
+            self._session,
+            task_id=run.task_id,
+            agent_id=run.agent_id,
+            runtime=run.runtime,
+            stage=next_stage,
+            model=run.model,
+        )
+        test_run = await start_run(self._session, test_run)
+        return {
+            "run_id": str(test_run.id),
+            "stage": next_stage,
+            "auto_triggered": True,
+        }

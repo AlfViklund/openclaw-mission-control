@@ -53,7 +53,10 @@ async def validate_pipeline_stage(
         return PipelineValidation(valid=False, blockers=["Task not found"])
 
     if stage not in PIPELINE_ORDER:
-        return PipelineValidation(valid=True)
+        return PipelineValidation(
+            valid=False,
+            warnings=[PipelineWarning(stage=stage, message=f"Unknown stage: {stage}")],
+        )
 
     stage_idx = PIPELINE_ORDER.index(stage)
     previous_stages = PIPELINE_ORDER[:stage_idx]

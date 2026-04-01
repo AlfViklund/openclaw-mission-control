@@ -67,6 +67,7 @@ async def upload_artifact(
     task_id: UUID | None = Query(default=None),
     artifact_type: str = Query(default="other"),
     source: str = Query(default="web"),
+    version: int = Query(default=1),
     user: ActorContext = UPLOAD_DEP,
     session: AsyncSession = SESSION_DEP,
 ) -> Artifact:
@@ -105,6 +106,7 @@ async def upload_artifact(
         mime_type=mime_type,
         size_bytes=size_bytes,
         checksum=checksum,
+        version=version,
         created_by=user.user.id if user.user else None,
     )
     return artifact
@@ -121,11 +123,13 @@ async def create_artifact_metadata(
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
 
+    storage_path = f"external/{payload.board_id}/{payload.filename}"
+
     artifact = await create_artifact(
         session,
         board_id=payload.board_id,
         filename=payload.filename,
-        storage_path=payload.filename,
+        storage_path=storage_path,
         task_id=payload.task_id,
         artifact_type=payload.type,
         source=payload.source,

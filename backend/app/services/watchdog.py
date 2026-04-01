@@ -79,12 +79,14 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
     retried = []
 
     stuck_runs = await Run.objects.filter_by(status="running").all(session)
+    timed_out_ids: set[UUID] = set()
     for run in stuck_runs:
         if run.started_at and (now - run.started_at) > timedelta(minutes=MAX_RUN_DURATION_MINUTES):
             run.status = "failed"
             run.finished_at = now
             run.error_message = f"Run timed out after {MAX_RUN_DURATION_MINUTES} minutes"
             session.add(run)
+            timed_out_ids.add(run.id)
             retried.append({
                 "run_id": str(run.id),
                 "task_id": str(run.task_id),
@@ -93,26 +95,30 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
 
     failed_runs = await Run.objects.filter_by(status="failed").all(session)
     for run in failed_runs:
+        if run.id in timed_out_ids:
+            continue
+
         retry_count = sum(
             1 for e in run.evidence_paths if e.get("type") == "retry"
         ) if run.evidence_paths else 0
 
-        if retry_count < MAX_RETRY_ATTEMPTS:
-            run.status = "queued"
-            run.started_at = None
-            run.finished_at = None
-            run.error_message = None
-            run.evidence_paths.append({
-                "type": "retry",
-                "attempt": retry_count + 1,
-                "scheduled_at": now.isoformat(),
-            })
-            session.add(run)
-            retried.append({
-                "run_id": str(run.id),
-                "task_id": str(run.task_id),
-                "reason": f"retry {retry_count + 1}/{MAX_RETRY_ATTEMPTS}",
-            })
+        if retry_count < MAX_RETRY_ATTEMPTS and run.finished_at:
+            if now - run.finished_at > timedelta(minutes=5):
+                run.status = "queued"
+                run.started_at = None
+                run.finished_at = None
+                run.error_message = None
+                run.evidence_paths.append({
+                    "type": "retry",
+                    "attempt": retry_count + 1,
+                    "scheduled_at": now.isoformat(),
+                })
+                session.add(run)
+                retried.append({
+                    "run_id": str(run.id),
+                    "task_id": str(run.task_id),
+                    "reason": f"retry {retry_count + 1}/{MAX_RETRY_ATTEMPTS}",
+                })
 
     if retried:
         await session.commit()
@@ -131,11 +137,11 @@ async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict
     if not offline_ids:
         return []
 
-    tasks = await session.exec(select(Task)).all()
+    tasks = await session.exec(select(Task).where(col(Task.status) == "in_progress")).all()
     reassigned = []
 
     for task in tasks:
-        if task.status == "in_progress" and task.assigned_agent_id in offline_ids:
+        if task.assigned_agent_id in offline_ids:
             prev_agent = task.assigned_agent_id
             task.in_progress_at = None
             task.status = "inbox"
@@ -174,7 +180,13 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
                     "severity": "high",
                 })
 
-    failed_runs = await Run.objects.filter_by(status="failed").all(session)
+    recent_cutoff = now - timedelta(hours=24)
+    failed_runs = await session.exec(
+        select(Run).where(
+            col(Run.status) == "failed",
+            col(Run.finished_at) >= recent_cutoff,
+        )
+    ).all()
     for run in failed_runs:
         retry_count = sum(
             1 for e in run.evidence_paths if e.get("type") == "retry"
@@ -188,32 +200,33 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
                 "severity": "high",
             })
 
-    tasks = await session.exec(select(Task)).all()
-    for task in tasks:
-        if task.status == "inbox":
-            deps_result = await session.exec(
-                select(TaskDependency).where(col(TaskDependency.task_id) == task.id)
-            )
-            deps = deps_result.all()
-            if not deps:
-                continue
+    inbox_tasks = await session.exec(
+        select(Task).where(col(Task.status) == "inbox")
+    ).all()
+    for task in inbox_tasks:
+        deps_result = await session.exec(
+            select(TaskDependency).where(col(TaskDependency.task_id) == task.id)
+        )
+        deps = deps_result.all()
+        if not deps:
+            continue
 
-            dep_ids = [d.depends_on_task_id for d in deps]
-            dep_tasks_result = await session.exec(
-                select(Task).where(col(Task.id).in_(dep_ids))
-            )
-            dep_tasks = dep_tasks_result.all()
-            all_blocked = all(t.status not in ("done", "review") for t in dep_tasks)
-            if all_blocked:
-                blocked_since = now - (task.in_progress_at or task.created_at)
-                if blocked_since > timedelta(minutes=ESCALATION_BLOCKED_MINUTES):
-                    escalations.append({
-                        "type": "task_blocked",
-                        "task_id": str(task.id),
-                        "task_title": task.title,
-                        "blocked_minutes": blocked_since.total_seconds() / 60,
-                        "severity": "medium",
-                    })
+        dep_ids = [d.depends_on_task_id for d in deps]
+        dep_tasks_result = await session.exec(
+            select(Task).where(col(Task.id).in_(dep_ids))
+        )
+        dep_tasks = dep_tasks_result.all()
+        all_blocked = all(t.status not in ("done", "review") for t in dep_tasks)
+        if all_blocked and task.in_progress_at:
+            blocked_since = now - task.in_progress_at
+            if blocked_since > timedelta(minutes=ESCALATION_BLOCKED_MINUTES):
+                escalations.append({
+                    "type": "task_blocked",
+                    "task_id": str(task.id),
+                    "task_title": task.title,
+                    "blocked_minutes": blocked_since.total_seconds() / 60,
+                    "severity": "medium",
+                })
 
     return escalations
 

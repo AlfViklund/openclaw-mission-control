@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import gzip
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import time
 
 from app.core.time import utcnow
 
@@ -30,9 +31,11 @@ def cleanup_old_evidence(retention_days: int = DEFAULT_RETENTION_DAYS) -> dict:
         for item in evidence_dir.rglob("*"):
             if item.is_file():
                 try:
-                    mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                    mtime = datetime.fromtimestamp(item.stat().st_mtime, tz=timezone.utc)
                     if mtime < cutoff:
                         archive_path = item.with_suffix(item.suffix + ".gz")
+                        if archive_path.exists():
+                            archive_path = item.with_name(f"{item.name}.{int(time.time())}.gz")
                         with item.open("rb") as f_in:
                             with gzip.open(archive_path, "wb") as f_out:
                                 shutil.copyfileobj(f_in, f_out)

@@ -7,8 +7,6 @@ from uuid import UUID
 
 from sqlmodel import SQLModel
 
-RUNTIME_ANNOTATION_TYPES = (datetime, UUID)
-
 
 class ArtifactCreate(SQLModel):
     """Payload for creating an artifact metadata record (file upload handled separately)."""

@@ -74,11 +74,11 @@ async def get_test_report(
     }
 
 
-@router.delete("/test/{run_id}/report")
+@router.delete("/test/{run_id}/report", status_code=status.HTTP_501_NOT_IMPLEMENTED)
 async def delete_test_report(
     run_id: UUID,
-    session: AsyncSession = SESSION_DEP,
+    _session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = USER_DEP,
-) -> OkResponse:
-    """Placeholder: delete test report evidence files."""
-    return OkResponse(ok=True)
+) -> dict:
+    """Delete test report evidence files. Not yet implemented."""
+    return {"detail": "Not implemented"}
