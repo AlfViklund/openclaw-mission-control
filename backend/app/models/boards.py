@@ -44,6 +44,8 @@ class Board(TenantScoped, table=True):
     comment_required_for_review: bool = Field(default=False)
     block_status_changes_with_pending_approval: bool = Field(default=False)
     only_lead_can_change_status: bool = Field(default=False)
+    is_paused: bool = Field(default=False)
+    paused_reason: str | None = None
     max_agents: int = Field(default=1)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

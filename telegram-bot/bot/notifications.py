@@ -33,11 +33,12 @@ async def notify(message: str, parse_mode: str = "Markdown") -> None:
 
 async def notify_approval_pending(approval: dict[str, Any]) -> None:
     """Send notification about a pending approval."""
+    reason = approval.get("payload", {}).get("reason", approval.get("reason", "N/A"))
     text = (
         f"🔔 *Новое подтверждение*\n\n"
         f"ID: `{approval.get('id', '')[:8]}...`\n"
         f"Task: `{str(approval.get('task_id') or 'N/A')[:8]}...`\n"
-        f"Reason: {approval.get('reason', 'N/A')}\n\n"
+        f"Reason: {reason}\n\n"
         f"Используйте `/approvals` для просмотра."
     )
     await notify(text)

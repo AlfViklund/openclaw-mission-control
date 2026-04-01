@@ -37,23 +37,80 @@ async def cmd_nudge(message: Message, state: FSMContext) -> None:
     await message.answer(f"👉 Отправляю nudging для `{target}`...", parse_mode="Markdown")
 
     try:
-        await api.update_task_status(board_id, target, "in_progress")
-        await message.answer(f"✅ Задача `{target[:8]}...` переведена в in_progress.")
+        task = await api.get_task(board_id, target)
+        assigned_agent_id = task.get("assigned_agent_id")
+        if assigned_agent_id:
+            await api.wake_agent(assigned_agent_id)
+            await message.answer(
+                f"✅ Разбудил агента `{str(assigned_agent_id)[:8]}...` для задачи `{target[:8]}...`.",
+                parse_mode="Markdown",
+            )
+        else:
+            await api.execute_stage(target, "plan")
+            await message.answer(
+                f"✅ Запустил plan-stage для задачи `{target[:8]}...`.",
+                parse_mode="Markdown",
+            )
+        return
     except Exception:
-        await message.answer(f"⚠️ Не удалось nudging для `{target}`. Возможно это агент, а не задача.")
+        pass
+
+    try:
+        await api.wake_agent(target)
+        await message.answer(f"✅ Агент `{target[:8]}...` разбужен.", parse_mode="Markdown")
+    except Exception as exc:
+        await message.answer(f"⚠️ Не удалось nudging для `{target}`: {exc}")
 
 
 @router.message(Command("panic"))
 async def cmd_panic(message: Message, state: FSMContext) -> None:
     """Emergency pause — notify owner and pause all agents."""
+    data = await state.get_data()
+    board_id = data.get("active_board_id")
+    if not board_id:
+        await message.answer(
+            "⚠️ Активная доска не выбрана.\n"
+            "Используйте `/board <name>` для выбора."
+        )
+        return
+
+    try:
+        await api.panic_board(board_id, reason="telegram_panic")
+    except Exception as exc:
+        await message.answer(f"❌ Не удалось активировать panic mode: {exc}")
+        return
+
     await message.answer(
         "🚨 *PANIC MODE ACTIVATED*\n\n"
-        "Все агенты (кроме ops) приостановлены.\n"
+        "Pipeline для текущей доски поставлен на паузу.\n"
+        "Новые стадии не запускаются до resume.\n"
         "Проверьте систему и используйте `/status` для оценки.",
         parse_mode="Markdown",
     )
     await state.update_data(panic_mode=True)
     logger.warning("PANIC mode activated by user %s", message.from_user.id)
+
+
+@router.message(Command("resume"))
+async def cmd_resume(message: Message, state: FSMContext) -> None:
+    """Resume a board after panic mode."""
+    data = await state.get_data()
+    board_id = data.get("active_board_id")
+    if not board_id:
+        await message.answer(
+            "⚠️ Активная доска не выбрана.\n"
+            "Используйте `/board <name>` для выбора."
+        )
+        return
+
+    try:
+        await api.resume_board(board_id)
+    except Exception as exc:
+        await message.answer(f"❌ Не удалось снять паузу: {exc}")
+        return
+
+    await state.update_data(panic_mode=False)
+    await message.answer("✅ Pipeline для текущей доски снова активен.")
 
 
 @router.message(Command("plan"))

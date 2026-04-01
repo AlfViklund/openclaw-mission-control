@@ -34,6 +34,8 @@ class BoardBase(SQLModel):
     comment_required_for_review: bool = False
     block_status_changes_with_pending_approval: bool = False
     only_lead_can_change_status: bool = False
+    is_paused: bool = False
+    paused_reason: str | None = None
     max_agents: int = Field(default=1, ge=0)
 
 

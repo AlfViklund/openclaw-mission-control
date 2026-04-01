@@ -66,6 +66,13 @@ class MissionControlClient:
         data = await self._get("/api/v1/boards")
         return data.get("items", [])
 
+    async def panic_board(self, board_id: str, reason: str | None = None) -> dict:
+        params = {"reason": reason} if reason else None
+        return await self._post(f"/api/v1/boards/{board_id}/panic", params=params)
+
+    async def resume_board(self, board_id: str) -> dict:
+        return await self._post(f"/api/v1/boards/{board_id}/resume")
+
     # -- Tasks --
 
     async def list_tasks(self, board_id: str) -> list[dict]:
@@ -136,6 +143,16 @@ class MissionControlClient:
 
     async def list_agents(self) -> list[dict]:
         data = await self._get("/api/v1/agents")
+        return data.get("items", [])
+
+    async def wake_agent(self, agent_id: str) -> dict:
+        return await self._post(f"/api/v1/watchdog/agents/{agent_id}/wake")
+
+    async def get_escalations(self) -> dict:
+        return await self._get("/api/v1/watchdog/escalations")
+
+    async def list_failed_build_runs(self) -> list[dict]:
+        data = await self._get("/api/v1/runs", params={"status": "failed", "stage": "build"})
         return data.get("items", [])
 
     # -- QA --

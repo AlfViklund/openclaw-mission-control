@@ -32,7 +32,7 @@ async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
     now = utcnow()
     offline_transitions = []
 
-    agents = await Agent.objects.filter_by(status="online").all(session)
+    agents = await Agent.objects.filter(col(Agent.status).in_(["online", "idle", "dormant"])).all(session)
 
     for agent in agents:
         if not agent.last_seen_at:
@@ -42,6 +42,10 @@ async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
         interval_str = hb_config.get("every", "10m")
         interval_minutes = _parse_interval(interval_str)
         tolerance = interval_minutes * DEFAULT_MISSING_TOLERANCE_MULTIPLIER
+        if agent.status == "idle":
+            tolerance *= 3
+        elif agent.status == "dormant":
+            tolerance *= 12
 
         missed = now - agent.last_seen_at
         if missed > timedelta(minutes=tolerance):

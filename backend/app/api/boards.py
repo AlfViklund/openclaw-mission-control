@@ -600,6 +600,27 @@ async def update_board(
     return updated
 
 
+@router.post("/{board_id}/panic", response_model=BoardRead)
+async def panic_board(
+    reason: str | None = Query(default=None),
+    session: AsyncSession = SESSION_DEP,
+    board: Board = BOARD_USER_WRITE_DEP,
+) -> Board:
+    """Pause pipeline execution for a board."""
+    payload = BoardUpdate(is_paused=True, paused_reason=reason or "panic")
+    return await _apply_board_update(payload=payload, session=session, board=board)
+
+
+@router.post("/{board_id}/resume", response_model=BoardRead)
+async def resume_board(
+    session: AsyncSession = SESSION_DEP,
+    board: Board = BOARD_USER_WRITE_DEP,
+) -> Board:
+    """Resume pipeline execution for a paused board."""
+    payload = BoardUpdate(is_paused=False, paused_reason=None)
+    return await _apply_board_update(payload=payload, session=session, board=board)
+
+
 @router.delete("/{board_id}", response_model=OkResponse)
 async def delete_board(
     session: AsyncSession = SESSION_DEP,

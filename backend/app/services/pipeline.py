@@ -66,6 +66,10 @@ class PipelineService:
         if not task:
             raise ValueError(f"Task {task_id} not found")
 
+        board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
+        if board and board.is_paused:
+            raise ValueError(f"Board '{board.name}' is paused. Resume it before executing pipeline stages.")
+
         if not agent_id and task.assigned_agent_id:
             agent_id = task.assigned_agent_id
 
@@ -260,7 +264,7 @@ class PipelineService:
         if runtime == "acp":
             if agent is None or task.board_id is None:
                 raise ValueError("ACP runtime requires an assigned agent and board context")
-            board = await Board.objects.by_id(task.board_id).first(self._session)
+            board = board or await Board.objects.by_id(task.board_id).first(self._session)
             if board is None or not agent.openclaw_session_id:
                 raise ValueError("ACP runtime requires gateway-backed board and active agent session")
             dispatch = GatewayDispatchService(self._session)
