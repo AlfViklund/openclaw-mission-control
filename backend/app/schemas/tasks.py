@@ -86,6 +86,13 @@ class TaskRead(TaskBase):
     tags: list[TagRef] = Field(default_factory=list)
     custom_field_values: TaskCustomFieldValues | None = None
 
+    # Planner metadata fields
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    estimate: str | None = None
+    suggested_agent_role: str | None = None
+    planner_task_id: str | None = None
+    epic_id: str | None = None
+
 
 class TaskCommentCreate(SQLModel):
     """Payload for creating a task comment."""

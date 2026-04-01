@@ -99,11 +99,12 @@ async def generate_backlog_from_text(
     spec_text: str,
     max_tasks: int = 50,
     created_by: UUID | None = None,
+    force: bool = False,
 ) -> PlannerOutput:
     """Generate a backlog from raw spec text.
 
-    This is the core generation logic. The caller is responsible for
-    obtaining the spec text (from artifact storage, Telegram, etc.).
+    Args:
+        force: If True, delete existing draft and regenerate.
     """
     board = await Board.objects.by_id(board_id).first(session)
     if not board:
@@ -116,7 +117,11 @@ async def generate_backlog_from_text(
         )
     ).first()
     if existing:
-        return existing
+        if force:
+            await session.delete(existing)
+            await session.commit()
+        else:
+            return existing
 
     planner_output = PlannerOutput(
         board_id=board_id,
@@ -200,6 +205,7 @@ async def generate_backlog(
     board_id: UUID,
     max_tasks: int = 50,
     created_by: UUID | None = None,
+    force: bool = False,
 ) -> PlannerOutput:
     """Generate a backlog from a spec artifact.
 
@@ -222,6 +228,7 @@ async def generate_backlog(
         spec_text=spec_text,
         max_tasks=max_tasks,
         created_by=created_by,
+        force=force,
     )
 
 
@@ -395,6 +402,25 @@ async def apply_planner_output(
                     depends_on_task_id=id_map[dep_id],
                 )
                 session.add(dep)
+
+        tags = task_data.get("tags", [])
+        if tags and planner_output.board_id:
+            from app.models.tags import Tag
+            from app.models.tag_assignments import TagAssignment
+            for tag_name in tags:
+                tag = await Tag.objects.filter_by(
+                    board_id=planner_output.board_id,
+                    name=tag_name,
+                ).first(session)
+                if not tag:
+                    tag = Tag(
+                        board_id=planner_output.board_id,
+                        name=tag_name,
+                        color="blue",
+                    )
+                    session.add(tag)
+                    await session.flush()
+                session.add(TagAssignment(task_id=new_id, tag_id=tag.id))
 
     planner_output.status = "applied"
     planner_output.applied_at = utcnow()

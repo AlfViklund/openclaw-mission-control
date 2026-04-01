@@ -79,8 +79,8 @@ async def cmd_status(message: Message, state: FSMContext) -> None:
         s = t.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
 
-    blocked = sum(1 for t in tasks if t.get("blocked_by"))
-    online_agents = sum(1 for a in agents if a.get("status") == "online")
+    blocked = sum(1 for t in tasks if t.get("is_blocked"))
+    online_agents = sum(1 for a in agents if a.get("status") == "online" and a.get("board_id") == board_id)
 
     text = f"📊 *Статус: {board_name}*\n\n"
     text += f"*Задачи:* {len(tasks)}\n"

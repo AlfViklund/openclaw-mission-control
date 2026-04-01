@@ -44,6 +44,7 @@ USER_DEP = Depends(require_user)
 @router.post("/generate", response_model=PlannerOutputRead, status_code=status.HTTP_201_CREATED)
 async def generate_backlog_endpoint(
     payload: PlannerGenerateRequest,
+    force: bool = Query(default=False, description="Force regenerate even if draft exists"),
     session: AsyncSession = SESSION_DEP,
     user: ActorContext = USER_DEP,
 ) -> PlannerOutput:
@@ -60,6 +61,7 @@ async def generate_backlog_endpoint(
             board_id=artifact.board_id,
             max_tasks=payload.max_tasks,
             created_by=user.user.id if user.user else None,
+            force=force,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

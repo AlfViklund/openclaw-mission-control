@@ -42,7 +42,7 @@ async def cmd_approvals(message: Message, state: FSMContext) -> None:
         task_id = str(approval.get("task_id") or "N/A")[:8]
         text = f"🔔 *Approval #{str(approval['id'])[:8]}*\n"
         text += f"Task: `{task_id}...`\n"
-        text += f"Reason: {approval.get('reason', 'N/A')}\n"
+        text += f"Reason: {approval.get('payload', {}).get('reason', approval.get('reason', 'N/A'))}\n"
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

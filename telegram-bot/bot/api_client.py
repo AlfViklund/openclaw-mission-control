@@ -84,7 +84,7 @@ class MissionControlClient:
     # -- Runs --
 
     async def list_runs(self, task_id: str) -> list[dict]:
-        data = await self._get("/api/v1/runs/by-task", params={"task_id": task_id})
+        data = await self._get(f"/api/v1/runs/by-task/{task_id}")
         return data.get("items", [])
 
     # -- Pipeline --
