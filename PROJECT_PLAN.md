@@ -20,11 +20,11 @@ Self-hosted система разработки продукта поверх Op
 | 4. Pipeline Orchestration | ✅ Complete | 100% |
 | 5. QA Agent & Playwright | ✅ Complete | 100% |
 | 6. Telegram Interface | ✅ Complete | 100% |
-| 7. Agent Role Templates | ⏳ Pending | 0% |
-| 8. Reliability & Watchdog | ⏳ Pending | 0% |
-| 9. Polish & Documentation | ⏳ Pending | 0% |
+| 7. Agent Role Templates | ✅ Complete | 100% |
+| 8. Reliability & Watchdog | ✅ Complete | 100% |
+| 9. Polish & Documentation | 🔄 In Progress | 70% |
 
-**Общий прогресс: ~60%**
+**Общий прогресс: ~85%**
 
 ---
 

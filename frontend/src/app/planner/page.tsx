@@ -40,8 +40,14 @@ import {
 
 interface Artifact {
   id: string;
+  board_id?: string;
   filename: string;
   type: string;
+}
+
+interface Board {
+  id: string;
+  name: string;
 }
 
 interface PlannerTask {
@@ -102,9 +108,36 @@ async function fetchSpecArtifacts(boardId?: string): Promise<Artifact[]> {
   return data.items || [];
 }
 
+async function fetchBoards(): Promise<Board[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch boards");
+  const data = await res.json();
+  return data.items || [];
+}
+
 async function generateBacklog(artifactId: string): Promise<PlannerOutput> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/planner/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ artifact_id: artifactId, max_tasks: 50 }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Generation failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+async function regenerateBacklog(artifactId: string): Promise<PlannerOutput> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/generate?force=true`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -263,6 +296,8 @@ function buildFlowElements(tasks: PlannerTask[], epics: { id: string; title: str
 
 export default function PlannerPage() {
   const { isSignedIn } = useAuth();
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("");
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [plannerOutputs, setPlannerOutputs] = useState<PlannerOutput[]>([]);
   const [selectedOutput, setSelectedOutput] = useState<PlannerOutput | null>(null);
@@ -280,35 +315,71 @@ export default function PlannerPage() {
     setIsLoading(true);
     setError(null);
     try {
+      const nextBoards = await fetchBoards();
+      setBoards(nextBoards);
+
+      const boardId = selectedBoardId || localStorage.getItem("clawdev_active_board_id") || nextBoards[0]?.id || "";
+      if (boardId && boardId !== selectedBoardId) {
+        setSelectedBoardId(boardId);
+      }
+
       const [specs, outputs] = await Promise.all([
-        fetchSpecArtifacts(),
-        fetchPlannerOutputs(),
+        fetchSpecArtifacts(boardId || undefined),
+        fetchPlannerOutputs(boardId || undefined),
       ]);
       setArtifacts(specs);
       setPlannerOutputs(outputs);
+      if (boardId) {
+        localStorage.setItem("clawdev_active_board_id", boardId);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadData();
   }, [isSignedIn, loadData]);
 
-  const handleGenerate = async () => {
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const intervalId = window.setInterval(() => {
+      void loadData();
+    }, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [isSignedIn, loadData]);
+
+  const handleGenerate = async (force = false) => {
     if (!selectedArtifact) return;
     setIsGenerating(true);
     setError(null);
     try {
-      const output = await generateBacklog(selectedArtifact);
+      const output = force
+        ? await regenerateBacklog(selectedArtifact)
+        : await generateBacklog(selectedArtifact);
       setShowGenerateDialog(false);
       setSelectedArtifact("");
       await loadData();
       setSelectedOutput(output);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleRegenerateSelected = async () => {
+    if (!selectedOutput) return;
+    setIsGenerating(true);
+    setError(null);
+    try {
+      const output = await regenerateBacklog(selectedOutput.artifact_id);
+      await loadData();
+      setSelectedOutput(output);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Regeneration failed");
     } finally {
       setIsGenerating(false);
     }
@@ -362,14 +433,34 @@ export default function PlannerPage() {
         description="Generate structured backlogs from specifications with dependency graphs."
         headerActions={
           <div className="flex items-center gap-2">
+            <select
+              value={selectedBoardId}
+              onChange={(e) => setSelectedBoardId(e.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Select project</option>
+              {boards.map((board) => (
+                <option key={board.id} value={board.id}>{board.name}</option>
+              ))}
+            </select>
             <button
               onClick={() => setShowGenerateDialog(true)}
               className={buttonVariants({ size: "md", variant: "primary" })}
-              disabled={artifacts.length === 0}
+              disabled={artifacts.length === 0 || !selectedBoardId}
             >
               <GitBranch className="mr-2 h-4 w-4" />
               Generate Backlog
             </button>
+            {selectedOutput?.status === "draft" && (
+              <button
+                onClick={handleRegenerateSelected}
+                className={buttonVariants({ size: "md", variant: "outline" })}
+                disabled={isGenerating}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Regenerate
+              </button>
+            )}
           </div>
         }
         stickyHeader

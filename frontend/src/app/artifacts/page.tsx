@@ -47,6 +47,16 @@ interface Artifact {
   created_by: string | null;
 }
 
+interface Board {
+  id: string;
+  name: string;
+}
+
+interface TaskOption {
+  id: string;
+  title: string;
+}
+
 interface ListResponse {
   items: Artifact[];
   total: number;
@@ -120,6 +130,24 @@ async function fetchArtifacts(
   };
 }
 
+async function fetchBoards(baseUrl: string, token: string): Promise<Board[]> {
+  const res = await fetch(`${baseUrl}/api/v1/boards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch boards: ${res.status}`);
+  const data = await res.json();
+  return data.items ?? [];
+}
+
+async function fetchBoardTasks(baseUrl: string, token: string, boardId: string): Promise<TaskOption[]> {
+  const res = await fetch(`${baseUrl}/api/v1/boards/${boardId}/tasks`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch tasks: ${res.status}`);
+  const data = await res.json();
+  return data.items ?? [];
+}
+
 async function uploadArtifact(
   baseUrl: string,
   token: string,
@@ -165,6 +193,9 @@ async function fetchPreview(baseUrl: string, token: string, artifactId: string):
 
 export default function ArtifactsPage() {
   const { isSignedIn } = useAuth();
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [boardTasks, setBoardTasks] = useState<TaskOption[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("");
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -188,6 +219,21 @@ export default function ArtifactsPage() {
   const [uploadType, setUploadType] = useState<ArtifactType>("spec");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
+  const refreshBoardTasks = useCallback(async (boardId: string) => {
+    if (!boardId) {
+      setBoardTasks([]);
+      return;
+    }
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
+      const token = localStorage.getItem("mc_auth_token") || "";
+      const tasks = await fetchBoardTasks(baseUrl, token, boardId);
+      setBoardTasks(tasks);
+    } catch {
+      setBoardTasks([]);
+    }
+  }, []);
+
   const loadArtifacts = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -199,21 +245,48 @@ export default function ArtifactsPage() {
         setIsLoading(false);
         return;
       }
+      const nextBoards = await fetchBoards(baseUrl, token);
+      setBoards(nextBoards);
+
+      const boardId = selectedBoardId || localStorage.getItem("clawdev_active_board_id") || nextBoards[0]?.id || "";
+      if (boardId && boardId !== selectedBoardId) {
+        setSelectedBoardId(boardId);
+      }
+
       const filters: Record<string, string> = {};
-      if (filterBoardId) filters.board_id = filterBoardId;
+      if (boardId) filters.board_id = boardId;
       if (filterType) filters.type = filterType;
       const data = await fetchArtifacts(baseUrl, token, filters);
       setArtifacts(data.items);
+      setFilterBoardId(boardId);
+      if (boardId) {
+        localStorage.setItem("clawdev_active_board_id", boardId);
+        await refreshBoardTasks(boardId);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load artifacts");
     } finally {
       setIsLoading(false);
     }
-  }, [filterBoardId, filterType]);
+  }, [filterType, refreshBoardTasks, selectedBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadArtifacts();
   }, [isSignedIn, loadArtifacts]);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const intervalId = window.setInterval(() => {
+      void loadArtifacts();
+    }, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [isSignedIn, loadArtifacts]);
+
+  useEffect(() => {
+    if (showUploadDialog && selectedBoardId) {
+      setUploadBoardId(selectedBoardId);
+    }
+  }, [selectedBoardId, showUploadDialog]);
 
   const handleUpload = async () => {
     if (!selectedFile || !uploadBoardId) return;
@@ -362,14 +435,20 @@ export default function ArtifactsPage() {
                 </select>
               </div>
               <div className="flex-1">
-                <label className="block text-xs font-medium text-slate-500 mb-1">Board ID</label>
-                <input
-                  type="text"
-                  value={filterBoardId}
-                  onChange={(e) => setFilterBoardId(e.target.value)}
-                  placeholder="Filter by board UUID..."
+                <label className="block text-xs font-medium text-slate-500 mb-1">Project</label>
+                <select
+                  value={selectedBoardId}
+                  onChange={(e) => {
+                    setSelectedBoardId(e.target.value);
+                    setFilterBoardId(e.target.value);
+                  }}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                >
+                  <option value="">All projects</option>
+                  {boards.map((board) => (
+                    <option key={board.id} value={board.id}>{board.name}</option>
+                  ))}
+                </select>
               </div>
               <div className="flex items-end">
                 <button
@@ -486,24 +565,33 @@ export default function ArtifactsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Board ID *</label>
-              <input
-                type="text"
+              <label className="block text-sm font-medium text-slate-700 mb-1">Project *</label>
+              <select
                 value={uploadBoardId}
-                onChange={(e) => setUploadBoardId(e.target.value)}
-                placeholder="Board UUID"
+                onChange={(e) => {
+                  setUploadBoardId(e.target.value);
+                  void refreshBoardTasks(e.target.value);
+                }}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              >
+                <option value="">Select project</option>
+                {boards.map((board) => (
+                  <option key={board.id} value={board.id}>{board.name}</option>
+                ))}
+              </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Task ID (optional)</label>
-              <input
-                type="text"
+              <label className="block text-sm font-medium text-slate-700 mb-1">Task (optional)</label>
+              <select
                 value={uploadTaskId}
                 onChange={(e) => setUploadTaskId(e.target.value)}
-                placeholder="Task UUID"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              >
+                <option value="">No linked task</option>
+                {boardTasks.map((task) => (
+                  <option key={task.id} value={task.id}>{task.title}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>

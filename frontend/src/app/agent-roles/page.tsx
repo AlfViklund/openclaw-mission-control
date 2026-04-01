@@ -28,6 +28,16 @@ import { ROLES } from "@/components/agents/RoleSelector";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
+interface BoardOption {
+  id: string;
+  name: string;
+}
+
+interface GatewayOption {
+  id: string;
+  name: string;
+}
+
 function getAuthToken(): string {
   return localStorage.getItem("mc_auth_token") || "";
 }
@@ -48,6 +58,26 @@ async function fetchAgents(): Promise<any[]> {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error("Failed to fetch agents");
+  const data = await res.json();
+  return data.items || [];
+}
+
+async function fetchBoards(): Promise<BoardOption[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch boards");
+  const data = await res.json();
+  return data.items || [];
+}
+
+async function fetchGateways(): Promise<GatewayOption[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/gateways`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch gateways");
   const data = await res.json();
   return data.items || [];
 }
@@ -78,6 +108,9 @@ const ROLE_ICONS: Record<string, typeof Target> = {
 
 export default function AgentRolesPage() {
   const { isSignedIn } = useAuth();
+  const [boards, setBoards] = useState<BoardOption[]>([]);
+  const [gateways, setGateways] = useState<GatewayOption[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("");
   const [agents, setAgents] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,17 +123,35 @@ export default function AgentRolesPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [agentsData] = await Promise.all([fetchAgents()]);
-      setAgents(agentsData);
+      const [agentsData, boardsData, gatewaysData] = await Promise.all([
+        fetchAgents(),
+        fetchBoards(),
+        fetchGateways(),
+      ]);
+      setBoards(boardsData);
+      setGateways(gatewaysData);
+      const boardId = selectedBoardId || localStorage.getItem("clawdev_active_board_id") || boardsData[0]?.id || "";
+      if (boardId && boardId !== selectedBoardId) {
+        setSelectedBoardId(boardId);
+      }
+      setAgents(boardId ? agentsData.filter((agent) => agent.board_id === boardId) : agentsData);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadData();
+  }, [isSignedIn, loadData]);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const intervalId = window.setInterval(() => {
+      void loadData();
+    }, 30000);
+    return () => window.clearInterval(intervalId);
   }, [isSignedIn, loadData]);
 
   const handleProvision = async () => {
@@ -139,13 +190,28 @@ export default function AgentRolesPage() {
         title="Agent Roles"
         description="Manage agent roles, view team composition, and provision new agents."
         headerActions={
-          <button
-            onClick={() => setShowProvisionDialog(true)}
-            className={buttonVariants({ size: "md", variant: "primary" })}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Provision Team
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedBoardId}
+              onChange={(e) => {
+                setSelectedBoardId(e.target.value);
+                localStorage.setItem("clawdev_active_board_id", e.target.value);
+              }}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">All projects</option>
+              {boards.map((board) => (
+                <option key={board.id} value={board.id}>{board.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setShowProvisionDialog(true)}
+              className={buttonVariants({ size: "md", variant: "primary" })}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Provision Team
+            </button>
+          </div>
         }
         stickyHeader
       >
@@ -273,25 +339,31 @@ export default function AgentRolesPage() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Board ID *</label>
-                <input
-                  type="text"
-                  value={boardId}
-                  onChange={(e) => setBoardId(e.target.value)}
-                  placeholder="Board UUID"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Gateway ID *</label>
-                <input
-                  type="text"
-                  value={gatewayId}
-                  onChange={(e) => setGatewayId(e.target.value)}
-                  placeholder="Gateway UUID"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Project *</label>
+              <select
+                value={boardId}
+                onChange={(e) => setBoardId(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Select project</option>
+                {boards.map((board) => (
+                  <option key={board.id} value={board.id}>{board.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Gateway *</label>
+              <select
+                value={gatewayId}
+                onChange={(e) => setGatewayId(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Select gateway</option>
+                {gateways.map((gateway) => (
+                  <option key={gateway.id} value={gateway.id}>{gateway.name}</option>
+                ))}
+              </select>
+            </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-2">

@@ -13,6 +13,7 @@ from app.models.runs import Run
 from app.models.tasks import Task
 from app.services.pipeline_validation import validate_pipeline_stage
 from app.services.runs import complete_run, create_run, start_run
+from app.services.runtime_adapters.base import RunResult
 
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -31,6 +32,12 @@ STAGE_PROMPTS = {
     "plan": "Create a detailed implementation plan. Do not modify files.",
     "build": "Implement the task according to the plan. Make file changes and run checks.",
     "test": "Run tests to verify the implementation. Report failures.",
+}
+
+STAGE_TO_RUNTIME_AGENT = {
+    "plan": "plan",
+    "build": "build",
+    "test": "build",
 }
 
 
@@ -62,6 +69,14 @@ class PipelineService:
         if not agent_id and task.assigned_agent_id:
             agent_id = task.assigned_agent_id
 
+        if not agent_id and task.board_id is not None:
+            lead_agent = await Agent.objects.filter_by(
+                board_id=task.board_id,
+                is_board_lead=True,
+            ).first(self._session)
+            if lead_agent is not None:
+                agent_id = lead_agent.id
+
         agent = None
         if agent_id:
             agent = await Agent.objects.by_id(agent_id).first(self._session)
@@ -77,50 +92,23 @@ class PipelineService:
 
         run = await start_run(self._session, run)
 
-        task.status = STAGE_TO_TASK_STATUS.get(stage, "in_progress")
-        if task.in_progress_at is None:
-            task.in_progress_at = utcnow()
-        self._session.add(task)
-        await self._session.commit()
+        if stage in ("plan", "build"):
+            task.status = STAGE_TO_TASK_STATUS.get(stage, "in_progress")
+            if task.in_progress_at is None:
+                task.in_progress_at = utcnow()
+            self._session.add(task)
+            await self._session.commit()
 
         try:
-            from app.services.runtime_adapters.factory import RuntimeAdapterFactory
-
-            adapter_kwargs: dict[str, Any] = {"runtime": runtime}
-
-            if runtime == "acp" and agent:
-                from app.services.openclaw.gateway_dispatch import GatewayDispatchService
-
-                board = None
-                if task.board_id:
-                    board = await Board.objects.by_id(task.board_id).first(self._session)
-                if board and agent.openclaw_session_id:
-                    dispatch = GatewayDispatchService(self._session)
-                    gateway, config = await dispatch.require_gateway_config_for_board(board)
-                    adapter_kwargs.update({
-                        "session": self._session,
-                        "dispatch": dispatch,
-                        "gateway_config": config,
-                        "session_key": agent.openclaw_session_id,
-                        "agent_name": agent.name,
-                    })
-                else:
-                    raise ValueError(
-                        f"ACP runtime requires agent with active session and board with gateway. "
-                        f"Agent '{agent.name}' session_id={agent.openclaw_session_id}, board_id={task.board_id}"
-                    )
-            elif runtime == "opencode_cli":
-                adapter_kwargs["workdir"] = None
-            elif runtime == "openrouter":
-                adapter_kwargs["api_key"] = None
-
-            adapter = RuntimeAdapterFactory.create(**adapter_kwargs)
-
-            task_prompt = prompt or STAGE_PROMPTS.get(stage, f"Execute {stage} for: {task.title}")
-            if task.description:
-                task_prompt += f"\n\nTask: {task.description}"
-
-            result = await adapter.spawn(prompt=task_prompt, model=model)
+            result = await self._execute_run(
+                run=run,
+                task=task,
+                agent=agent,
+                runtime=runtime,
+                stage=stage,
+                model=model,
+                prompt=prompt,
+            )
 
             await complete_run(
                 self._session,
@@ -132,7 +120,8 @@ class PipelineService:
             )
 
             if result.success:
-                await self._auto_run_next_stage(run)
+                await self._update_task_after_success(task=task, stage=stage)
+                await self._auto_run_next_stage(run.id)
 
             return {
                 "run_id": str(run.id),
@@ -166,8 +155,11 @@ class PipelineService:
                 ],
             }
 
-    async def _auto_run_next_stage(self, run: Run) -> dict | None:
+    async def _auto_run_next_stage(self, run_id: UUID) -> dict | None:
         """Execute the next pipeline stage after a successful run."""
+        run = await Run.objects.by_id(run_id).first(self._session)
+        if run is None or run.status != "succeeded":
+            return None
         if run.stage not in STAGE_ORDER:
             return None
 
@@ -188,40 +180,25 @@ class PipelineService:
         next_run = await start_run(self._session, next_run)
 
         task = await Task.objects.by_id(run.task_id).first(self._session)
-        if task:
+        agent = await Agent.objects.by_id(run.agent_id).first(self._session) if run.agent_id else None
+        if task and next_stage in ("plan", "build"):
             task.status = STAGE_TO_TASK_STATUS.get(next_stage, "in_progress")
             self._session.add(task)
             await self._session.commit()
 
         try:
-            from app.services.runtime_adapters.factory import RuntimeAdapterFactory
+            if task is None:
+                raise ValueError(f"Task {run.task_id} not found for auto-next stage")
 
-            adapter_kwargs: dict[str, Any] = {"runtime": run.runtime}
-
-            if run.runtime == "acp" and run.agent_id:
-                from app.services.openclaw.gateway_dispatch import GatewayDispatchService
-
-                agent = await Agent.objects.by_id(run.agent_id).first(self._session)
-                if agent and task and task.board_id:
-                    board = await Board.objects.by_id(task.board_id).first(self._session)
-                    if board and agent.openclaw_session_id:
-                        dispatch = GatewayDispatchService(self._session)
-                        gateway, config = await dispatch.require_gateway_config_for_board(board)
-                        adapter_kwargs.update({
-                            "session": self._session,
-                            "dispatch": dispatch,
-                            "gateway_config": config,
-                            "session_key": agent.openclaw_session_id,
-                            "agent_name": agent.name,
-                        })
-
-            adapter = RuntimeAdapterFactory.create(**adapter_kwargs)
-
-            task_prompt = STAGE_PROMPTS.get(next_stage, f"Execute {next_stage}")
-            if task and task.description:
-                task_prompt += f"\n\nTask: {task.description}"
-
-            result = await adapter.spawn(prompt=task_prompt, model=run.model)
+            result = await self._execute_run(
+                run=next_run,
+                task=task,
+                agent=agent,
+                runtime=run.runtime,
+                stage=next_stage,
+                model=run.model,
+                prompt=None,
+            )
 
             await complete_run(
                 self._session,
@@ -233,7 +210,8 @@ class PipelineService:
             )
 
             if result.success:
-                return await self._auto_run_next_stage(next_run)
+                await self._update_task_after_success(task=task, stage=next_stage)
+                return await self._auto_run_next_stage(next_run.id)
 
             return {
                 "run_id": str(next_run.id),
@@ -257,3 +235,75 @@ class PipelineService:
                 "status": "failed",
                 "error": str(exc),
             }
+
+    async def auto_run_next_stage(self, run_id: UUID) -> dict | None:
+        """Public wrapper used by the API to auto-trigger the next stage."""
+        return await self._auto_run_next_stage(run_id)
+
+    async def _execute_run(
+        self,
+        *,
+        run: Run,
+        task: Task,
+        agent: Agent | None,
+        runtime: str,
+        stage: str,
+        model: str | None,
+        prompt: str | None,
+    ) -> RunResult:
+        from app.services.openclaw.gateway_dispatch import GatewayDispatchService
+        from app.services.openclaw.provisioning import _workspace_path as gateway_workspace_path
+        from app.services.runtime_adapters.factory import RuntimeAdapterFactory
+
+        adapter_kwargs: dict[str, Any] = {"runtime": runtime}
+
+        if runtime == "acp":
+            if agent is None or task.board_id is None:
+                raise ValueError("ACP runtime requires an assigned agent and board context")
+            board = await Board.objects.by_id(task.board_id).first(self._session)
+            if board is None or not agent.openclaw_session_id:
+                raise ValueError("ACP runtime requires gateway-backed board and active agent session")
+            dispatch = GatewayDispatchService(self._session)
+            _gateway, config = await dispatch.require_gateway_config_for_board(board)
+            adapter_kwargs.update(
+                {
+                    "session": self._session,
+                    "dispatch": dispatch,
+                    "gateway_config": config,
+                    "session_key": agent.openclaw_session_id,
+                    "agent_name": agent.name,
+                }
+            )
+        elif runtime == "opencode_cli":
+            if agent is None:
+                raise ValueError("OpenCode CLI runtime requires an assigned agent")
+            board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
+            gateway = None
+            workdir = None
+            if board is not None and board.gateway_id:
+                from app.models.gateways import Gateway
+
+                gateway = await Gateway.objects.by_id(board.gateway_id).first(self._session)
+            if gateway is not None:
+                workdir = gateway_workspace_path(agent, gateway.workspace_root)
+            adapter_kwargs["workdir"] = workdir
+        elif runtime == "openrouter":
+            adapter_kwargs["api_key"] = None
+
+        adapter = RuntimeAdapterFactory.create(**adapter_kwargs)
+
+        task_prompt = prompt or STAGE_PROMPTS.get(stage, f"Execute {stage} for: {task.title}")
+        if task.description:
+            task_prompt += f"\n\nTask: {task.description}"
+
+        spawn_kwargs: dict[str, Any] = {"prompt": task_prompt, "model": model}
+        if runtime == "opencode_cli":
+            spawn_kwargs["agent"] = STAGE_TO_RUNTIME_AGENT.get(stage, "build")
+
+        return await adapter.spawn(**spawn_kwargs)
+
+    async def _update_task_after_success(self, *, task: Task, stage: str) -> None:
+        if stage == "test":
+            task.status = "review"
+            self._session.add(task)
+            await self._session.commit()

@@ -80,14 +80,15 @@ async def cmd_status(message: Message, state: FSMContext) -> None:
         status_counts[s] = status_counts.get(s, 0) + 1
 
     blocked = sum(1 for t in tasks if t.get("is_blocked"))
-    online_agents = sum(1 for a in agents if a.get("status") == "online" and a.get("board_id") == board_id)
+    board_agents = [a for a in agents if a.get("board_id") == board_id]
+    online_agents = sum(1 for a in board_agents if a.get("status") == "online")
 
     text = f"📊 *Статус: {board_name}*\n\n"
     text += f"*Задачи:* {len(tasks)}\n"
     for s, c in sorted(status_counts.items()):
         text += f"  {s}: {c}\n"
     text += f"\n*Блокеры:* {blocked}"
-    text += f"\n*Агенты:* {online_agents}/{len(agents)} online"
+    text += f"\n*Агенты:* {online_agents}/{len(board_agents)} online"
     text += f"\n*Pending approvals:* {len(approvals)}"
 
     await message.answer(text, parse_mode="Markdown")
@@ -123,10 +124,28 @@ async def cmd_task(message: Message, state: FSMContext) -> None:
     text += f"ID: `{task_id[:8]}...`\n"
     text += f"Status: *{task.get('status', 'unknown')}*\n"
     text += f"Priority: {task.get('priority', 'medium')}\n"
+    if task.get("estimate"):
+        text += f"Estimate: {task.get('estimate')}\n"
+    if task.get("suggested_agent_role"):
+        text += f"Suggested role: {task.get('suggested_agent_role')}\n"
+    if task.get("epic_id"):
+        text += f"Epic: `{task.get('epic_id')}`\n"
 
     if task.get("description"):
         desc = task["description"][:200]
         text += f"\n{desc}{'...' if len(task['description']) > 200 else ''}\n"
+
+    acceptance_criteria = task.get("acceptance_criteria") or []
+    if acceptance_criteria:
+        text += "\n*Acceptance criteria:*\n"
+        for item in acceptance_criteria[:5]:
+            text += f"  • {item}\n"
+
+    tags = task.get("tags") or []
+    if tags:
+        tag_labels = ", ".join(tag.get("name", "") for tag in tags if tag.get("name"))
+        if tag_labels:
+            text += f"\n*Tags:* {tag_labels}\n"
 
     if runs:
         text += "\n*Pipeline:*\n"
