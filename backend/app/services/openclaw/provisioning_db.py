@@ -871,8 +871,14 @@ class AgentLifecycleService(OpenClawDBService):
             return agent
         if agent.last_seen_at is None:
             agent.status = "provisioning"
-        elif now - agent.last_seen_at > OFFLINE_AFTER:
-            agent.status = "offline"
+        else:
+            tolerated = OFFLINE_AFTER
+            if agent.status == "idle":
+                tolerated = OFFLINE_AFTER * 3
+            elif agent.status == "dormant":
+                tolerated = OFFLINE_AFTER * 12
+            if now - agent.last_seen_at > tolerated:
+                agent.status = "offline"
         return agent
 
     @classmethod

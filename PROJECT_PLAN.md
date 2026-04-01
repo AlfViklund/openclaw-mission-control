@@ -211,6 +211,8 @@ Self-hosted система разработки продукта поверх Op
 - Board panic/resume: pipeline может быть поставлен на паузу на уровне доски
 - Heartbeat optimization: idle/dormant режимы для уменьшения расхода токенов на пустых досках
 - Telegram control actions: `/panic`, `/resume`, `/nudge` теперь делают реальные backend-вызовы
+- QA execution path: test-stage выполняется через QA service вместо generic build-like path
+- Notification polling: бот сам обнаруживает approvals, failed builds и escalations
 
 ---
 

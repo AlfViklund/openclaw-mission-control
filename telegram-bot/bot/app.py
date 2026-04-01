@@ -32,6 +32,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_notification_redis = None
+
 
 def create_dispatcher() -> Dispatcher:
     """Create and configure the bot dispatcher."""
@@ -56,8 +58,38 @@ def create_dispatcher() -> Dispatcher:
     return dp
 
 
+async def _notification_seen(key: str) -> bool:
+    global _notification_redis
+    if _notification_redis is None:
+        return False
+    return bool(await _notification_redis.sismember("clawdev:notifications:seen", key))
+
+
+async def _mark_notification_seen(key: str) -> None:
+    global _notification_redis
+    if _notification_redis is None:
+        return
+    await _notification_redis.sadd("clawdev:notifications:seen", key)
+
+
+async def _init_notification_redis() -> None:
+    global _notification_redis
+    if _notification_redis is not None:
+        return
+    try:
+        from redis.asyncio import Redis
+
+        _notification_redis = Redis(host="redis", port=6379, db=2)
+        await _notification_redis.ping()
+        logger.info("Using Redis notification dedupe store")
+    except Exception:
+        _notification_redis = None
+        logger.info("Using in-memory notification dedupe semantics")
+
+
 async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     """Poll backend for noteworthy events and push them to Telegram."""
+    await _init_notification_redis()
     seen_approvals: set[str] = set()
     seen_failed_runs: set[str] = set()
     seen_escalations: set[str] = set()
@@ -69,23 +101,26 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                 approvals = await api.list_approvals(board.get("id"))
                 for approval in approvals:
                     approval_id = str(approval.get("id"))
-                    if approval_id and approval_id not in seen_approvals:
+                    if approval_id and approval_id not in seen_approvals and not await _notification_seen(f"approval:{approval_id}"):
                         seen_approvals.add(approval_id)
+                        await _mark_notification_seen(f"approval:{approval_id}")
                         await notify_approval_pending(approval)
 
             failed_builds = await api.list_failed_build_runs()
             for run in failed_builds:
                 run_id = str(run.get("id"))
-                if run_id and run_id not in seen_failed_runs:
+                if run_id and run_id not in seen_failed_runs and not await _notification_seen(f"build_failed:{run_id}"):
                     seen_failed_runs.add(run_id)
+                    await _mark_notification_seen(f"build_failed:{run_id}")
                     await notify_build_failed(run)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):
                 key = f"{event.get('type')}:{event.get('agent_id') or event.get('run_id') or event.get('task_id')}"
-                if key in seen_escalations:
+                if key in seen_escalations or await _notification_seen(f"escalation:{key}"):
                     continue
                 seen_escalations.add(key)
+                await _mark_notification_seen(f"escalation:{key}")
                 if event.get("type") == "agent_offline":
                     await notify_agent_offline(event)
         except Exception as exc:
@@ -124,6 +159,9 @@ async def main() -> None:
         notification_task.cancel()
         with suppress(Exception):
             await notification_task
+        if _notification_redis is not None:
+            with suppress(Exception):
+                await _notification_redis.aclose()
         await bot.session.close()
 
 

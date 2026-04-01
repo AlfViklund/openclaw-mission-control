@@ -41,13 +41,19 @@ jq -r '
 - Do not claim or move board tasks unless explicitly instructed by Mission Control.
 - If you have any pending `LEAD REQUEST: ASK USER` messages in OpenClaw chat, handle them promptly (see AGENTS.md).
 
+## Cheap Heartbeat First
+Before any expensive reasoning or context loading:
+1) Send a cheap check-in only.
+2) If there is no explicit high-priority gateway-main duty, exit immediately.
+3) Do not pull large memory context on empty/quiet cycles.
+
 ## Heartbeat checklist
 1) Check in immediately:
-- Use the `agent-main` heartbeat endpoint (`POST /api/v1/agent/heartbeat`).
+- Use the `agent-main` heartbeat endpoint (`POST /api/v1/agents/heartbeat`).
 - Startup check-in example:
 
 ```bash
-curl -s -X POST "{{ base_url }}/api/v1/agent/heartbeat" \
+curl -s -X POST "{{ base_url }}/api/v1/agents/heartbeat" \
   -H "X-Agent-Token: {{ auth_token }}"
 ```
 
@@ -138,7 +144,20 @@ jq -r '
 - No keepalive comments ("still working", "checking in").
 - If pre-flight fails due to 5xx/network, do not write memory or task updates.
 
-## Pre-Flight Checks (Every Heartbeat)
+## Cheap Heartbeat First
+1) Send a cheap heartbeat immediately.
+2) Evaluate wake conditions.
+3) If wake conditions are false, exit without pre-flight/context pull.
+
+## Wake Conditions
+Only run the expensive work loop if one of these is true:
+1) You have an assigned `in_progress` task.
+2) You have an assigned `inbox` task.
+3) There are pending approvals, review tasks, or unblock decisions (lead).
+4) You were explicitly mentioned, re-assigned, manually nudged, or woken.
+5) The board received a new spec/planner output or recovery event.
+
+## Pre-Flight Checks (Only After Wake Conditions Pass)
 1) Confirm `BASE_URL`, `AUTH_TOKEN`, and `BOARD_ID` from `TOOLS.md` match this workspace.
 2) Verify API access:
 - `GET {{ base_url }}/healthz`
@@ -146,7 +165,7 @@ jq -r '
 - `GET {{ base_url }}/api/v1/agent/boards/{{ board_id }}/tasks`
 3) If any check fails, stop and retry next heartbeat.
 
-## Shared Context Pull
+## Shared Context Pull (Only After Wake Conditions Pass)
 Before execution:
 - Pull current task set (`inbox`, `in_progress`, `review` as relevant).
 - Pull non-chat board memory.
@@ -155,6 +174,7 @@ Before execution:
 ## Role-Specific Loop
 {% if is_lead %}
 ### Board Lead Loop
+0) If the board is empty/quiet (no inbox, review, approvals, escalations, new specs), use idle mode and exit.
 1) Rebuild operating context from `AGENTS.md` and `MEMORY.md`.
 2) Enforce board-rule gates for status transitions and completion.
 3) Ensure approvals are resolved before external side effects and closure.
@@ -169,6 +189,13 @@ Before execution:
 - `block_status_changes_with_pending_approval`: `{{ board_rule_block_status_changes_with_pending_approval }}`
 - `only_lead_can_change_status`: `{{ board_rule_only_lead_can_change_status }}`
 - `max_agents`: `{{ board_rule_max_agents }}`
+
+### Lead Idle Mode
+If the board has no inbox/review tasks, no pending approvals, and no escalation or planning signals:
+1) Send a cheap heartbeat only.
+2) Use status `idle` for a quiet but active project.
+3) Use status `dormant` if the board is intentionally paused or parked.
+4) Do not rebuild full context or pull memory on that cycle.
 {% else %}
 ### Board Worker Loop
 1) Check in via heartbeat endpoint.
@@ -177,13 +204,6 @@ Before execution:
 3) Refresh task context and plan for the active task.
 4) Execute and post only high-signal task comment updates.
 5) Move to `review` when deliverable and evidence are ready.
-
-### Wake Conditions
-Run the expensive work loop only if one of these is true:
-1) You have an assigned `in_progress` task.
-2) You have an assigned `inbox` task.
-3) You were explicitly mentioned or re-assigned.
-4) You were manually nudged or woken.
 
 ### Idle Mode
 If no wake conditions are true:

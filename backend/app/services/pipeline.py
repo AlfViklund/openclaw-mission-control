@@ -269,6 +269,24 @@ class PipelineService:
         model: str | None,
         prompt: str | None,
     ) -> RunResult:
+        if stage == "test":
+            from app.services.qa import QAService
+
+            report, evidence_paths, success, summary = await QAService(self._session).run_tests_for_existing_run(
+                run,
+            )
+            return RunResult(
+                success=success,
+                output=summary,
+                error=None if success else summary,
+                evidence_paths=evidence_paths,
+                metadata={
+                    "qa": True,
+                    "tests_total": report.total,
+                    "tests_failed": report.failed,
+                },
+            )
+
         from app.services.openclaw.gateway_dispatch import GatewayDispatchService
         from app.services.openclaw.provisioning import _workspace_path as gateway_workspace_path
         from app.services.runtime_adapters.factory import RuntimeAdapterFactory

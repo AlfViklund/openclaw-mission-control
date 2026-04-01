@@ -19,6 +19,7 @@ import {
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useActiveBoard } from "@/lib/active-project";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +44,16 @@ interface Run {
   summary: string | null;
   error_message: string | null;
   created_at: string;
+}
+
+interface BoardOption {
+  id: string;
+  name: string;
+}
+
+interface TaskOption {
+  id: string;
+  title: string;
 }
 
 const STATUS_CONFIG: Record<string, { icon: typeof CheckCircle; color: string; bg: string; label: string }> = {
@@ -112,8 +123,31 @@ async function cancelRun(runId: string): Promise<Run> {
   return res.json();
 }
 
+async function fetchBoards(): Promise<BoardOption[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch boards");
+  const data = await res.json();
+  return data.items || [];
+}
+
+async function fetchBoardTasks(boardId: string): Promise<TaskOption[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards/${boardId}/tasks`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch board tasks");
+  const data = await res.json();
+  return data.items || [];
+}
+
 export default function RunsPage() {
   const { isSignedIn } = useAuth();
+  const [activeBoardId, setActiveBoardId] = useActiveBoard();
+  const [boards, setBoards] = useState<BoardOption[]>([]);
+  const [boardTasks, setBoardTasks] = useState<TaskOption[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -132,21 +166,40 @@ export default function RunsPage() {
     setIsLoading(true);
     setError(null);
     try {
+      const nextBoards = await fetchBoards();
+      setBoards(nextBoards);
+      const boardId = activeBoardId || nextBoards[0]?.id || "";
+      if (boardId && boardId !== activeBoardId) {
+        setActiveBoardId(boardId);
+      }
+
+      const tasks = boardId ? await fetchBoardTasks(boardId) : [];
+      setBoardTasks(tasks);
+      const taskIds = new Set(tasks.map((task) => task.id));
+
       const filters: Record<string, string> = {};
       if (filterTaskId) filters.task_id = filterTaskId;
       if (filterStage) filters.stage = filterStage;
       if (filterStatus) filters.status = filterStatus;
       const data = await fetchRuns(filters);
-      setRuns(data);
+      setRuns(boardId ? data.filter((run) => taskIds.has(run.task_id)) : data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load runs");
     } finally {
       setIsLoading(false);
     }
-  }, [filterTaskId, filterStage, filterStatus]);
+  }, [activeBoardId, filterTaskId, filterStage, filterStatus, setActiveBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadRuns();
+  }, [isSignedIn, loadRuns]);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const intervalId = window.setInterval(() => {
+      void loadRuns();
+    }, 30000);
+    return () => window.clearInterval(intervalId);
   }, [isSignedIn, loadRuns]);
 
   const handleCancel = async (run: Run) => {
@@ -186,6 +239,16 @@ export default function RunsPage() {
         description={`Tracking ${runs.length} execution run${runs.length === 1 ? "" : "s"} across all tasks.`}
         headerActions={
           <div className="flex items-center gap-2">
+            <select
+              value={activeBoardId}
+              onChange={(e) => setActiveBoardId(e.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Select project</option>
+              {boards.map((board) => (
+                <option key={board.id} value={board.id}>{board.name}</option>
+              ))}
+            </select>
             <button
               onClick={() => setShowCreateDialog(true)}
               className={buttonVariants({ size: "md", variant: "primary" })}
@@ -221,13 +284,16 @@ export default function RunsPage() {
             <option value="failed">Failed</option>
             <option value="canceled">Canceled</option>
           </select>
-          <input
-            type="text"
+          <select
             value={filterTaskId}
             onChange={(e) => setFilterTaskId(e.target.value)}
-            placeholder="Filter by task ID..."
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          >
+            <option value="">All tasks</option>
+            {boardTasks.map((task) => (
+              <option key={task.id} value={task.id}>{task.title}</option>
+            ))}
+          </select>
           <button
             onClick={loadRuns}
             className={buttonVariants({ size: "md", variant: "outline" })}
@@ -332,14 +398,17 @@ export default function RunsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Task ID *</label>
-              <input
-                type="text"
+              <label className="block text-sm font-medium text-slate-700 mb-1">Task *</label>
+              <select
                 value={createTaskId}
                 onChange={(e) => setCreateTaskId(e.target.value)}
-                placeholder="Task UUID"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              >
+                <option value="">Select task</option>
+                {boardTasks.map((task) => (
+                  <option key={task.id} value={task.id}>{task.title}</option>
+                ))}
+              </select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

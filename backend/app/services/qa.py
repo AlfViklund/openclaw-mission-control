@@ -268,6 +268,48 @@ class QAService:
             ],
         }
 
+    async def run_tests_for_existing_run(
+        self,
+        run: Run,
+        *,
+        test_dir: str | None = None,
+        browsers: list[str] | None = None,
+        grep: str | None = None,
+    ) -> tuple[TestReport, list[dict], bool, str]:
+        """Execute tests for an already-created pipeline run."""
+        self._test_dir = test_dir
+        report = await PlaywrightRunner(test_dir=self._test_dir).run_tests(
+            browsers=browsers,
+            grep=grep,
+        )
+
+        evidence_paths: list[dict] = []
+        if report.raw_path:
+            evidence_paths.append(
+                {
+                    "type": "test_report",
+                    "path": report.raw_path,
+                    "size_bytes": 0,
+                }
+            )
+        for screenshot in report.screenshot_paths:
+            evidence_paths.append(
+                {
+                    "type": "screenshot",
+                    "path": screenshot,
+                    "size_bytes": 0,
+                }
+            )
+
+        success = report.failed == 0 and report.total > 0
+        summary = (
+            f"Tests: {report.passed} passed, {report.failed} failed, "
+            f"{report.skipped} skipped ({report.duration:.0f}ms)"
+        )
+
+        await self._save_report_as_artifact(run.task_id, report, run.id)
+        return report, evidence_paths, success, summary
+
     async def _save_report_as_artifact(
         self,
         task_id: UUID,

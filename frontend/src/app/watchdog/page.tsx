@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/clerk";
 import {
@@ -21,8 +19,14 @@ import {
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useActiveBoard } from "@/lib/active-project";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
+interface BoardOption {
+  id: string;
+  name: string;
+}
 
 function getAuthToken(): string {
   return localStorage.getItem("mc_auth_token") || "";
@@ -70,8 +74,20 @@ async function fetchAgents(): Promise<any[]> {
   return data.items || [];
 }
 
+async function fetchBoards(): Promise<BoardOption[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch boards");
+  const data = await res.json();
+  return data.items || [];
+}
+
 export default function WatchdogPage() {
   const { isSignedIn } = useAuth();
+  const [activeBoardId, setActiveBoardId] = useActiveBoard();
+  const [boards, setBoards] = useState<BoardOption[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [escalations, setEscalations] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -83,21 +99,35 @@ export default function WatchdogPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [agentsData, escData] = await Promise.all([
+      const [boardsData, agentsData, escData] = await Promise.all([
+        fetchBoards(),
         fetchAgents(),
         getEscalations(),
       ]);
-      setAgents(agentsData);
+      setBoards(boardsData);
+      const boardId = activeBoardId || boardsData[0]?.id || "";
+      if (boardId && boardId !== activeBoardId) {
+        setActiveBoardId(boardId);
+      }
+      setAgents(boardId ? agentsData.filter((agent) => agent.board_id === boardId) : agentsData);
       setEscalations(escData.escalations || []);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [activeBoardId, setActiveBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadData();
+  }, [isSignedIn, loadData]);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const intervalId = window.setInterval(() => {
+      void loadData();
+    }, 30000);
+    return () => window.clearInterval(intervalId);
   }, [isSignedIn, loadData]);
 
   const handleHealthCheck = async () => {
@@ -128,6 +158,8 @@ export default function WatchdogPage() {
 
   const offlineCount = agents.filter((a) => a.status === "offline").length;
   const onlineCount = agents.filter((a) => a.status === "online").length;
+  const idleCount = agents.filter((a) => a.status === "idle").length;
+  const dormantCount = agents.filter((a) => a.status === "dormant").length;
 
   return (
     <>
@@ -138,25 +170,37 @@ export default function WatchdogPage() {
           signUpForceRedirectUrl: "/watchdog",
         }}
         title="Watchdog"
-        description={`Monitoring ${agents.length} agents. ${onlineCount} online, ${offlineCount} offline.`}
+        description={`Monitoring ${agents.length} agents. ${onlineCount} online, ${idleCount} idle, ${dormantCount} dormant, ${offlineCount} offline.`}
         headerActions={
-          <button
-            onClick={handleHealthCheck}
-            disabled={isChecking}
-            className={buttonVariants({ size: "md", variant: "primary" })}
-          >
-            {isChecking ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Activity className="mr-2 h-4 w-4" />
-            )}
-            Run Health Check
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={activeBoardId}
+              onChange={(e) => setActiveBoardId(e.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Select project</option>
+              {boards.map((board) => (
+                <option key={board.id} value={board.id}>{board.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleHealthCheck}
+              disabled={isChecking}
+              className={buttonVariants({ size: "md", variant: "primary" })}
+            >
+              {isChecking ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Activity className="mr-2 h-4 w-4" />
+              )}
+              Run Health Check
+            </button>
+          </div>
         }
         stickyHeader
       >
         {/* Summary cards */}
-        <div className="grid gap-4 sm:grid-cols-4 mb-6">
+        <div className="grid gap-4 sm:grid-cols-5 mb-6">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <Shield className="h-5 w-5 text-blue-500" />
@@ -172,6 +216,24 @@ export default function WatchdogPage() {
               <div>
                 <p className="text-2xl font-bold text-green-600">{onlineCount}</p>
                 <p className="text-xs text-slate-500">Online</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-blue-500" />
+              <div>
+                <p className="text-2xl font-bold text-blue-600">{idleCount}</p>
+                <p className="text-xs text-slate-500">Idle</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-300 bg-slate-50 p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-slate-500" />
+              <div>
+                <p className="text-2xl font-bold text-slate-700">{dormantCount}</p>
+                <p className="text-xs text-slate-500">Dormant</p>
               </div>
             </div>
           </div>
@@ -287,6 +349,10 @@ export default function WatchdogPage() {
                       "h-3 w-3 rounded-full flex-shrink-0",
                       agent.status === "online"
                         ? "bg-green-500"
+                        : agent.status === "idle"
+                        ? "bg-blue-500"
+                        : agent.status === "dormant"
+                        ? "bg-slate-500"
                         : agent.status === "offline"
                         ? "bg-red-500"
                         : "bg-amber-500"
@@ -304,6 +370,10 @@ export default function WatchdogPage() {
                       "text-[10px] px-2 py-0.5 rounded font-medium",
                       agent.status === "online"
                         ? "bg-green-100 text-green-700"
+                        : agent.status === "idle"
+                        ? "bg-blue-100 text-blue-700"
+                        : agent.status === "dormant"
+                        ? "bg-slate-100 text-slate-700"
                         : agent.status === "offline"
                         ? "bg-red-100 text-red-700"
                         : "bg-amber-100 text-amber-700"

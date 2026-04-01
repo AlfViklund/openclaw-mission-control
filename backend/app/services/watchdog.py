@@ -260,6 +260,8 @@ async def template_sync_agent(session: AsyncSession, agent_id: UUID) -> dict:
         "agent_id": str(agent.id),
         "agent_name": agent.name,
         "status": sync_status,
+        "gateway_attempted": True,
+        "confirmed": sync_status == "sync_completed",
     }
 
 
@@ -301,6 +303,8 @@ async def rotate_agent_tokens(session: AsyncSession, agent_id: UUID) -> dict:
         "agent_id": str(agent.id),
         "agent_name": agent.name,
         "status": rotate_status,
+        "gateway_attempted": True,
+        "confirmed": rotate_status == "rotation_completed",
     }
 
 
@@ -341,6 +345,8 @@ async def reset_agent_session(session: AsyncSession, agent_id: UUID) -> dict:
         "agent_id": str(agent.id),
         "agent_name": agent.name,
         "status": reset_status,
+        "gateway_attempted": True,
+        "confirmed": reset_status == "reset_completed",
     }
 
 
@@ -383,6 +389,8 @@ async def wake_agent(session: AsyncSession, agent_id: UUID) -> dict:
         "agent_name": agent.name,
         "status": wake_status,
         "wake_attempts": agent.wake_attempts,
+        "gateway_attempted": True,
+        "confirmed": wake_status == "wake_completed",
     }
 
 
