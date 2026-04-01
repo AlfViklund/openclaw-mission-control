@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlmodel import col
 
 from app.api.deps import require_user
 from app.db.pagination import paginate
@@ -79,7 +80,6 @@ async def list_runs_endpoint(
     _actor: ActorContext = USER_DEP,
 ) -> DefaultLimitOffsetPage[RunRead]:
     """List runs with optional filtering."""
-    from sqlmodel import col
     statement = Run.objects.all()
     if task_id is not None:
         statement = statement.filter(col(Run.task_id) == task_id)
@@ -89,6 +89,18 @@ async def list_runs_endpoint(
         statement = statement.filter(col(Run.stage) == stage)
     if status is not None:
         statement = statement.filter(col(Run.status) == status)
+    statement = statement.order_by(col(Run.created_at).desc())
+    return await paginate(session, statement.statement)
+
+
+@router.get("/by-task/{task_id}", response_model=DefaultLimitOffsetPage[RunRead])
+async def list_task_runs(
+    task_id: UUID,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = USER_DEP,
+) -> DefaultLimitOffsetPage[RunRead]:
+    """List all runs for a specific task."""
+    statement = Run.objects.filter(col(Run.task_id) == task_id)
     statement = statement.order_by(col(Run.created_at).desc())
     return await paginate(session, statement.statement)
 
@@ -135,19 +147,6 @@ async def cancel_run_endpoint(
             detail=f"Cannot cancel run in '{run.status}' status",
         )
     return await cancel_run(session, run)
-
-
-@router.get("/tasks/{task_id}", response_model=DefaultLimitOffsetPage[RunRead])
-async def list_task_runs(
-    task_id: UUID,
-    session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
-) -> DefaultLimitOffsetPage[RunRead]:
-    """List all runs for a specific task."""
-    from sqlmodel import col
-    statement = Run.objects.filter(col(Run.task_id) == task_id)
-    statement = statement.order_by(col(Run.created_at).desc())
-    return await paginate(session, statement.statement)
 
 
 @router.patch("/{run_id}", response_model=RunRead)

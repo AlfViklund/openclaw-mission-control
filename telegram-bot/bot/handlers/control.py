@@ -16,13 +16,14 @@ router = Router()
 
 
 @router.message(Command("nudge"))
-async def cmd_nudge(message: Message, args: str | None = None) -> None:
+async def cmd_nudge(message: Message, state: FSMContext) -> None:
     """Nudge an agent or task to push it forward."""
-    if not args:
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
         await message.answer("⚠️ Используйте `/nudge <agent_id|task_id>`")
         return
 
-    target = args.strip()
+    target = args[1].strip()
     await message.answer(f"👉 Отправляю nudging для `{target}`...", parse_mode="Markdown")
 
     try:

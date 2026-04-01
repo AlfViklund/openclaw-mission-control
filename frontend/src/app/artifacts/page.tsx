@@ -1,8 +1,6 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/auth/clerk";
 import {
@@ -212,6 +210,10 @@ export default function ArtifactsPage() {
       setIsLoading(false);
     }
   }, [filterBoardId, filterType]);
+
+  useEffect(() => {
+    if (isSignedIn) loadArtifacts();
+  }, [isSignedIn, loadArtifacts]);
 
   const handleUpload = async () => {
     if (!selectedFile || !uploadBoardId) return;

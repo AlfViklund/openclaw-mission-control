@@ -29,7 +29,6 @@ class PipelineService:
         runtime: str = "acp",
         agent_id: UUID | None = None,
         model: str | None = None,
-        prompt: str | None = None,
     ) -> dict[str, Any]:
         """Execute a pipeline stage for a task.
 

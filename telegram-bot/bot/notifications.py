@@ -36,7 +36,7 @@ async def notify_approval_pending(approval: dict[str, Any]) -> None:
     text = (
         f"🔔 *Новое подтверждение*\n\n"
         f"ID: `{approval.get('id', '')[:8]}...`\n"
-        f"Task: `{approval.get('task_id', 'N/A')[:8]}...`\n"
+        f"Task: `{str(approval.get('task_id') or 'N/A')[:8]}...`\n"
         f"Reason: {approval.get('reason', 'N/A')}\n\n"
         f"Используйте `/approvals` для просмотра."
     )

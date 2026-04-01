@@ -114,9 +114,6 @@ services:
       RQ_DISPATCH_MAX_RETRIES: ${RQ_DISPATCH_MAX_RETRIES:-3}
     restart: unless-stopped
 
-volumes:
-  postgres_data:
-
   telegram-bot:
     build:
       context: ./telegram-bot
@@ -131,4 +128,8 @@ volumes:
       API_TOKEN: ${LOCAL_AUTH_TOKEN}
     depends_on:
       - backend
+      - redis
     restart: unless-stopped
+
+volumes:
+  postgres_data:

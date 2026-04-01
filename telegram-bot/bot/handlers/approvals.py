@@ -57,7 +57,8 @@ async def cb_approve(callback: CallbackQuery) -> None:
     try:
         await api.resolve_approval(approval_id, "approved")
         await callback.answer("✅ Approved")
-        await callback.message.edit_text(
+        if callback.message:
+            await callback.message.edit_text(
             callback.message.text + "\n\n✅ *Approved*",
             parse_mode="Markdown",
         )
@@ -72,7 +73,8 @@ async def cb_reject(callback: CallbackQuery) -> None:
     try:
         await api.resolve_approval(approval_id, "rejected")
         await callback.answer("❌ Rejected")
-        await callback.message.edit_text(
+        if callback.message:
+            await callback.message.edit_text(
             callback.message.text + "\n\n❌ *Rejected*",
             parse_mode="Markdown",
         )

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from app.core.time import utcnow
@@ -17,7 +18,12 @@ from app.models.tasks import Task
 from app.services.artifact_storage import save_artifact_file
 from app.services.runs import complete_run, create_run, start_run
 
+if TYPE_CHECKING:
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
 EVIDENCE_DIR = Path(__file__).resolve().parents[4] / "storage" / "evidence" / "qa"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,7 +76,7 @@ class PlaywrightRunner:
         cmd = [
             "npx", "playwright", "test",
             "--reporter=json",
-            f"--output=${screenshot_dir}",
+            f"--output={screenshot_dir}",
         ]
         if browsers:
             cmd.extend(["--project", ",".join(browsers)])
@@ -169,6 +175,7 @@ class QAService:
 
     def __init__(self, session: Any):
         self._session = session
+        self._test_dir: str | None = None
 
     async def run_tests_for_task(
         self,
@@ -180,6 +187,7 @@ class QAService:
         grep: str | None = None,
     ) -> dict:
         """Run QA tests for a task and store results."""
+        self._test_dir = test_dir
         task = await Task.objects.by_id(task_id).first(self._session)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -193,7 +201,7 @@ class QAService:
         )
         run = await start_run(self._session, run)
 
-        runner = PlaywrightRunner(test_dir=test_dir)
+        runner = PlaywrightRunner(test_dir=self._test_dir)
         report = await runner.run_tests(browsers=browsers, grep=grep)
 
         evidence_paths = []
@@ -300,4 +308,4 @@ class QAService:
             self._session.add(artifact)
             await self._session.commit()
         except Exception:
-            pass
+            logger.exception("Failed to save test report artifact for task %s", task_id)

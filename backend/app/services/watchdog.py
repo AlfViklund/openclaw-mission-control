@@ -7,9 +7,12 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from sqlmodel import col, select
+
 from app.core.time import utcnow
 from app.models.agents import Agent
 from app.models.runs import Run
+from app.models.task_dependencies import TaskDependency
 from app.models.tasks import Task
 
 if TYPE_CHECKING:
@@ -90,8 +93,8 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
 
     failed_runs = await Run.objects.filter_by(status="failed").all(session)
     for run in failed_runs:
-        retry_count = run.evidence_paths.count(
-            lambda e: e.get("type") == "retry"
+        retry_count = sum(
+            1 for e in run.evidence_paths if e.get("type") == "retry"
         ) if run.evidence_paths else 0
 
         if retry_count < MAX_RETRY_ATTEMPTS:
@@ -128,12 +131,12 @@ async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict
     if not offline_ids:
         return []
 
-    tasks = await Task.objects.all(session)
+    tasks = await session.exec(select(Task)).all()
     reassigned = []
 
     for task in tasks:
         if task.status == "in_progress" and task.assigned_agent_id in offline_ids:
-            task.previous_in_progress_at = task.in_progress_at
+            prev_agent = task.assigned_agent_id
             task.in_progress_at = None
             task.status = "inbox"
             task.assigned_agent_id = None
@@ -141,7 +144,7 @@ async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict
             reassigned.append({
                 "task_id": str(task.id),
                 "task_title": task.title,
-                "previous_agent": str(task.assigned_agent_id),
+                "previous_agent": str(prev_agent),
             })
 
     if reassigned:
@@ -185,14 +188,24 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
                 "severity": "high",
             })
 
-    blocked_tasks = await Task.objects.all(session)
-    for task in blocked_tasks:
-        if task.status == "inbox" and task.depends_on_task_ids:
-            deps = task.depends_on_task_ids
-            dep_tasks = await Task.objects.by_ids(deps).all(session)
+    tasks = await session.exec(select(Task)).all()
+    for task in tasks:
+        if task.status == "inbox":
+            deps_result = await session.exec(
+                select(TaskDependency).where(col(TaskDependency.task_id) == task.id)
+            )
+            deps = deps_result.all()
+            if not deps:
+                continue
+
+            dep_ids = [d.depends_on_task_id for d in deps]
+            dep_tasks_result = await session.exec(
+                select(Task).where(col(Task.id).in_(dep_ids))
+            )
+            dep_tasks = dep_tasks_result.all()
             all_blocked = all(t.status not in ("done", "review") for t in dep_tasks)
-            if all_blocked and task.in_progress_at:
-                blocked_since = now - task.in_progress_at
+            if all_blocked:
+                blocked_since = now - (task.in_progress_at or task.created_at)
                 if blocked_since > timedelta(minutes=ESCALATION_BLOCKED_MINUTES):
                     escalations.append({
                         "type": "task_blocked",

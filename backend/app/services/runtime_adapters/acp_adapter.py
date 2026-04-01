@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from typing import TYPE_CHECKING, Any
@@ -132,7 +133,6 @@ class ACPAdapter(RuntimeAdapter):
                     last_count = len(messages)
             except Exception:
                 pass
-            import asyncio
             await asyncio.sleep(2)
 
         raise RuntimeAdapterError("Timeout waiting for agent response")

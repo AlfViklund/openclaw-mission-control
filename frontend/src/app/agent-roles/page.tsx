@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/clerk";
 import {
@@ -26,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { RoleSelector, ROLES } from "@/components/agents/RoleSelector";
+import { ROLES } from "@/components/agents/RoleSelector";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 

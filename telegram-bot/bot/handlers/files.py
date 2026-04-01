@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import io
 import logging
-from pathlib import Path
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -16,12 +16,20 @@ from bot.config import settings
 logger = logging.getLogger(__name__)
 router = Router()
 
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
+
 
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext) -> None:
     """Handle document uploads — auto-upload as spec artifact."""
     doc = message.document
     if not doc or not doc.file_id:
+        return
+
+    if doc.file_size and doc.file_size > MAX_FILE_SIZE:
+        await message.answer(
+            f"❌ Файл слишком большой (максимум {MAX_FILE_SIZE // 1024 // 1024}MB)."
+        )
         return
 
     data = await state.get_data()
@@ -49,10 +57,6 @@ async def handle_document(message: Message, state: FSMContext) -> None:
 
         file_content = await bot.download_file(file.file_path)
         file_bytes = file_content.read()
-
-        import io
-        form_data = httpx._multipart.MultipartData()
-        form_data.add_field("file", file_bytes, filename=doc.file_name or "unnamed")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(

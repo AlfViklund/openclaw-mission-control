@@ -129,11 +129,22 @@ class MissionControlClient:
 
     # -- QA --
 
+    async def _post_with_params(self, path: str, params: dict | None = None) -> Any:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}{path}",
+                headers=self._headers,
+                params=params,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def run_tests(self, task_id: str, browsers: str | None = None) -> dict:
         params = {"task_id": task_id}
         if browsers:
             params["browsers"] = browsers
-        return await self._post("/api/v1/qa/test", json=params)
+        return await self._post_with_params("/api/v1/qa/test", params=params)
 
 
 api = MissionControlClient()

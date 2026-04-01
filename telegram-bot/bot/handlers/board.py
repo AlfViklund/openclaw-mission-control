@@ -16,8 +16,11 @@ router = Router()
 
 
 @router.message(Command("board"))
-async def cmd_board(message: Message, state: FSMContext, args: str | None = None) -> None:
+async def cmd_board(message: Message, state: FSMContext) -> None:
     """Select active board or list available boards."""
+    args = message.text.split(maxsplit=1)
+    board_name = args[1].strip() if len(args) > 1 else None
+
     try:
         boards = await api.list_boards()
     except Exception as exc:
@@ -28,8 +31,8 @@ async def cmd_board(message: Message, state: FSMContext, args: str | None = None
         await message.answer("📋 Нет доступных досок.")
         return
 
-    if args:
-        matching = [b for b in boards if args.lower() in b.get("name", "").lower()]
+    if board_name:
+        matching = [b for b in boards if board_name.lower() in b.get("name", "").lower()]
         if matching:
             board = matching[0]
             await state.update_data(active_board_id=board["id"], active_board_name=board["name"])
@@ -39,7 +42,7 @@ async def cmd_board(message: Message, state: FSMContext, args: str | None = None
                 parse_mode="Markdown",
             )
             return
-        await message.answer(f"❌ Доска '{args}' не найдена.")
+        await message.answer(f"❌ Доска '{board_name}' не найдена.")
         return
 
     text = "📋 Доступные доски:\n\n"
@@ -91,13 +94,14 @@ async def cmd_status(message: Message, state: FSMContext) -> None:
 
 
 @router.message(Command("task"))
-async def cmd_task(message: Message, args: str | None = None) -> None:
+async def cmd_task(message: Message) -> None:
     """Show task details."""
-    if not args:
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
         await message.answer("⚠️ Используйте `/task <id>`")
         return
 
-    task_id = args.strip()
+    task_id = args[1].strip()
     try:
         task = await api.get_task(task_id)
         runs = await api.list_runs(task_id)

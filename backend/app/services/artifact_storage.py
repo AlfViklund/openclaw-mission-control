@@ -6,6 +6,7 @@ import hashlib
 import shutil
 from pathlib import Path
 from typing import BinaryIO
+from uuid import uuid4
 
 from app.core.config import settings
 
@@ -72,7 +73,7 @@ def save_artifact_file(
     if content is None and stream is None:
         raise ArtifactStorageError("Either content or stream must be provided.")
 
-    safe_filename = Path(filename).name
+    safe_filename = f"{uuid4().hex[:12]}_{Path(filename).name}"
     board_dir = _ensure_board_dir(board_id)
     target_path = board_dir / safe_filename
 
@@ -83,7 +84,8 @@ def save_artifact_file(
             size = len(content)
         else:
             with target_path.open("wb") as f:
-                shutil.copyfileobj(stream, f)
+                if stream is not None:
+                    shutil.copyfileobj(stream, f)
             with target_path.open("rb") as f:
                 checksum = compute_checksum_stream(f)
             size = target_path.stat().st_size

@@ -48,20 +48,16 @@ async def generate_backlog_endpoint(
     user: ActorContext = USER_DEP,
 ) -> PlannerOutput:
     """Generate a backlog from a spec artifact."""
-    board = await Board.objects.by_id(payload.artifact_id).first(session)
-    if not board:
-        artifact = await _get_artifact_board(session, payload.artifact_id)
-        if not artifact:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
-        board_id = artifact.board_id
-    else:
-        board_id = board.id
+    from app.models.artifacts import Artifact
+    artifact = await Artifact.objects.by_id(payload.artifact_id).first(session)
+    if not artifact:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
 
     try:
         result = await generate_backlog(
             session,
             artifact_id=payload.artifact_id,
-            board_id=board_id,
+            board_id=artifact.board_id,
             max_tasks=payload.max_tasks,
             created_by=user.user.id if user.user else None,
         )
@@ -168,9 +164,3 @@ async def delete_planner_output_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return OkResponse(ok=True)
-
-
-async def _get_artifact_board(session: AsyncSession, artifact_id: UUID):
-    """Helper to get artifact and extract board_id."""
-    from app.models.artifacts import Artifact
-    return await Artifact.objects.by_id(artifact_id).first(session)

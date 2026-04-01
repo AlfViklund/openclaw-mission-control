@@ -16,7 +16,6 @@ import {
   XCircle,
   Clock,
   Shield,
-  ArrowRight,
 } from "lucide-react";
 
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
