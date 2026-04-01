@@ -1,196 +1,529 @@
 # ClawDev Mission Control
 
-> Self-hosted product development system powered by OpenClaw + Mission Control + OpenCode
+> **Превращайте гигантские спецификации в готовые продукты с помощью команды AI-агентов**
 
-[![CI](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml/badge.svg)](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml)
+Self-hosted система разработки продукта, построенная поверх OpenClaw + Mission Control + OpenCode. ClawDev добавляет полный pipeline от спецификации до shipped product с автоматическим планированием, исполнением, тестированием и мониторингом.
 
-ClawDev Mission Control extends OpenClaw Mission Control into a complete product development pipeline that turns giant specifications into shipped products using an AI agent team.
+---
 
-## What ClawDev Adds
+## 🚀 Что такое ClawDev
 
-| Module | Description |
-|--------|-------------|
-| **Spec & Artifact Hub** | Upload, store, and manage specifications and project artifacts |
-| **Backlog Planner** | Auto-generate structured backlogs with dependency graphs from specs |
-| **Runtime Adapters** | Execute agent runs via ACP, OpenCode CLI, or OpenRouter API |
-| **Pipeline Orchestration** | Enforce plan→build→test discipline with soft warnings |
-| **QA Testing** | Playwright e2e test execution with report generation |
-| **Telegram Interface** | Full project management via Telegram bot |
-| **Agent Role Templates** | Pre-configured roles: Board Lead, Developer, QA Engineer, Technical Writer, Ops Guardian |
-| **Watchdog** | Health monitoring, auto-recovery, and escalation management |
+ClawDev — это операционная система для разработки продуктов, управляемая AI-агентами. Вы передаёте ему спецификацию (документ с описанием продукта), а он:
 
-<img width="1896" height="869" alt="Mission Control dashboard" src="https://github.com/user-attachments/assets/49a3c823-6aaf-4c56-8328-fb1485ee940f" />
-<img width="1896" height="858" alt="image" src="https://github.com/user-attachments/assets/2bfee13a-3dab-4f4a-9135-e47bb6949dcf" />
-<img width="1890" height="865" alt="image" src="https://github.com/user-attachments/assets/84c2e867-5dc7-4a36-9290-e29179d2a659" />
-<img width="1912" height="881" alt="image" src="https://github.com/user-attachments/assets/3bbd825c-9969-4bbf-bf31-987f9168f370" />
-<img width="1902" height="878" alt="image" src="https://github.com/user-attachments/assets/eea09632-60e4-4d6d-9e6e-bdfa0ac97630" />
+1. **Разбивает** спецификацию на эпики, задачи и зависимости (DAG)
+2. **Создаёт** канбан-доску с backlog
+3. **Провижинит** команду AI-агентов с ролями (Lead, Developer, QA, Writer, Ops)
+4. **Запускает** pipeline: plan → build → test → review → done
+5. **Мониторит** здоровье агентов и автоматически восстанавливается при сбоях
+6. **Уведомляет** вас через Telegram о каждом важном событии
 
-## Platform overview
+Всё работает на вашем домашнем Mac. Вы управляете системой через Telegram или веб-интерфейс.
 
-Mission Control is designed to be the day-to-day operations surface for OpenClaw.
-Instead of splitting work across multiple tools, teams can plan, execute, review, and audit activity in one system.
+---
 
-Core operational areas:
+## ✨ Возможности
 
-- Work orchestration: manage organizations, board groups, boards, tasks, and tags.
-- Agent operations: create, inspect, and manage agent lifecycle from a unified control surface.
-- Governance and approvals: route sensitive actions through explicit approval flows.
-- Gateway management: connect and operate gateway integrations for distributed environments.
-- Activity visibility: review a timeline of system actions for faster debugging and accountability.
-- API-first model: support both web workflows and automation clients from the same platform.
+### 📄 Spec & Artifact Hub
 
-## Use cases
+Загружайте, храните и управляйте спецификациями и артефактами проекта.
 
-- Multi-team agent operations: run multiple boards and board groups across organizations from a single control plane.
-- Human-in-the-loop execution: require approvals before sensitive actions and keep decision trails attached to work.
-- Distributed runtime control: connect gateways and operate remote execution environments without changing operator workflow.
-- Audit and incident review: use activity history to reconstruct what happened, when it happened, and who initiated it.
-- API-backed process integration: connect internal workflows and automation clients to the same operational model used in the UI.
+- **Загрузка файлов** через веб-интерфейс (drag & drop) или Telegram
+- **Версионирование** — каждая загрузка создаёт новую версию
+- **Preview** текстовых файлов прямо в браузере
+- **Скачивание** любых артефактов
+- **Привязка к задачам** — каждый артефакт связан с конкретной задачей
+- **Типы артефактов**: spec, plan, diff, test_report, release_note, other
 
-## What makes Mission Control different
+### 🧠 Backlog Planner
 
-- Operations-first design: built for running agent work reliably, not just creating tasks.
-- Governance built in: approvals, auth modes, and clear control boundaries are first-class.
-- Gateway-aware orchestration: built to operate both local and connected runtime environments.
-- Unified UI and API model: operators and automation act on the same objects and lifecycle.
-- Team-scale structure: organizations, board groups, boards, tasks, tags, and users in one system of record.
+Автоматическая генерация структурированного backlog из спецификации.
 
-## Who it is for
+- **AI-генерация** — отправьте spec, получите эпики + задачи + зависимости
+- **DAG зависимостей** — визуализация графа зависимостей через React Flow
+- **Валидация** — автоматическое обнаружение циклов и self-dependencies
+- **Parallelism groups** — определение, какие задачи можно запускать параллельно
+- **Редактирование** — правьте задачи перед применением
+- **Apply to Board** — одним кликом создаёт реальные задачи на канбан-доске
 
-- Platform teams running OpenClaw in self-hosted or internal environments.
-- Operations and engineering teams that need clear approval and auditability controls.
-- Organizations that want API-accessible operations without losing a usable web UI.
+### ⚡ Runtime Adapters
 
-## Get started in minutes
+Три способа запуска AI-агентов для выполнения задач:
 
-### Option A: One-command production-style bootstrap
+| Адаптер | Как работает | Когда использовать |
+|---------|-------------|-------------------|
+| **ACP (Gateway)** | Через OpenClaw WebSocket RPC | Основной — полная интеграция |
+| **OpenCode CLI** | `opencode run --format json` | Локальное исполнение на Mac |
+| **OpenRouter API** | Прямой HTTP вызов (feature-flagged) | Когда нужен прямой доступ к LLM |
 
-If you haven't cloned the repo yet, you can run the installer in one line:
+Каждый run собирает **evidence**: логи, диффы, JSON events — всё сохраняется как артефакты.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/abhi1693/openclaw-mission-control/master/install.sh | bash
+### 🔗 Pipeline Orchestration
+
+Строгая дисциплина исполнения: **plan → build → test → review → done**
+
+- **Мягкий enforcement** — предупреждения при нарушении порядка, но не блокировка
+- **Авто-запуск** следующей стадии после успешного завершения предыдущей
+- **Валидация** каждой стадии с детальными warning-сообщениями
+- **Интеграция с approvals** — plan требует подтверждения перед build
+- **Pipeline Visualization** — визуальный прогресс-бар на каждой задаче
+
+### 🧪 QA Testing
+
+Автоматическое тестирование через Playwright.
+
+- **Запуск e2e тестов** через API или UI
+- **Парсинг отчётов** — passed/failed/skipped, duration, ошибки, скриншоты
+- **Авто-публикация** тест-отчётов как артефактов
+- **Блокировка done** при провале тестов (через pipeline validation)
+- **Фильтрация** — запуск конкретных тестов через grep
+
+### 📱 Telegram Interface
+
+Полное управление проектом через Telegram-бота.
+
+| Команда | Описание |
+|---------|----------|
+| `/board <name>` | Выбрать активный проект |
+| `/status` | Сводка: задачи по статусам, блокеры, агенты, approvals |
+| `/task <id>` | Детали задачи + артефакты + pipeline статус |
+| `/approvals` | Pending approvals с inline кнопками Approve/Reject |
+| `/approve <id>` / `/reject <id>` | Решение по approval |
+| `/nudge <agent\|task>` | Мягко протолкнуть застрявший процесс |
+| `/panic` | Аварийная пауза всех агентов |
+| `/plan` | Запустить генерацию backlog из последней спецификации |
+
+**Приём файлов** — просто отправьте документ в чат, и он автоматически загрузится как спецификация.
+
+**Push-уведомления** — бот сам пишет вам при:
+- Новом pending approval
+- Failed build
+- Offline агенте
+- Разблокированной задаче
+- Завершении pipeline стадии
+
+### 👥 Agent Role Templates
+
+Пять предконфигурированных ролей с шаблонами TOOLS.md, IDENTITY.md, SOUL.md, HEARTBEAT.md:
+
+| Роль | Эмодзи | Heartbeat | Назначение |
+|------|--------|-----------|-----------|
+| **Board Lead** | 🎯 | 5m | Оркестрация проекта, управление backlog, координация команды |
+| **Developer** | 🔧 | 10m | Реализация задач по плану, чистый код, evidence |
+| **QA Engineer** | 🧪 | 10m | Тестирование, поиск багов, Playwright e2e |
+| **Technical Writer** | 📝 | 15m | Документация, ADR, changelog, README |
+| **Ops Guardian** | 🛡️ | 3m | Мониторинг здоровья, восстановление, безопасность |
+
+Каждая роль имеет:
+- Уникальный **identity profile** (role, communication style, purpose)
+- Оптимальный **heartbeat interval**
+- Role-specific **SOUL.md** с поведенческими инструкциями
+- Role-specific **workflow** в AGENTS.md
+
+### 🐕 Watchdog
+
+Автоматический мониторинг и восстановление.
+
+- **Heartbeat monitoring** — проверка каждые 30 секунд
+- **Авто-retry** — до 3 попыток с exponential backoff
+- **Авто-reassign** — задачи offline-агентов возвращаются в inbox
+- **Escalation** — уведомления при critical failures
+- **Ops команды**:
+  - `template-sync` — принудительная синхронизация шаблонов
+  - `rotate-tokens` — ротация auth токенов
+  - `reset-session` — сброс сессии агента
+  - `wake` — пробуждение спящего агента
+- **Evidence cleanup** — архивация файлов старше 30 дней
+- **Watchdog Dashboard** — полная панель мониторинга в UI
+
+---
+
+## 🏗️ Архитектура
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Telegram Bot (aiogram)                    │
+│  /board /status /task /approvals /plan /panic /nudge        │
+│  Приём файлов → автозагрузка в Artifact Hub                 │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ HTTP API
+┌──────────────────────────▼──────────────────────────────────┐
+│                  Mission Control Backend                     │
+│                                                              │
+│  ┌───────────┐ ┌──────────┐ ┌─────────┐ ┌────────────────┐ │
+│  │ Artifacts │ │ Planner  │ │  Runs   │ │   Pipeline     │ │
+│  │   Hub     │ │ Service  │ │  Store  │ │ Orchestration  │ │
+│  └───────────┘ └──────────┘ └─────────┘ └────────────────┘ │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │              Runtime Adapters                          │ │
+│  │  ACP (Gateway) │ OpenCode CLI │ OpenRouter API         │ │
+│  └────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │        QA Service (Playwright) + Watchdog              │ │
+│  └────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  PostgreSQL (данные) + Redis (очереди, FSM)                 │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ WebSocket RPC
+┌──────────────────────────▼──────────────────────────────────┐
+│                   OpenClaw Gateway                           │
+│  Telegram Channel │ ACP Sessions │ Agent Provisioning       │
+│  Template Sync    │ Heartbeats   │ Workspace Management     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-This clones the repository into `./openclaw-mission-control` if no local checkout is found in your current directory.
+---
 
-If you already cloned the repo:
+## 🎯 Как пользоваться: пошаговый гайд
 
-```bash
-./install.sh
+### Шаг 1: Отправьте спецификацию
+
+Откройте Telegram-бота и отправьте файл с описанием продукта (PDF, MD, TXT).
+Бот автоматически загрузит его как спецификацию в Artifact Hub.
+
+Или загрузите через веб-интерфейс: `/artifacts` → Upload → drag & drop.
+
+### Шаг 2: Сгенерируйте backlog
+
+В Telegram: отправьте `/plan`
+
+Или в веб-интерфейсе: `/planner` → Generate Backlog → выберите спецификацию
+
+AI проанализирует документ и создаст:
+- **Эпики** — крупные блоки функциональности
+- **Задачи** — конкретные actionable items
+- **Зависимости** — DAG граф (что от чего зависит)
+- **Parallelism groups** — какие задачи можно делать параллельно
+
+### Шаг 3: Проверьте и примените
+
+Откройте `/planner` — вы увидите интерактивный DAG граф.
+Проверьте задачи, отредактируйте если нужно.
+
+Нажмите **"Apply to Board"** — задачи создадутся на канбан-доске с правильными зависимостями.
+
+### Шаг 4: Провизините команду
+
+Перейдите в `/agent-roles` → **Provision Team**.
+
+Выберите роли (рекомендуется все 5):
+- 🎯 Board Lead — будет координировать
+- 🔧 Developer — будет писать код
+- 🧪 QA Engineer — будет тестировать
+- 📝 Technical Writer — будет документировать
+- 🛡️ Ops Guardian — будет следить за здоровьем
+
+Нажмите **Provision** — агенты создадутся с правильными шаблонами.
+
+### Шаг 5: Запустите pipeline
+
+Агенты начнут работать автоматически. Вы можете наблюдать за прогрессом:
+
+- **В Telegram**: `/status` — общая сводка, `/task <id>` — детали задачи
+- **В UI**: канбан-доска показывает статус каждой задачи
+- **Pipeline Visualization**: на каждой задаче видно plan → build → test прогресс
+
+### Шаг 6: Управляйте через Telegram
+
+Весь процесс управляется через Telegram:
+
+```
+/status          → "3 inbox, 2 in_progress, 1 review, 0 done. 1 blocker. 4/5 agents online. 2 pending approvals."
+/approvals       → Список pending approvals с кнопками ✅/❌
+/task abc123     → Детали задачи + артефакты + pipeline
+/nudge dev-agent → Протолкнуть застрявшего разработчика
+/panic           → Экстренная пауза всех агентов
 ```
 
-The installer is interactive and will:
+### Шаг 7: Мониторьте через Watchdog
 
-- Ask for deployment mode (`docker` or `local`).
-- Install missing system dependencies when possible.
-- Generate and configure environment files.
-- Bootstrap and start the selected deployment mode.
+Откройте `/watchdog` — вы увидите:
+- Статус каждого агента (online/offline)
+- Активные escalations
+- Результаты последнего health check
+- Кнопки восстановления: Sync, Rotate, Reset, Wake
 
-Installer support matrix: [`docs/installer-support.md`](./docs/installer-support.md)
+Если агент упал — Watchdog автоматически:
+1. Переведёт его в offline
+2. Вернёт его задачи в inbox
+3. Отправит вам уведомление в Telegram
+4. Попробует восстановить (wake → reset → sync)
 
-### Option B: Manual setup
+---
 
-### Prerequisites
+## 🛠️ Установка и запуск
 
-- **Supported platforms**: Linux and macOS. On macOS, Docker mode requires [Docker Desktop](https://www.docker.com/products/docker-desktop/); local mode requires [Homebrew](https://brew.sh) and Node.js 22+.
-- Docker Engine
-- Docker Compose v2 (`docker compose`)
+### Требования
 
-### 1. Configure environment
+- Docker & Docker Compose
+- OpenClaw Gateway (работает на вашем Mac)
+- Telegram Bot Token (получите у [@BotFather](https://t.me/BotFather))
+- Ваш Telegram User ID (узнайте у [@userinfobot](https://t.me/userinfobot))
+
+### 1. Клонируйте репозиторий
 
 ```bash
-cp .env.example .env
+git clone https://github.com/AlfViklund/openclaw-mission-control.git
+cd openclaw-mission-control
 ```
 
-Before startup:
+### 2. Настройте окружение
 
-- Set `LOCAL_AUTH_TOKEN` to a non-placeholder value (minimum 50 characters) when `AUTH_MODE=local`.
-- Ensure `BASE_URL` matches the public backend origin if you are not using `http://localhost:8000`.
-- `NEXT_PUBLIC_API_URL=auto` (default) resolves to `http(s)://<current-host>:8000`.
-  - Set an explicit URL when your API is behind a reverse proxy or non-default port.
+Создайте `.env` файл в корне:
 
-### 2. Start Mission Control
+```env
+# Auth
+AUTH_MODE=local
+LOCAL_AUTH_TOKEN=<сгенерируйте 50+ случайных символов>
+
+# OpenClaw Gateway
+OPENCLAW_GATEWAY_URL=ws://ваш-mac.local:8080
+OPENCLAW_GATEWAY_TOKEN=<токен вашего gateway>
+
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=<токен от BotFather>
+TELEGRAM_ALLOWED_USER_IDS=<ваш Telegram user ID>
+
+# Database
+POSTGRES_DB=mission_control
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+```
+
+Создайте `telegram-bot/.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=<тот же токен>
+TELEGRAM_ALLOWED_USER_IDS=<тот же user ID>
+API_BASE_URL=http://backend:8000
+API_TOKEN=<тот же LOCAL_AUTH_TOKEN>
+```
+
+### 3. Запустите стек
 
 ```bash
 docker compose -f compose.yml --env-file .env up -d --build
 ```
 
-If you are iterating on the UI in Docker and want automatic frontend rebuilds on
-source changes, run:
+### 4. Откройте UI
 
-```bash
-docker compose -f compose.yml --env-file .env up --build --watch
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000/docs
+- **Telegram**: Начните чат с вашим ботом
+
+### 5. Подключите OpenClaw Gateway
+
+В Mission Control UI перейдите к настройкам Gateway и подключите ваш OpenClaw Gateway.
+После подключения запустите Template Sync для провижининга агентов.
+
+---
+
+## 📡 API Reference
+
+### Artifacts
+
+```
+POST   /api/v1/artifacts                  Загрузить файл (multipart)
+GET    /api/v1/artifacts                  Список с фильтрацией
+GET    /api/v1/artifacts/{id}             Метаданные
+GET    /api/v1/artifacts/{id}/download    Скачать файл
+GET    /api/v1/artifacts/{id}/preview     Текстовый preview
+DELETE /api/v1/artifacts/{id}             Удалить
 ```
 
-Notes:
+### Planner
 
-- Compose Watch requires Docker Compose **2.22.0+**.
-- You can also run watch separately after startup:
+```
+POST   /api/v1/planner/generate           Сгенерировать backlog из spec
+GET    /api/v1/planner                    Список планов
+GET    /api/v1/planner/{id}               Детали плана
+PATCH  /api/v1/planner/{id}               Редактировать draft
+POST   /api/v1/planner/{id}/apply         Применить к доске
+DELETE /api/v1/planner/{id}               Удалить draft
+```
+
+### Runs
+
+```
+POST   /api/v1/runs                       Запустить execution run
+GET    /api/v1/runs                       Список с фильтрацией
+GET    /api/v1/runs/{id}                  Статус run
+GET    /api/v1/runs/{id}/evidence         Evidence paths
+POST   /api/v1/runs/{id}/cancel           Отменить run
+GET    /api/v1/runs/tasks/{task_id}       Все runs задачи
+```
+
+### Pipeline
+
+```
+POST   /api/v1/pipeline/tasks/{id}/execute        Выполнить стадию
+POST   /api/v1/pipeline/runs/{id}/auto-next       Авто-запуск следующей
+GET    /api/v1/pipeline/tasks/{id}/validate       Валидация с warnings
+POST   /api/v1/pipeline/tasks/{id}/status-validate Валидация смены статуса
+```
+
+### QA
+
+```
+POST   /api/v1/qa/test                    Запустить Playwright тесты
+GET    /api/v1/qa/test/{id}/report        Просмотр отчёта
+```
+
+### Watchdog
+
+```
+POST   /api/v1/watchdog/health-check              Полный health check
+POST   /api/v1/watchdog/check-heartbeats          Проверить heartbeats
+POST   /api/v1/watchdog/retry-stuck-runs          Авто-retry застрявших runs
+POST   /api/v1/watchdog/reassign-tasks            Reassign задач offline агентов
+GET    /api/v1/watchdog/escalations               Текущие escalations
+POST   /api/v1/watchdog/agents/{id}/template-sync Синхронизировать шаблоны
+POST   /api/v1/watchdog/agents/{id}/rotate-tokens Ротация токенов
+POST   /api/v1/watchdog/agents/{id}/reset-session Сброс сессии
+POST   /api/v1/watchdog/agents/{id}/wake          Пробудить агента
+POST   /api/v1/watchdog/cleanup-evidence          Очистка старых evidence
+```
+
+### Agents
+
+```
+GET    /api/v1/agents/presets                     Список role presets
+POST   /api/v1/agents/presets/{preset}/create     Создать из пресета
+POST   /api/v1/agents/boards/{id}/team/provision  Провизинить команду
+```
+
+---
+
+## 📁 Структура проекта
+
+```
+openclaw-mission-control/
+├── backend/                          # FastAPI backend
+│   ├── app/
+│   │   ├── api/                      # API endpoints
+│   │   │   ├── artifacts.py          # Spec & Artifact Hub
+│   │   │   ├── planner.py            # Backlog Planner
+│   │   │   ├── runs.py               # Run tracking
+│   │   │   ├── pipeline.py           # Pipeline orchestration
+│   │   │   ├── qa.py                 # QA Testing
+│   │   │   ├── watchdog.py           # Health monitoring
+│   │   │   └── agents.py             # Agent presets + provisioning
+│   │   ├── models/                   # SQLModel entities
+│   │   │   ├── artifacts.py
+│   │   │   ├── planner_outputs.py
+│   │   │   └── runs.py
+│   │   ├── schemas/                  # Pydantic schemas
+│   │   ├── services/                 # Business logic
+│   │   │   ├── runtime_adapters/     # ACP, OpenCode CLI, OpenRouter
+│   │   │   ├── watchdog.py
+│   │   │   ├── pipeline.py
+│   │   │   ├── qa.py
+│   │   │   └── ...
+│   │   └── main.py
+│   ├── migrations/                   # Alembic migrations
+│   └── templates/                    # Jinja2 agent templates
+│       ├── BOARD_SOUL.md.j2          # Role-specific soul
+│       ├── BOARD_IDENTITY.md.j2      # Role-specific identity
+│       ├── BOARD_HEARTBEAT.md.j2     # Role-specific heartbeat
+│       └── BOARD_AGENTS.md.j2        # Role-specific instructions
+├── frontend/                         # Next.js 16 UI
+│   └── src/app/
+│       ├── artifacts/                # Spec & Artifact Hub page
+│       ├── planner/                  # Backlog Planner + React Flow DAG
+│       ├── runs/                     # Run Evidence Store
+│       ├── qa/                       # QA Testing page
+│       ├── agent-roles/              # Team composition management
+│       └── watchdog/                 # Health monitoring dashboard
+├── telegram-bot/                     # Telegram bot (aiogram)
+│   └── bot/
+│       ├── handlers/
+│       │   ├── board.py              # /board, /status, /task
+│       │   ├── approvals.py          # /approvals + inline buttons
+│       │   ├── control.py            # /nudge, /panic, /plan
+│       │   └── files.py              # File upload handler
+│       ├── api_client.py             # Mission Control API client
+│       ├── middleware.py             # Allowlist middleware
+│       ├── notifications.py          # Push notifications
+│       └── app.py                    # Entry point
+├── compose.yml                       # Docker Compose (6 services)
+├── docs/
+│   ├── clawdev-architecture.md       # Detailed architecture
+│   ├── clawdev-runbook.md            # Recovery procedures
+│   └── clawdev-security.md           # Security checklist
+└── PROJECT_PLAN.md                   # Full project plan
+```
+
+---
+
+## 🔐 Безопасность
+
+ClawDev спроектирован с безопасностью в основе:
+
+- **Жёсткий allowlist** — только ваш Telegram user ID может управлять системой
+- **OpenClaw policies** — двойная защита через dmPolicy/allowFrom
+- **Секреты не логируются** — маскирование в evidence файлах
+- **Trust boundary** — один gateway на инстанс, нет мульти-тенантности
+- **Token rotation** — регулярная ротация auth токенов
+- **Security audit** — встроенная команда `openclaw security audit`
+
+Подробнее: [`docs/clawdev-security.md`](docs/clawdev-security.md)
+
+---
+
+## 📖 Документация
+
+- [Архитектура](docs/clawdev-architecture.md) — детальное описание системы
+- [Runbook](docs/clawdev-runbook.md) — процедуры восстановления при сбоях
+- [Security](docs/clawdev-security.md) — чеклист безопасности
+- [Project Plan](PROJECT_PLAN.md) — полный план проекта со статусом
+
+---
+
+## 🛠️ Разработка
 
 ```bash
+# Полный стек
 docker compose -f compose.yml --env-file .env up -d --build
-docker compose -f compose.yml --env-file .env watch
+
+# Локальная разработка
+docker compose -f compose.yml --env-file .env up -d db redis
+cd backend && uv run uvicorn app.main:app --reload --port 8000
+cd frontend && npm run dev
+
+# Запуск всех проверок
+make check
+
+# Генерация API клиента
+make api-gen
 ```
 
-After pulling new changes, rebuild and recreate all services:
+---
 
-```bash
-docker compose -f compose.yml --env-file .env up -d --build --force-recreate
-```
+## 📊 Статус проекта
 
-For a fully clean rebuild (no cached build layers):
+| Фаза | Статус |
+|------|--------|
+| 1. Spec & Artifact Hub | ✅ Завершено |
+| 2. Planner Service | ✅ Завершено |
+| 3. Runtime Adapters | ✅ Завершено |
+| 4. Pipeline Orchestration | ✅ Завершено |
+| 5. QA Agent & Playwright | ✅ Завершено |
+| 6. Telegram Interface | ✅ Завершено |
+| 7. Agent Role Templates | ✅ Завершено |
+| 8. Reliability & Watchdog | ✅ Завершено |
+| 9. Polish & Documentation | ✅ Завершено |
 
-```bash
-docker compose -f compose.yml --env-file .env build --no-cache --pull
-docker compose -f compose.yml --env-file .env up -d --force-recreate
-```
+**Прогресс: 100%** — готов к использованию.
 
-### 3. Open the application
+---
 
-- Mission Control UI: http://localhost:3000
-- Backend health: http://localhost:8000/healthz
+## 📄 Лицензия
 
-### 4. Stop the stack
+MIT. См. [`LICENSE`](./LICENSE).
 
-```bash
-docker compose -f compose.yml --env-file .env down
-```
+---
 
-## Authentication
-
-Mission Control supports two authentication modes:
-
-- `local`: shared bearer token mode (default for self-hosted use)
-- `clerk`: Clerk JWT mode
-
-Environment templates:
-
-- Root: [`.env.example`](./.env.example)
-- Backend: [`backend/.env.example`](./backend/.env.example)
-- Frontend: [`frontend/.env.example`](./frontend/.env.example)
-
-## Documentation
-
-Complete guides for deployment, production, troubleshooting, and testing are in [`/docs`](./docs/).
-
-## Project status
-
-Mission Control is under active development.
-
-- Features and APIs may change between releases.
-- Validate and harden your configuration before production use.
-
-## Contributing
-
-Issues and pull requests are welcome.
-
-- [Contributing guide](./CONTRIBUTING.md)
-- [Open issues](https://github.com/abhi1693/openclaw-mission-control/issues)
-
-## License
-
-This project is licensed under the MIT License. See [`LICENSE`](./LICENSE).
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=abhi1693/openclaw-mission-control&type=date&legend=top-left)](https://www.star-history.com/#abhi1693/openclaw-mission-control&type=date&legend=top-left)
+<p align="center">
+  <strong>ClawDev Mission Control</strong> — от спецификации к продукту, управляемо AI-агентами.
+</p>
