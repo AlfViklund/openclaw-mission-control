@@ -53,6 +53,8 @@ class TaskUpdate(SQLModel):
     tag_ids: list[UUID] | None = None
     custom_field_values: TaskCustomFieldValues | None = None
     comment: NonEmptyStr | None = None
+    force_status_override: bool | None = None
+    override_reason: NonEmptyStr | None = None
 
     @field_validator("comment", mode="before")
     @classmethod

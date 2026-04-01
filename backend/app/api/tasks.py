@@ -32,6 +32,7 @@ from app.models.agents import Agent
 from app.models.approval_task_links import ApprovalTaskLink
 from app.models.approvals import Approval
 from app.models.boards import Board
+from app.models.runs import Run
 from app.models.tag_assignments import TagAssignment
 from app.models.task_custom_fields import (
     BoardTaskCustomField,
@@ -1615,10 +1616,14 @@ async def update_task(
         payload.custom_field_values if "custom_field_values" in payload.model_fields_set else None
     )
     custom_field_values_set = "custom_field_values" in payload.model_fields_set
+    force_status_override = bool(payload.force_status_override) if "force_status_override" in payload.model_fields_set else False
+    override_reason = payload.override_reason if "override_reason" in payload.model_fields_set else None
     updates.pop("comment", None)
     updates.pop("depends_on_task_ids", None)
     updates.pop("tag_ids", None)
     updates.pop("custom_field_values", None)
+    updates.pop("force_status_override", None)
+    updates.pop("override_reason", None)
     requested_status = payload.status if "status" in payload.model_fields_set else None
     update = _TaskUpdateInput(
         task=task,
@@ -1634,6 +1639,8 @@ async def update_task(
         tag_ids=tag_ids,
         custom_field_values=custom_field_values or {},
         custom_field_values_set=custom_field_values_set,
+        force_status_override=force_status_override,
+        override_reason=override_reason,
     )
     if actor.actor_type == "agent" and actor.agent and actor.agent.is_board_lead:
         return await _apply_lead_task_update(session, update=update)
@@ -1891,6 +1898,9 @@ class _TaskUpdateInput:
     tag_ids: list[UUID] | None
     custom_field_values: TaskCustomFieldValues
     custom_field_values_set: bool
+    force_status_override: bool = False
+    override_reason: str | None = None
+    pipeline_override_used: bool = False
     previous_in_progress_at: datetime | None = None
     normalized_tag_ids: list[UUID] | None = None
 
@@ -1953,6 +1963,70 @@ async def _task_blocked_ids(
         dependency_ids=list(dep_ids),
         status_by_id=dep_status,
     )
+
+
+async def _has_successful_stage_run(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    stage: str,
+) -> bool:
+    run = await (
+        Run.objects.filter_by(task_id=task_id, stage=stage, status="succeeded")
+        .order_by(desc(col(Run.finished_at)))
+        .first(session)
+    )
+    return run is not None
+
+
+async def _enforce_guarded_pipeline_status_change(
+    session: AsyncSession,
+    *,
+    update: _TaskUpdateInput,
+) -> None:
+    if not update.status_requested:
+        return
+
+    target_status = _required_status_value(update.updates.get("status", update.task.status))
+    if target_status not in {"review", "done"}:
+        return
+
+    has_test_success = await _has_successful_stage_run(
+        session,
+        task_id=update.task.id,
+        stage="test",
+    )
+    if has_test_success:
+        return
+
+    if update.actor.actor_type == "agent":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "pipeline_guard_failed",
+                "message": "No successful test run. Agents cannot force pipeline overrides.",
+                "allow_force_override": False,
+            },
+        )
+
+    if not update.force_status_override:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "pipeline_guard_failed",
+                "message": "No successful test run. Normal transition blocked. Use force_status_override with override_reason.",
+                "allow_force_override": True,
+                "required_reason": True,
+            },
+        )
+
+    if not update.override_reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="override_reason is required when force_status_override=true",
+        )
+
+    update.pipeline_override_used = True
 
 
 async def _task_read_response(
@@ -2664,6 +2738,7 @@ async def _finalize_updated_task(
 ) -> TaskRead:
     for key, value in update.updates.items():
         setattr(update.task, key, value)
+    await _enforce_guarded_pipeline_status_change(session, update=update)
     await _require_no_pending_approval_for_status_change_when_enabled(
         session,
         board_id=update.board_id,
@@ -2736,6 +2811,22 @@ async def _finalize_updated_task(
     session.add(update.task)
     await session.commit()
     await session.refresh(update.task)
+    if update.pipeline_override_used:
+        actor_agent_id = (
+            update.actor.agent.id if update.actor.actor_type == "agent" and update.actor.agent else None
+        )
+        record_activity(
+            session,
+            event_type="task.status_override",
+            task_id=update.task.id,
+            message=(
+                f"Force status override from {update.previous_status} to {update.task.status}. "
+                f"Reason: {update.override_reason}"
+            ),
+            agent_id=actor_agent_id,
+            board_id=update.board_id,
+        )
+        await session.commit()
     await _record_task_comment_from_update(session, update=update)
     await _record_task_update_activity(session, update=update)
     await _notify_task_update_assignment_changes(session, update=update)
