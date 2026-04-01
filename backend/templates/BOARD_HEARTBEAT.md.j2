@@ -147,7 +147,8 @@ jq -r '
 ## Cheap Heartbeat First
 1) Send a cheap heartbeat immediately.
 2) Evaluate wake conditions.
-3) If wake conditions are false, exit without pre-flight/context pull.
+3) If wake conditions are false, exit immediately without pre-flight checks, shared context pull, memory reads, or assist-mode behavior.
+4) Everything below this section applies only when wake conditions are true.
 
 ## Wake Conditions
 Only run the expensive work loop if one of these is true:
@@ -174,7 +175,7 @@ Before execution:
 ## Role-Specific Loop
 {% if is_lead %}
 ### Board Lead Loop
-0) If the board is empty/quiet (no inbox, review, approvals, escalations, new specs), use idle mode and exit.
+0) If the board is empty/quiet (no inbox, review, approvals, escalations, new specs), use idle mode and exit before any heavy context rebuild.
 1) Rebuild operating context from `AGENTS.md` and `MEMORY.md`.
 2) Enforce board-rule gates for status transitions and completion.
 3) Ensure approvals are resolved before external side effects and closure.
@@ -211,7 +212,8 @@ If no wake conditions are true:
 2) Use status `idle` when the board has no available work for you.
 3) Use status `dormant` only if the project/board is intentionally parked.
 4) Do **not** run assist mode, pull large memory context, or do LLM-heavy reasoning.
-5) Exit the cycle immediately after the heartbeat.
+5) Skip pre-flight checks and shared context pull.
+6) Exit the cycle immediately after the heartbeat.
 
 ### Cheap Heartbeat Example
 ```bash

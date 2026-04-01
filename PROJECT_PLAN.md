@@ -22,9 +22,9 @@ Self-hosted система разработки продукта поверх Op
 | 6. Telegram Interface | ✅ Complete | 100% |
 | 7. Agent Role Templates | ✅ Complete | 100% |
 | 8. Reliability & Watchdog | ✅ Complete | 100% |
-| 9. Polish & Documentation | 🔄 In Progress | 90% |
+| 9. Polish & Documentation | 🔄 In Progress | 95% |
 
-**Общий прогресс: ~95%**
+**Общий прогресс: ~97%**
 
 ---
 
@@ -117,7 +117,7 @@ Self-hosted система разработки продукта поверх Op
 ### API endpoints:
 - `POST /api/v1/pipeline/tasks/{id}/execute` — выполнить стадию
 - `POST /api/v1/pipeline/runs/{id}/auto-next` — авто-запуск следующей
-- `GET /api/v1/pipeline/tasks/{id}/validate` — валидация с warnings
+- `GET /api/v1/pipeline/tasks/{id}/validate` — guarded validation с blockers/warnings
 - `POST /api/v1/pipeline/tasks/{id}/status-validate` — валидация смены статуса
 
 ---
@@ -158,6 +158,7 @@ Self-hosted система разработки продукта поверх Op
 - `/approvals` — pending approvals с inline кнопками
 - `/nudge <agent|task>` — протолкнуть
 - `/panic` — аварийная пауза
+- `/resume` — снять паузу с текущей доски
 - `/plan` — генерация backlog
 - Приём файлов — автозагрузка как spec artifact
 
@@ -199,10 +200,10 @@ Self-hosted система разработки продукта поверх Op
 - [ ] 9.3 — Режим «шаблоны проектов» (scaffold новой доски)
 - [ ] 9.4 — Security hardening checklist
 - [ ] 9.5 — Cost/usage мониторинг по моделям и агентам
-- [ ] 9.6 — README проекта
-- [ ] 9.7 — Документация по архитектуре
-- [ ] 9.8 — Runbook восстановления
-- [ ] 9.9 — Security checklist
+- [x] 9.6 — README проекта
+- [x] 9.7 — Документация по архитектуре
+- [x] 9.8 — Runbook восстановления
+- [x] 9.9 — Security checklist
 - [ ] 9.10 — PWA режим для UI
 
 ### Последние реализованные улучшения
@@ -210,7 +211,7 @@ Self-hosted система разработки продукта поверх Op
 - Approval gate: после plan создаётся approval перед build
 - Approval continuation: approve на pipeline.build возобновляет конвейер автоматически
 - Board panic/resume: pipeline может быть поставлен на паузу на уровне доски
-- Heartbeat optimization: idle/dormant режимы для уменьшения расхода токенов на пустых досках
+- Heartbeat optimization: cheap-first flow и idle/dormant режимы уменьшают расход токенов на пустых досках
 - Telegram control actions: `/panic`, `/resume`, `/nudge` теперь делают реальные backend-вызовы
 - QA execution path: test-stage выполняется через QA service вместо generic build-like path
 - Notification polling: бот сам обнаруживает approvals, failed builds, pipeline completions, unblocked tasks и escalations
