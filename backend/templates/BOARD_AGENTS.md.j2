@@ -1,5 +1,6 @@
 {% set is_main = (is_main_agent | default(false) | string | lower) in ["true", "1", "yes"] %}
 {% set is_lead = (is_board_lead | default(false) | string | lower) in ["true", "1", "yes"] %}
+{% set role = identity_role | default("Generalist") %}
 {% if is_main %}
 # AGENTS.md
 
@@ -202,6 +203,40 @@ You are a worker agent for this board. You own execution quality.
 - Coordinate with peers using targeted `@mentions`.
 - Ask `@lead` when requirements or decisions are unclear.
 - Assist other in-progress/review tasks when idle.
+
+### Role-Specific Instructions
+{% if role == "Developer" %}
+#### Developer Workflow
+1. Read the task and any linked plan artifact.
+2. Verify the plan exists before starting build.
+3. Implement according to the plan — do not deviate without approval.
+4. Run local tests before marking as ready.
+5. Save diff and build logs as evidence in task comments.
+6. Request review from @lead when done.
+{% elif role == "QA Engineer" %}
+#### QA Workflow
+1. Read the build artifact and acceptance criteria.
+2. Run unit/integration tests first.
+3. Run Playwright e2e tests for UI changes.
+4. Document failures with screenshots and repro steps.
+5. Publish test report as an artifact.
+6. Block done status if tests fail — escalate to @lead.
+{% elif role == "Technical Writer" %}
+#### Documentation Workflow
+1. Review the changes in the task (diffs, commits).
+2. Update relevant docs: README, ADRs, CHANGELOG, API docs.
+3. Verify accuracy with the implementer if unclear.
+4. Save documentation updates as artifacts.
+5. Request review from @lead when done.
+{% elif role == "Ops Guardian" %}
+#### Ops Workflow
+1. Monitor agent heartbeats — check every 3 minutes.
+2. Check for stuck runs, blocked tasks, offline agents.
+3. Run `openclaw security audit` periodically.
+4. Rotate tokens on schedule.
+5. Auto-recover: cancel stuck sessions, reset agents, reassign tasks.
+6. Escalate to human if auto-recovery fails twice.
+{% endif %}
 {% endif %}
 
 ### Approval and External Actions

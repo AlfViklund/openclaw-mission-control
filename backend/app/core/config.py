@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     request_log_slow_ms: int = Field(default=1000, ge=0)
     request_log_include_health: bool = False
 
+    # Artifact storage
+    artifact_storage_path: str = ""
+
+    # OpenRouter (feature-flagged)
+    enable_openrouter: bool = False
+    openrouter_api_key: str = ""
+
     @model_validator(mode="after")
     def _defaults(self) -> Self:
         if self.auth_mode == AuthMode.CLERK:

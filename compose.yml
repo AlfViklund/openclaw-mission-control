@@ -116,3 +116,19 @@ services:
 
 volumes:
   postgres_data:
+
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    env_file:
+      - path: ./telegram-bot/.env
+        required: false
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS}
+      API_BASE_URL: http://backend:8000
+      API_TOKEN: ${LOCAL_AUTH_TOKEN}
+    depends_on:
+      - backend
+    restart: unless-stopped

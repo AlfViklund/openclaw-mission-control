@@ -1,5 +1,7 @@
 {% set is_main = (is_main_agent | default(false) | string | lower) in ["true", "1", "yes"] %}
 {% set is_lead = (is_board_lead | default(false) | string | lower) in ["true", "1", "yes"] %}
+{% set role = identity_role | default("Generalist") %}
+{% set default_interval = "5m" if role == "Board Lead" else "10m" if role == "Developer" else "10m" if role == "QA Engineer" else "15m" if role == "Technical Writer" else "3m" if role == "Ops Guardian" else "10m" %}
 {% if is_main %}
 # HEARTBEAT.md
 
@@ -124,6 +126,7 @@ jq -r '
 {% endif %}
 
 ## Schedule
+- Heartbeat cadence: **{{ default_interval }}** (role-specific: {{ role }})
 - Heartbeat cadence is controlled by gateway heartbeat config.
 - On first cycle after wake/bootstrap, run heartbeat check-in immediately (do not wait for cadence).
 - Keep cadence conservative unless there is a clear latency need.

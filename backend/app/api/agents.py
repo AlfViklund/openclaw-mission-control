@@ -21,6 +21,8 @@ from app.schemas.agents import (
 )
 from app.schemas.common import OkResponse
 from app.schemas.pagination import DefaultLimitOffsetPage
+from app.services.agent_presets import AGENT_ROLE_PRESETS
+from app.services.agent_provisioning import AgentProvisioningService
 from app.services.openclaw.provisioning_db import AgentLifecycleService, AgentUpdateOptions
 from app.services.organizations import OrganizationContext
 
@@ -166,3 +168,62 @@ async def delete_agent(
     """Delete an agent and clean related task state."""
     service = AgentLifecycleService(session)
     return await service.delete_agent(agent_id=agent_id, ctx=ctx)
+
+
+@router.get("/presets")
+async def list_agent_presets(
+    _ctx: OrganizationContext = ORG_ADMIN_DEP,
+) -> dict:
+    """List available agent role presets."""
+    return {
+        "presets": {
+            key: {
+                "label": val["label"],
+                "description": val["description"],
+                "emoji": val["emoji"],
+                "is_board_lead": val["is_board_lead"],
+            }
+            for key, val in AGENT_ROLE_PRESETS.items()
+        }
+    }
+
+
+@router.post("/presets/{preset}/create")
+async def create_agent_from_preset(
+    preset: str,
+    name: str = Query(...),
+    board_id: UUID = Query(...),
+    gateway_id: UUID = Query(...),
+    session: AsyncSession = SESSION_DEP,
+    _ctx: OrganizationContext = ORG_ADMIN_DEP,
+) -> AgentRead:
+    """Create an agent using a role preset."""
+    service = AgentProvisioningService(session)
+    agent = await service.create_agent_with_preset(
+        name=name,
+        preset=preset,
+        board_id=board_id,
+        gateway_id=gateway_id,
+    )
+    return AgentRead.model_validate(agent)
+
+
+@router.post("/boards/{board_id}/team/provision")
+async def provision_team(
+    board_id: UUID,
+    roles: list[str] | None = Query(default=None),
+    gateway_id: UUID = Query(...),
+    session: AsyncSession = SESSION_DEP,
+    _ctx: OrganizationContext = ORG_ADMIN_DEP,
+) -> dict:
+    """Provision a full team of agents for a board."""
+    service = AgentProvisioningService(session)
+    agents = await service.provision_full_team(
+        board_id=board_id,
+        gateway_id=gateway_id,
+        roles=roles,
+    )
+    return {
+        "created": len(agents),
+        "agents": [AgentRead.model_validate(a).model_dump() for a in agents],
+    }

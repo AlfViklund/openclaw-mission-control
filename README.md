@@ -1,9 +1,23 @@
-# OpenClaw Mission Control
+# ClawDev Mission Control
 
-[![CI](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml/badge.svg)](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml) ![Static Badge](https://img.shields.io/badge/Join-Slack-active?style=flat&color=blue&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Foc-mission-control%2Fshared_invite%2Fzt-3qpcm57xh-AI9C~smc3MDBVzEhvwf7gg)
+> Self-hosted product development system powered by OpenClaw + Mission Control + OpenCode
 
-OpenClaw Mission Control is the centralized operations and governance platform for running OpenClaw across teams and organizations, with unified visibility, approval controls, and gateway-aware orchestration.
-It gives operators a single interface for work orchestration, agent and gateway management, approval-driven governance, and API-backed automation.
+[![CI](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml/badge.svg)](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml)
+
+ClawDev Mission Control extends OpenClaw Mission Control into a complete product development pipeline that turns giant specifications into shipped products using an AI agent team.
+
+## What ClawDev Adds
+
+| Module | Description |
+|--------|-------------|
+| **Spec & Artifact Hub** | Upload, store, and manage specifications and project artifacts |
+| **Backlog Planner** | Auto-generate structured backlogs with dependency graphs from specs |
+| **Runtime Adapters** | Execute agent runs via ACP, OpenCode CLI, or OpenRouter API |
+| **Pipeline Orchestration** | Enforce plan→build→test discipline with soft warnings |
+| **QA Testing** | Playwright e2e test execution with report generation |
+| **Telegram Interface** | Full project management via Telegram bot |
+| **Agent Role Templates** | Pre-configured roles: Board Lead, Developer, QA Engineer, Technical Writer, Ops Guardian |
+| **Watchdog** | Health monitoring, auto-recovery, and escalation management |
 
 <img width="1896" height="869" alt="Mission Control dashboard" src="https://github.com/user-attachments/assets/49a3c823-6aaf-4c56-8328-fb1485ee940f" />
 <img width="1896" height="858" alt="image" src="https://github.com/user-attachments/assets/2bfee13a-3dab-4f4a-9135-e47bb6949dcf" />

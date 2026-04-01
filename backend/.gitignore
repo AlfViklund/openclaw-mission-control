@@ -11,3 +11,6 @@ requirements-dev.txt
 
 # Generated for orval input (avoid needing a running backend/DB).
 openapi.json
+
+# Artifact file storage
+storage/

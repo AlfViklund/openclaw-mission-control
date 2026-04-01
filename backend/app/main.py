@@ -14,6 +14,7 @@ from app.api.activity import router as activity_router
 from app.api.agent import router as agent_router
 from app.api.agents import router as agents_router
 from app.api.approvals import router as approvals_router
+from app.api.artifacts import router as artifacts_router
 from app.api.auth import router as auth_router
 from app.api.board_group_memory import router as board_group_memory_router
 from app.api.board_groups import router as board_groups_router
@@ -25,6 +26,11 @@ from app.api.gateway import router as gateway_router
 from app.api.gateways import router as gateways_router
 from app.api.metrics import router as metrics_router
 from app.api.organizations import router as organizations_router
+from app.api.planner import router as planner_router
+from app.api.pipeline import router as pipeline_router
+from app.api.qa import router as qa_router
+from app.api.runs import router as runs_router
+from app.api.watchdog import router as watchdog_router
 from app.api.skills_marketplace import router as skills_marketplace_router
 from app.api.souls_directory import router as souls_directory_router
 from app.api.tags import router as tags_router
@@ -115,6 +121,30 @@ OPENAPI_TAGS = [
         "description": "Approval request, review, and status-tracking operations for board tasks.",
     },
     {
+        "name": "artifacts",
+        "description": "Spec and artifact upload, storage, preview, and download operations.",
+    },
+    {
+        "name": "planner",
+        "description": "Spec-to-backlog generation, DAG validation, and task application operations.",
+    },
+    {
+        "name": "pipeline",
+        "description": "Pipeline orchestration, stage validation, and auto-trigger operations.",
+    },
+    {
+        "name": "qa",
+        "description": "QA test execution, Playwright reports, and test result management.",
+    },
+    {
+        "name": "runs",
+        "description": "Agent execution run tracking, evidence collection, and runtime management.",
+    },
+    {
+        "name": "watchdog",
+        "description": "Health monitoring, auto-recovery, ops commands, and escalation management.",
+    },
+    {
         "name": "tasks",
         "description": "Task CRUD, dependency management, and task workflow operations.",
     },
@@ -176,6 +206,8 @@ _OPENAPI_EXAMPLE_TAGS = {
     "board-webhooks",
     "board-onboarding",
     "approvals",
+    "artifacts",
+    "planner",
     "tasks",
     "custom-fields",
     "tags",
@@ -554,6 +586,12 @@ api_v1.include_router(board_memory_router)
 api_v1.include_router(board_webhooks_router)
 api_v1.include_router(board_onboarding_router)
 api_v1.include_router(approvals_router)
+api_v1.include_router(artifacts_router)
+api_v1.include_router(planner_router)
+api_v1.include_router(pipeline_router)
+api_v1.include_router(qa_router)
+api_v1.include_router(runs_router)
+api_v1.include_router(watchdog_router)
 api_v1.include_router(tasks_router)
 api_v1.include_router(task_custom_fields_router)
 api_v1.include_router(tags_router)
