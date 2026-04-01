@@ -64,7 +64,7 @@ async def cmd_nudge(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("panic"))
 async def cmd_panic(message: Message, state: FSMContext) -> None:
-    """Emergency pause — notify owner and pause all agents."""
+    """Emergency pause for the current board pipeline."""
     data = await state.get_data()
     board_id = data.get("active_board_id")
     if not board_id:
@@ -83,7 +83,7 @@ async def cmd_panic(message: Message, state: FSMContext) -> None:
     await message.answer(
         "🚨 *PANIC MODE ACTIVATED*\n\n"
         "Pipeline для текущей доски поставлен на паузу.\n"
-        "Новые стадии не запускаются до resume.\n"
+        "Новые стадии не запускаются до `/resume`.\n"
         "Проверьте систему и используйте `/status` для оценки.",
         parse_mode="Markdown",
     )
@@ -93,7 +93,7 @@ async def cmd_panic(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("resume"))
 async def cmd_resume(message: Message, state: FSMContext) -> None:
-    """Resume a board after panic mode."""
+    """Resume the current board pipeline after panic mode."""
     data = await state.get_data()
     board_id = data.get("active_board_id")
     if not board_id:

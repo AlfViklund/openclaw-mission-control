@@ -82,6 +82,15 @@ export const customFetch = async <T>(
       const detail = (errorData as { detail?: unknown }).detail;
       if (typeof detail === "string" && detail) {
         message = detail;
+      } else if (
+        detail &&
+        typeof detail === "object" &&
+        typeof (detail as { message?: unknown }).message === "string"
+      ) {
+        const structured = detail as { code?: unknown; message: string };
+        message = structured.code && typeof structured.code === "string"
+          ? `${structured.code}: ${structured.message}`
+          : structured.message;
       } else if (Array.isArray(detail) && detail.length) {
         const first = detail[0] as { msg?: unknown };
         if (

@@ -79,7 +79,10 @@ class PlaywrightRunner:
             f"--output={screenshot_dir}",
         ]
         if browsers:
-            cmd.extend(["--project", ",".join(browsers)])
+            for browser in browsers:
+                browser_name = browser.strip()
+                if browser_name:
+                    cmd.extend(["--project", browser_name])
         if grep:
             cmd.extend(["--grep", grep])
 

@@ -1362,17 +1362,7 @@ export default function BoardDetailPage() {
     return new Date(latest).toISOString();
   };
 
-  const lastAgentControlCommand = useMemo(() => {
-    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
-      const value = (chatMessages[i]?.content ?? "").trim().toLowerCase();
-      if (value === "/pause" || value === "/resume") {
-        return value;
-      }
-    }
-    return null;
-  }, [chatMessages]);
-
-  const isAgentsPaused = lastAgentControlCommand === "/pause";
+  const isBoardPaused = board?.is_paused === true;
 
   useEffect(() => {
     if (!isPageActive) return;
@@ -3169,9 +3159,7 @@ export default function BoardDetailPage() {
                     <Button
                       variant="outline"
                       onClick={() =>
-                        openAgentsControlDialog(
-                          isAgentsPaused ? "resume" : "pause",
-                        )
+                        openAgentsControlDialog(isBoardPaused ? "resume" : "pause")
                       }
                       disabled={
                         !isSignedIn ||
@@ -3181,22 +3169,22 @@ export default function BoardDetailPage() {
                       }
                       className={cn(
                         "h-9 w-9 p-0",
-                        isAgentsPaused
+                        isBoardPaused
                           ? "border-amber-200 bg-amber-50/60 text-amber-700 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
                           : "",
                       )}
                       aria-label={
-                        isAgentsPaused ? "Resume agents" : "Pause agents"
+                        isBoardPaused ? "Resume board" : "Pause board"
                       }
                       title={
                         canWrite
-                          ? isAgentsPaused
-                            ? "Resume agents"
-                            : "Pause agents"
+                          ? isBoardPaused
+                            ? "Resume board"
+                            : "Pause board"
                           : "Read-only access"
                       }
                     >
-                      {isAgentsPaused ? (
+                      {isBoardPaused ? (
                         <Play className="h-4 w-4" />
                       ) : (
                         <Pause className="h-4 w-4" />

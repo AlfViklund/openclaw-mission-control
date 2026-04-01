@@ -42,10 +42,12 @@ jq -r '
 - If you have any pending `LEAD REQUEST: ASK USER` messages in OpenClaw chat, handle them promptly (see AGENTS.md).
 
 ## Cheap Heartbeat First
-Before any expensive reasoning or context loading:
+Cheap-first means the cycle always starts with a lightweight check-in.
+If wake conditions are not met, stop there and do not enter the heavy path.
+
 1) Send a cheap check-in only.
 2) If there is no explicit high-priority gateway-main duty, exit immediately.
-3) Do not pull large memory context on empty/quiet cycles.
+3) Do not pull large memory context, rebuild operating context, or do any heavy reasoning on quiet cycles.
 
 ## Heartbeat checklist
 1) Check in immediately:
@@ -196,7 +198,7 @@ If the board has no inbox/review tasks, no pending approvals, and no escalation 
 1) Send a cheap heartbeat only.
 2) Use status `idle` for a quiet but active project.
 3) Use status `dormant` if the board is intentionally paused or parked.
-4) Do not rebuild full context or pull memory on that cycle.
+4) Do not rebuild full context or pull memory on that cycle; the heavy path stays off until wake conditions return.
 {% else %}
 ### Board Worker Loop
 1) Check in via heartbeat endpoint.

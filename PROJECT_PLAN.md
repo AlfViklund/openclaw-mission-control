@@ -210,7 +210,7 @@ Self-hosted система разработки продукта поверх Op
 - Guarded pipeline mode: review/done требуют успешного test-run или owner override с причиной
 - Approval gate: после plan создаётся approval перед build
 - Approval continuation: approve на pipeline.build возобновляет конвейер автоматически
-- Board panic/resume: pipeline может быть поставлен на паузу на уровне доски
+- Board panic/resume: pipeline можно поставить на паузу и снять с паузы на уровне доски; `/resume` возвращает тот же board state
 - Heartbeat optimization: cheap-first flow и idle/dormant режимы уменьшают расход токенов на пустых досках
 - Telegram control actions: `/panic`, `/resume`, `/nudge` теперь делают реальные backend-вызовы
 - QA execution path: test-stage выполняется через QA service вместо generic build-like path
