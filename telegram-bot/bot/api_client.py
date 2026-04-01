@@ -27,12 +27,24 @@ class MissionControlClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, json: dict | None = None) -> Any:
+    async def _patch(self, path: str, json: dict | None = None) -> Any:
+        async with httpx.AsyncClient() as client:
+            resp = await client.patch(
+                f"{self._base}{path}",
+                headers=self._headers,
+                json=json,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _post(self, path: str, json: dict | None = None, params: dict | None = None) -> Any:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self._base}{path}",
                 headers=self._headers,
                 json=json,
+                params=params,
                 timeout=60.0,
             )
             resp.raise_for_status()
@@ -57,22 +69,22 @@ class MissionControlClient:
     # -- Tasks --
 
     async def list_tasks(self, board_id: str) -> list[dict]:
-        data = await self._get("/api/v1/tasks", params={"board_id": board_id})
+        data = await self._get(f"/api/v1/boards/{board_id}/tasks")
         return data.get("items", [])
 
-    async def get_task(self, task_id: str) -> dict:
-        return await self._get(f"/api/v1/tasks/{task_id}")
+    async def get_task(self, board_id: str, task_id: str) -> dict:
+        return await self._get(f"/api/v1/boards/{board_id}/tasks/{task_id}")
 
-    async def update_task_status(self, task_id: str, status: str) -> dict:
-        return await self._post(
-            f"/api/v1/tasks/{task_id}/status",
+    async def update_task_status(self, board_id: str, task_id: str, status: str) -> dict:
+        return await self._patch(
+            f"/api/v1/boards/{board_id}/tasks/{task_id}",
             json={"status": status},
         )
 
     # -- Runs --
 
     async def list_runs(self, task_id: str) -> list[dict]:
-        data = await self._get("/api/v1/runs", params={"task_id": task_id})
+        data = await self._get("/api/v1/runs/by-task", params={"task_id": task_id})
         return data.get("items", [])
 
     # -- Pipeline --
@@ -86,22 +98,21 @@ class MissionControlClient:
     async def execute_stage(self, task_id: str, stage: str) -> dict:
         return await self._post(
             f"/api/v1/pipeline/tasks/{task_id}/execute",
-            json={"stage": stage},
+            params={"stage": stage},
         )
 
     # -- Approvals --
 
     async def list_approvals(self, board_id: str | None = None) -> list[dict]:
-        params = {"status": "pending"}
-        if board_id:
-            params["board_id"] = board_id
-        data = await self._get("/api/v1/approvals", params=params)
+        if not board_id:
+            return []
+        data = await self._get(f"/api/v1/boards/{board_id}/approvals", params={"status": "pending"})
         return data.get("items", [])
 
-    async def resolve_approval(self, approval_id: str, decision: str) -> dict:
-        return await self._post(
-            f"/api/v1/approvals/{approval_id}/resolve",
-            json={"decision": decision},
+    async def resolve_approval(self, board_id: str, approval_id: str, decision: str) -> dict:
+        return await self._patch(
+            f"/api/v1/boards/{board_id}/approvals/{approval_id}",
+            json={"status": decision},
         )
 
     # -- Artifacts --
@@ -118,7 +129,7 @@ class MissionControlClient:
     async def generate_backlog(self, artifact_id: str, board_id: str) -> dict:
         return await self._post(
             "/api/v1/planner/generate",
-            json={"artifact_id": artifact_id, "board_id": board_id},
+            json={"artifact_id": artifact_id},
         )
 
     # -- Agents --
@@ -129,22 +140,11 @@ class MissionControlClient:
 
     # -- QA --
 
-    async def _post_with_params(self, path: str, params: dict | None = None) -> Any:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self._base}{path}",
-                headers=self._headers,
-                params=params,
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
-
     async def run_tests(self, task_id: str, browsers: str | None = None) -> dict:
         params = {"task_id": task_id}
         if browsers:
             params["browsers"] = browsers
-        return await self._post_with_params("/api/v1/qa/test", params=params)
+        return await self._post("/api/v1/qa/test", params=params)
 
 
 api = MissionControlClient()

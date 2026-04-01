@@ -24,10 +24,20 @@ async def cmd_nudge(message: Message, state: FSMContext) -> None:
         return
 
     target = args[1].strip()
+    data = await state.get_data()
+    board_id = data.get("active_board_id")
+
+    if not board_id:
+        await message.answer(
+            "⚠️ Активная доска не выбрана.\n"
+            "Используйте `/board <name>` для выбора."
+        )
+        return
+
     await message.answer(f"👉 Отправляю nudging для `{target}`...", parse_mode="Markdown")
 
     try:
-        await api.update_task_status(target, "in_progress")
+        await api.update_task_status(board_id, target, "in_progress")
         await message.answer(f"✅ Задача `{target[:8]}...` переведена в in_progress.")
     except Exception:
         await message.answer(f"⚠️ Не удалось nudging для `{target}`. Возможно это агент, а не задача.")

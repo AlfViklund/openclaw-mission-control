@@ -94,7 +94,7 @@ async def cmd_status(message: Message, state: FSMContext) -> None:
 
 
 @router.message(Command("task"))
-async def cmd_task(message: Message) -> None:
+async def cmd_task(message: Message, state: FSMContext) -> None:
     """Show task details."""
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
@@ -102,8 +102,18 @@ async def cmd_task(message: Message) -> None:
         return
 
     task_id = args[1].strip()
+    data = await state.get_data()
+    board_id = data.get("active_board_id")
+
+    if not board_id:
+        await message.answer(
+            "⚠️ Активная доска не выбрана.\n"
+            "Используйте `/board <name>` для выбора."
+        )
+        return
+
     try:
-        task = await api.get_task(task_id)
+        task = await api.get_task(board_id, task_id)
         runs = await api.list_runs(task_id)
     except Exception as exc:
         await message.answer(f"❌ Ошибка: {exc}")

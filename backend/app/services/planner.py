@@ -7,12 +7,14 @@ Supports multiple backends:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
-import asyncio
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+from sqlmodel import col, select
 
 from app.core.time import utcnow
 from app.models.artifacts import Artifact
@@ -106,6 +108,15 @@ async def generate_backlog_from_text(
     board = await Board.objects.by_id(board_id).first(session)
     if not board:
         raise ValueError(f"Board {board_id} not found")
+
+    existing = await session.exec(
+        select(PlannerOutput).where(
+            col(PlannerOutput.artifact_id) == artifact_id,
+            col(PlannerOutput.status) == "draft",
+        )
+    ).first()
+    if existing:
+        return existing
 
     planner_output = PlannerOutput(
         board_id=board_id,
@@ -251,6 +262,8 @@ async def _call_llm_via_gateway(
 
     full_message = f"{system_prompt}\n\n{user_prompt}"
 
+    history_before = await _get_history_length(lead.openclaw_session_id, config)
+
     await dispatch.send_agent_message(
         session_key=lead.openclaw_session_id,
         config=config,
@@ -262,21 +275,45 @@ async def _call_llm_via_gateway(
     response_text = await _wait_for_agent_response(
         session_key=lead.openclaw_session_id,
         config=config,
+        history_cursor=history_before,
         timeout=300,
     )
     return response_text
 
 
+async def _get_history_length(session_key: str, config: Any) -> int:
+    """Get current chat history length before sending a request."""
+    from app.services.openclaw.gateway_rpc import openclaw_call
+
+    try:
+        history = await openclaw_call(
+            "chat.history",
+            {"session_key": session_key, "limit": 1},
+            config=config,
+        )
+        messages = history.get("messages", []) if isinstance(history, dict) else []
+        return history.get("total", len(messages))
+    except Exception:
+        return 0
+
+
 async def _wait_for_agent_response(
     session_key: str,
     config: Any,
+    history_cursor: int = 0,
     timeout: int = 300,
 ) -> str:
-    """Poll gateway chat history until the agent responds."""
+    """Poll gateway chat history until the agent responds.
+
+    Args:
+        session_key: ACP session key.
+        config: Gateway config.
+        history_cursor: Message count before the request was sent.
+        timeout: Max wait time in seconds.
+    """
     from app.services.openclaw.gateway_rpc import openclaw_call
 
     start = time.time()
-    last_count = 0
 
     while time.time() - start < timeout:
         try:
@@ -286,14 +323,16 @@ async def _wait_for_agent_response(
                 config=config,
             )
             messages = history.get("messages", []) if isinstance(history, dict) else []
-            if len(messages) > last_count:
-                last_msg = messages[-1]
-                if isinstance(last_msg, dict):
-                    content = last_msg.get("content", "")
-                    role = last_msg.get("role", "")
-                    if role in ("assistant", "agent", "model") and content:
-                        return content
-                last_count = len(messages)
+            total = history.get("total", len(messages))
+
+            if total > history_cursor:
+                new_messages = messages[-(total - history_cursor):]
+                for msg in new_messages:
+                    if isinstance(msg, dict):
+                        content = msg.get("content", "")
+                        role = msg.get("role", "")
+                        if role in ("assistant", "agent", "model") and content:
+                            return content
         except Exception:
             pass
         await asyncio.sleep(2)
