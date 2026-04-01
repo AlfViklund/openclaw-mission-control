@@ -512,9 +512,9 @@ make api-gen
 | 6. Telegram Interface | ✅ Завершено |
 | 7. Agent Role Templates | ✅ Завершено |
 | 8. Reliability & Watchdog | ✅ Завершено |
-| 9. Polish & Documentation | ✅ Завершено |
+| 9. Polish & Documentation | 🔄 В процессе |
 
-**Прогресс: 100%** — готов к использованию.
+**Прогресс: ~85%** — ядро работает, UX и документация дорабатываются.
 
 ---
 

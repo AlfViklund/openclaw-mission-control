@@ -373,6 +373,13 @@ async def apply_planner_output(
             description=task_data.get("description"),
             status="inbox",
             priority="medium",
+            acceptance_criteria=task_data.get("acceptance_criteria", []),
+            estimate=task_data.get("estimate"),
+            suggested_agent_role=task_data.get("suggested_agent_role"),
+            planner_task_id=task_data.get("id"),
+            epic_id=task_data.get("epic_id"),
+            auto_created=True,
+            auto_reason="planner_output",
         )
         session.add(task)
         id_map[task_data["id"]] = task.id

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field
 
 from app.core.time import utcnow
@@ -28,6 +29,13 @@ class Task(TenantScoped, table=True):
     due_at: datetime | None = None
     in_progress_at: datetime | None = None
     previous_in_progress_at: datetime | None = None
+
+    # Planner metadata fields
+    acceptance_criteria: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    estimate: str | None = None
+    suggested_agent_role: str | None = None
+    planner_task_id: str | None = None  # Original task ID from planner output
+    epic_id: str | None = None
 
     created_by_user_id: UUID | None = Field(
         default=None,

@@ -83,6 +83,9 @@ async def upload_artifact(
     filename = file.filename or "unnamed"
     mime_type = file.content_type
 
+    existing = await Artifact.objects.filter_by(board_id=board_id, filename=filename).all(session)
+    auto_version = max((a.version for a in existing), default=0) + 1
+
     try:
         storage_path, size_bytes, checksum = save_artifact_file(
             board_id=str(board_id),
@@ -106,7 +109,7 @@ async def upload_artifact(
         mime_type=mime_type,
         size_bytes=size_bytes,
         checksum=checksum,
-        version=version,
+        version=auto_version,
         created_by=user.user.id if user.user else None,
     )
     return artifact
@@ -147,10 +150,11 @@ async def list_artifacts_endpoint(
     board_id: UUID | None = Query(default=None),
     task_id: UUID | None = Query(default=None),
     artifact_type: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="Search in filename"),
     session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = USER_DEP,
 ) -> DefaultLimitOffsetPage[ArtifactRead]:
-    """List artifacts with optional filtering by board, task, and type."""
+    """List artifacts with optional filtering by board, task, type, and search."""
     statement = Artifact.objects.all()
     if board_id is not None:
         statement = statement.filter(col(Artifact.board_id) == board_id)
@@ -158,6 +162,8 @@ async def list_artifacts_endpoint(
         statement = statement.filter(col(Artifact.task_id) == task_id)
     if artifact_type is not None:
         statement = statement.filter(col(Artifact.type) == artifact_type)
+    if q is not None:
+        statement = statement.filter(col(Artifact.filename).ilike(f"%{q}%"))
     statement = statement.order_by(col(Artifact.created_at).desc())
     return await paginate(session, statement.statement)
 

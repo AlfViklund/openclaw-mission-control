@@ -28,10 +28,7 @@ ESCALATION_BLOCKED_MINUTES = 60
 
 
 async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
-    """Check all agents for missed heartbeats and mark offline if needed.
-
-    Returns list of agents that transitioned to offline.
-    """
+    """Check all agents for missed heartbeats and mark offline if needed."""
     now = utcnow()
     offline_transitions = []
 
@@ -71,10 +68,7 @@ async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
 
 
 async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
-    """Auto-retry runs that are stuck (running too long) or failed with retries left.
-
-    Returns list of retried runs.
-    """
+    """Auto-retry runs that are stuck (running too long) or failed with retries left."""
     now = utcnow()
     retried = []
 
@@ -127,10 +121,7 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
 
 
 async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict]:
-    """Reassign in_progress tasks from offline agents back to inbox.
-
-    Returns list of reassigned tasks.
-    """
+    """Reassign in_progress tasks from offline agents back to inbox."""
     offline_agents = await Agent.objects.filter_by(status="offline").all(session)
     offline_ids = {a.id for a in offline_agents}
 
@@ -160,10 +151,7 @@ async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict
 
 
 async def check_escalations(session: AsyncSession) -> list[dict]:
-    """Check for conditions requiring human escalation.
-
-    Returns list of escalation events.
-    """
+    """Check for conditions requiring human escalation."""
     now = utcnow()
     escalations = []
 
@@ -232,7 +220,7 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
 
 
 async def template_sync_agent(session: AsyncSession, agent_id: UUID) -> dict:
-    """Trigger template sync for an agent."""
+    """Trigger template sync for an agent via gateway RPC."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
@@ -241,15 +229,30 @@ async def template_sync_agent(session: AsyncSession, agent_id: UUID) -> dict:
     session.add(agent)
     await session.commit()
 
+    try:
+        from app.models.boards import Board
+        from app.services.openclaw.provisioning_db import AgentLifecycleService
+
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        if board:
+            lifecycle = AgentLifecycleService(session)
+            await lifecycle.sync_agent_templates(agent_id=str(agent_id), board_id=str(board.id))
+            sync_status = "sync_completed"
+        else:
+            sync_status = "sync_db_only_no_board"
+    except Exception as exc:
+        logger.warning("Template sync gateway call failed for agent %s: %s", agent_id, exc)
+        sync_status = "sync_db_only_gateway_failed"
+
     return {
         "agent_id": str(agent.id),
         "agent_name": agent.name,
-        "status": "sync_triggered",
+        "status": sync_status,
     }
 
 
 async def rotate_agent_tokens(session: AsyncSession, agent_id: UUID) -> dict:
-    """Rotate auth tokens for an agent."""
+    """Rotate auth tokens for an agent via gateway RPC."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
@@ -259,15 +262,30 @@ async def rotate_agent_tokens(session: AsyncSession, agent_id: UUID) -> dict:
     session.add(agent)
     await session.commit()
 
+    try:
+        from app.models.boards import Board
+        from app.services.openclaw.provisioning_db import AgentLifecycleService
+
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        if board:
+            lifecycle = AgentLifecycleService(session)
+            await lifecycle.rotate_agent_token(agent_id=str(agent_id), board_id=str(board.id))
+            rotate_status = "rotation_completed"
+        else:
+            rotate_status = "rotation_db_only_no_board"
+    except Exception as exc:
+        logger.warning("Token rotation gateway call failed for agent %s: %s", agent_id, exc)
+        rotate_status = "rotation_db_only_gateway_failed"
+
     return {
         "agent_id": str(agent.id),
         "agent_name": agent.name,
-        "status": "token_rotation_triggered",
+        "status": rotate_status,
     }
 
 
 async def reset_agent_session(session: AsyncSession, agent_id: UUID) -> dict:
-    """Reset an agent's session."""
+    """Reset an agent's session via gateway RPC."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
@@ -277,15 +295,30 @@ async def reset_agent_session(session: AsyncSession, agent_id: UUID) -> dict:
     session.add(agent)
     await session.commit()
 
+    try:
+        from app.models.boards import Board
+        from app.services.openclaw.provisioning_db import AgentLifecycleService
+
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        if board:
+            lifecycle = AgentLifecycleService(session)
+            await lifecycle.reset_agent_session(agent_id=str(agent_id), board_id=str(board.id))
+            reset_status = "reset_completed"
+        else:
+            reset_status = "reset_db_only_no_board"
+    except Exception as exc:
+        logger.warning("Session reset gateway call failed for agent %s: %s", agent_id, exc)
+        reset_status = "reset_db_only_gateway_failed"
+
     return {
         "agent_id": str(agent.id),
         "agent_name": agent.name,
-        "status": "session_reset_triggered",
+        "status": reset_status,
     }
 
 
 async def wake_agent(session: AsyncSession, agent_id: UUID) -> dict:
-    """Wake a sleeping/offline agent."""
+    """Wake a sleeping/offline agent via gateway RPC."""
     agent = await Agent.objects.by_id(agent_id).first(session)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
@@ -296,10 +329,25 @@ async def wake_agent(session: AsyncSession, agent_id: UUID) -> dict:
     session.add(agent)
     await session.commit()
 
+    try:
+        from app.models.boards import Board
+        from app.services.openclaw.provisioning_db import AgentLifecycleService
+
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        if board:
+            lifecycle = AgentLifecycleService(session)
+            await lifecycle.wake_agent(agent_id=str(agent_id), board_id=str(board.id))
+            wake_status = "wake_completed"
+        else:
+            wake_status = "wake_db_only_no_board"
+    except Exception as exc:
+        logger.warning("Wake gateway call failed for agent %s: %s", agent_id, exc)
+        wake_status = "wake_db_only_gateway_failed"
+
     return {
         "agent_id": str(agent.id),
         "agent_name": agent.name,
-        "status": "wake_triggered",
+        "status": wake_status,
         "wake_attempts": agent.wake_attempts,
     }
 
