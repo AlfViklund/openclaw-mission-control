@@ -518,7 +518,7 @@ make api-gen
 | 8. Reliability & Watchdog | ✅ Завершено |
 | 9. Polish & Documentation | 🔄 В процессе |
 
-**Прогресс: ~90%** — ядро, guarded pipeline и operator control уже работают; остаётся дальнейший UX/polish.
+**Прогресс: ~95%** — ядро, guarded pipeline, operator control и heartbeat economy уже работают; остаётся дальнейший polish.
 
 ---
 

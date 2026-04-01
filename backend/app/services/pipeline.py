@@ -6,6 +6,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from sqlalchemy import desc
+from sqlmodel import col
+
 from app.core.time import utcnow
 from app.models.agents import Agent
 from app.models.approvals import Approval
@@ -257,6 +260,20 @@ class PipelineService:
     async def auto_run_next_stage(self, run_id: UUID) -> dict | None:
         """Public wrapper used by the API to auto-trigger the next stage."""
         return await self._auto_run_next_stage(run_id)
+
+    async def resume_after_approval(self, task_id: UUID) -> dict | None:
+        """Resume pipeline execution after build approval is granted.
+
+        Finds the latest successful plan run for the task and attempts auto-next.
+        """
+        plan_run = await (
+            Run.objects.filter_by(task_id=task_id, stage="plan", status="succeeded")
+            .order_by(desc(col(Run.finished_at)))
+            .first(self._session)
+        )
+        if plan_run is None:
+            return None
+        return await self._auto_run_next_stage(plan_run.id)
 
     async def _execute_run(
         self,

@@ -23,6 +23,8 @@ from bot.notifications import (
     notify_agent_offline,
     notify_approval_pending,
     notify_build_failed,
+    notify_pipeline_stage,
+    notify_task_unblocked,
 )
 
 logging.basicConfig(
@@ -93,6 +95,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     seen_approvals: set[str] = set()
     seen_failed_runs: set[str] = set()
     seen_escalations: set[str] = set()
+    seen_pipeline_runs: set[str] = set()
+    seen_unblocked_tasks: set[str] = set()
 
     while not stop_event.is_set():
         try:
@@ -113,6 +117,24 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     seen_failed_runs.add(run_id)
                     await _mark_notification_seen(f"build_failed:{run_id}")
                     await notify_build_failed(run)
+
+            successful_runs = await api.list_runs_for_notifications(status="succeeded")
+            for run in successful_runs:
+                run_id = str(run.get("id"))
+                if not run_id or run_id in seen_pipeline_runs or await _notification_seen(f"pipeline:{run_id}"):
+                    continue
+                seen_pipeline_runs.add(run_id)
+                await _mark_notification_seen(f"pipeline:{run_id}")
+                await notify_pipeline_stage(run)
+
+            tasks = await api.list_unblocked_tasks()
+            for task in tasks:
+                task_id = str(task.get("id"))
+                if not task_id or task_id in seen_unblocked_tasks or await _notification_seen(f"unblocked:{task_id}"):
+                    continue
+                seen_unblocked_tasks.add(task_id)
+                await _mark_notification_seen(f"unblocked:{task_id}")
+                await notify_task_unblocked(task)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):

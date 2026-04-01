@@ -81,6 +81,8 @@ class BoardUpdate(SQLModel):
     comment_required_for_review: bool | None = None
     block_status_changes_with_pending_approval: bool | None = None
     only_lead_can_change_status: bool | None = None
+    is_paused: bool | None = None
+    paused_reason: str | None = None
     max_agents: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")

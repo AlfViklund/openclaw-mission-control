@@ -11,6 +11,7 @@ from sqlmodel import col, select
 
 from app.core.time import utcnow
 from app.models.agents import Agent
+from app.models.boards import Board
 from app.models.runs import Run
 from app.models.task_dependencies import TaskDependency
 from app.models.tasks import Task

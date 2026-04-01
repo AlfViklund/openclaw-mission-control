@@ -22,9 +22,9 @@ Self-hosted система разработки продукта поверх Op
 | 6. Telegram Interface | ✅ Complete | 100% |
 | 7. Agent Role Templates | ✅ Complete | 100% |
 | 8. Reliability & Watchdog | ✅ Complete | 100% |
-| 9. Polish & Documentation | 🔄 In Progress | 80% |
+| 9. Polish & Documentation | 🔄 In Progress | 90% |
 
-**Общий прогресс: ~90%**
+**Общий прогресс: ~95%**
 
 ---
 
@@ -208,11 +208,12 @@ Self-hosted система разработки продукта поверх Op
 ### Последние реализованные улучшения
 - Guarded pipeline mode: review/done требуют успешного test-run или owner override с причиной
 - Approval gate: после plan создаётся approval перед build
+- Approval continuation: approve на pipeline.build возобновляет конвейер автоматически
 - Board panic/resume: pipeline может быть поставлен на паузу на уровне доски
 - Heartbeat optimization: idle/dormant режимы для уменьшения расхода токенов на пустых досках
 - Telegram control actions: `/panic`, `/resume`, `/nudge` теперь делают реальные backend-вызовы
 - QA execution path: test-stage выполняется через QA service вместо generic build-like path
-- Notification polling: бот сам обнаруживает approvals, failed builds и escalations
+- Notification polling: бот сам обнаруживает approvals, failed builds, pipeline completions, unblocked tasks и escalations
 
 ---
 

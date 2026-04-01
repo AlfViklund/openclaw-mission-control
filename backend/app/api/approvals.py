@@ -483,5 +483,34 @@ async def update_approval(
                 approval.id,
                 approval.status,
             )
+        if approval.status == "approved" and approval.action_type == "pipeline.build" and approval.task_id:
+            try:
+                from app.services.pipeline import PipelineService
+
+                await PipelineService(session).resume_after_approval(approval.task_id)
+                record_activity(
+                    session,
+                    event_type="approval.pipeline_resumed",
+                    message=f"Pipeline resumed after approval {approval.id} was approved.",
+                    task_id=approval.task_id,
+                    board_id=approval.board_id,
+                )
+                await session.commit()
+            except Exception:
+                logger.exception(
+                    "approval.pipeline_resume_failed board_id=%s approval_id=%s task_id=%s",
+                    board.id,
+                    approval.id,
+                    approval.task_id,
+                )
+        elif approval.status == "rejected" and approval.action_type == "pipeline.build" and approval.task_id:
+            record_activity(
+                session,
+                event_type="approval.pipeline_blocked",
+                message=f"Pipeline remains blocked because approval {approval.id} was rejected.",
+                task_id=approval.task_id,
+                board_id=approval.board_id,
+            )
+            await session.commit()
     reads = await _approval_reads(session, [approval])
     return reads[0]

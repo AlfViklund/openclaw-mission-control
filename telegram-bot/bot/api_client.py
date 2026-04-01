@@ -94,6 +94,11 @@ class MissionControlClient:
         data = await self._get(f"/api/v1/runs/by-task/{task_id}")
         return data.get("items", [])
 
+    async def list_runs_for_notifications(self, status: str | None = None) -> list[dict]:
+        params = {"status": status} if status else None
+        data = await self._get("/api/v1/runs", params=params)
+        return data.get("items", [])
+
     # -- Pipeline --
 
     async def validate_pipeline(self, task_id: str, stage: str) -> dict:
@@ -130,6 +135,14 @@ class MissionControlClient:
             params["board_id"] = board_id
         data = await self._get("/api/v1/artifacts", params=params)
         return data.get("items", [])
+
+    async def list_unblocked_tasks(self) -> list[dict]:
+        boards = await self.list_boards()
+        tasks: list[dict] = []
+        for board in boards:
+            board_tasks = await self.list_tasks(board["id"])
+            tasks.extend(task for task in board_tasks if not task.get("is_blocked"))
+        return tasks
 
     # -- Planner --
 

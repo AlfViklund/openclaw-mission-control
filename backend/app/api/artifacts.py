@@ -67,7 +67,6 @@ async def upload_artifact(
     task_id: UUID | None = Query(default=None),
     artifact_type: str = Query(default="other"),
     source: str = Query(default="web"),
-    version: int = Query(default=1),
     user: ActorContext = UPLOAD_DEP,
     session: AsyncSession = SESSION_DEP,
 ) -> Artifact:

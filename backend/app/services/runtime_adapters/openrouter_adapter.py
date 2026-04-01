@@ -24,6 +24,7 @@ class OpenRouterAdapter(RuntimeAdapter):
     def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key or getattr(settings, "openrouter_api_key", "")
         self._enabled = bool(getattr(settings, "enable_openrouter", False))
+        self._active_runs: dict[str, dict[str, Any]] = {}
 
     @property
     def runtime_name(self) -> str:
@@ -48,7 +49,6 @@ class OpenRouterAdapter(RuntimeAdapter):
             )
 
         run_id = str(uuid4())
-        self._active_runs: dict[str, dict[str, Any]] = {}
         self._active_runs[run_id] = {
             "started_at": time.time(),
             "model": model or "anthropic/claude-sonnet-4-20260325",

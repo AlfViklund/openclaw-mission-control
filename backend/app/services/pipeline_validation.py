@@ -1,7 +1,7 @@
-"""Pipeline validation service for plan→build→test discipline.
+"""Pipeline validation service for guarded plan→build→test discipline.
 
-Uses soft enforcement (warnings) — violations are reported but not blocked,
-allowing flexibility during early development phases.
+Stage execution may produce hard blockers (missing prerequisite runs, missing approval),
+while manual task-status transitions remain guarded with owner override support.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ async def validate_pipeline_stage(
 ) -> PipelineValidation:
     """Validate whether a pipeline stage can be executed.
 
-    Returns warnings for out-of-order execution but does NOT block.
+    Returns blockers for invalid stage execution order and missing approval gates.
     """
     warnings: list[PipelineWarning] = []
     blockers: list[str] = []
