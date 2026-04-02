@@ -154,7 +154,7 @@ class AgentProvisioningService:
             ).all(self._session)
 
             role_exists = any(
-                a.identity_profile.get("role") == label for a in existing
+                (a.identity_profile or {}).get("role") == label for a in existing
             )
             if role_exists:
                 continue

@@ -241,10 +241,11 @@ async def _call_llm_via_gateway(
     """Send a planning request through the OpenClaw Gateway to a board lead agent.
 
     Uses the gateway WebSocket RPC to send a message to the board lead agent
-    and waits for a response by polling chat history.
+    and waits for a response by polling chat history with request correlation.
     """
     import asyncio
     import time
+    from uuid import uuid4
 
     from app.models.agents import Agent
     from app.services.openclaw.gateway_dispatch import GatewayDispatchService
@@ -267,7 +268,9 @@ async def _call_llm_via_gateway(
             "Run template sync to provision the agent."
         )
 
-    full_message = f"{system_prompt}\n\n{user_prompt}"
+    request_id = uuid4().hex[:12]
+    request_marker = f"\n\n[PLANNER_REQUEST:{request_id}]"
+    full_message = f"{system_prompt}\n\n{user_prompt}{request_marker}"
 
     history_before = await _get_history_length(lead.openclaw_session_id, config)
 
@@ -283,6 +286,7 @@ async def _call_llm_via_gateway(
         session_key=lead.openclaw_session_id,
         config=config,
         history_cursor=history_before,
+        request_marker=f"[PLANNER_RESPONSE:{request_id}]",
         timeout=300,
     )
     return response_text
@@ -308,6 +312,7 @@ async def _wait_for_agent_response(
     session_key: str,
     config: Any,
     history_cursor: int = 0,
+    request_marker: str | None = None,
     timeout: int = 300,
 ) -> str:
     """Poll gateway chat history until the agent responds.
@@ -316,6 +321,7 @@ async def _wait_for_agent_response(
         session_key: ACP session key.
         config: Gateway config.
         history_cursor: Message count before the request was sent.
+        request_marker: Expected marker in the response for correlation.
         timeout: Max wait time in seconds.
     """
     from app.services.openclaw.gateway_rpc import openclaw_call
@@ -334,12 +340,15 @@ async def _wait_for_agent_response(
 
             if total > history_cursor:
                 new_messages = messages[-(total - history_cursor):]
-                for msg in new_messages:
+                for msg in reversed(new_messages):
                     if isinstance(msg, dict):
                         content = msg.get("content", "")
                         role = msg.get("role", "")
                         if role in ("assistant", "agent", "model") and content:
-                            return content
+                            if request_marker and request_marker in content:
+                                return content.replace(request_marker, "").strip()
+                            if not request_marker:
+                                return content
         except Exception:
             pass
         await asyncio.sleep(2)

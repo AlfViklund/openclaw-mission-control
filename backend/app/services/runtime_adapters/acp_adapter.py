@@ -53,6 +53,8 @@ class ACPAdapter(RuntimeAdapter):
         **kwargs: Any,
     ) -> RunResult:
         run_id = str(uuid4())
+        request_id = uuid4().hex[:12]
+        request_marker = f"\n\n[ACP_REQUEST:{request_id}]"
         self._active_runs[run_id] = {
             "started_at": time.time(),
             "model": model,
@@ -64,11 +66,11 @@ class ACPAdapter(RuntimeAdapter):
                 session_key=self._session_key,
                 config=self._gateway_config,
                 agent_name=self._agent_name,
-                message=prompt,
+                message=f"{prompt}{request_marker}",
                 deliver=True,
             )
 
-            response_text = await self._wait_for_response()
+            response_text = await self._wait_for_response(request_marker=request_marker)
 
             evidence = self._build_evidence(prompt, response_text, model)
 
@@ -108,8 +110,12 @@ class ACPAdapter(RuntimeAdapter):
             return "unknown"
         return run_info.get("status", "unknown")
 
-    async def _wait_for_response(self, timeout: int = 300) -> str:
-        """Wait for the agent to respond by polling chat history."""
+    async def _wait_for_response(self, timeout: int = 300, request_marker: str | None = None) -> str:
+        """Wait for the agent to respond by polling chat history.
+
+        Uses request correlation when a marker is provided to avoid picking
+        up responses from unrelated concurrent activity in the session.
+        """
         from app.services.openclaw.gateway_rpc import openclaw_call
 
         start = time.time()
@@ -124,12 +130,15 @@ class ACPAdapter(RuntimeAdapter):
                 )
                 messages = history.get("messages", []) if isinstance(history, dict) else []
                 if len(messages) > last_count:
-                    last_msg = messages[-1]
-                    if isinstance(last_msg, dict):
-                        content = last_msg.get("content", "")
-                        role = last_msg.get("role", "")
-                        if role in ("assistant", "agent", "model"):
-                            return content
+                    for msg in reversed(messages):
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            role = msg.get("role", "")
+                            if role in ("assistant", "agent", "model") and content:
+                                if request_marker and request_marker in content:
+                                    return content.replace(request_marker, "").strip()
+                                if not request_marker:
+                                    return content
                     last_count = len(messages)
             except Exception:
                 pass

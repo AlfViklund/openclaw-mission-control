@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy import asc, func, or_
 from sqlmodel import col, select
 from sse_starlette.sse import EventSourceResponse
@@ -441,6 +441,7 @@ async def update_approval(
     payload: ApprovalUpdate,
     board: Board = BOARD_USER_WRITE_DEP,
     session: AsyncSession = SESSION_DEP,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> ApprovalRead:
     """Update an approval's status and resolution timestamp."""
     approval = await Approval.objects.by_id(approval_id).first(session)
@@ -484,25 +485,23 @@ async def update_approval(
                 approval.status,
             )
         if approval.status == "approved" and approval.action_type == "pipeline.build" and approval.task_id:
-            try:
-                from app.services.pipeline import PipelineService
-
-                await PipelineService(session).resume_after_approval(approval.task_id)
-                record_activity(
-                    session,
-                    event_type="approval.pipeline_resumed",
-                    message=f"Pipeline resumed after approval {approval.id} was approved.",
-                    task_id=approval.task_id,
-                    board_id=approval.board_id,
-                )
-                await session.commit()
-            except Exception:
-                logger.exception(
-                    "approval.pipeline_resume_failed board_id=%s approval_id=%s task_id=%s",
-                    board.id,
-                    approval.id,
-                    approval.task_id,
-                )
+            task_id = approval.task_id
+            approval_id_for_bg = approval.id
+            board_id_for_bg = approval.board_id
+            background_tasks.add_task(
+                _resume_pipeline_background,
+                task_id,
+                approval_id_for_bg,
+                board_id_for_bg,
+            )
+            record_activity(
+                session,
+                event_type="approval.pipeline_resume_scheduled",
+                message=f"Pipeline resume scheduled after approval {approval.id} was approved.",
+                task_id=task_id,
+                board_id=board_id_for_bg,
+            )
+            await session.commit()
         elif approval.status == "rejected" and approval.action_type == "pipeline.build" and approval.task_id:
             record_activity(
                 session,
@@ -514,3 +513,39 @@ async def update_approval(
             await session.commit()
     reads = await _approval_reads(session, [approval])
     return reads[0]
+
+
+async def _resume_pipeline_background(
+    task_id: UUID,
+    approval_id: UUID,
+    board_id: UUID,
+) -> None:
+    """Resume pipeline execution after approval in a background context.
+
+    Creates its own database session so it does not depend on the request
+    lifecycle and cannot block the HTTP response.
+    """
+    from app.db.session import async_session_maker
+    from app.services.pipeline import PipelineService
+
+    try:
+        async with async_session_maker() as session:
+            result = await PipelineService(session).resume_after_approval(task_id)
+            if result:
+                from app.services.activity_log import record_activity
+
+                record_activity(
+                    session,
+                    event_type="approval.pipeline_resumed",
+                    message=f"Pipeline resumed after approval {approval_id} was approved.",
+                    task_id=task_id,
+                    board_id=board_id,
+                )
+                await session.commit()
+    except Exception:
+        logger.exception(
+            "approval.pipeline_resume_failed board_id=%s approval_id=%s task_id=%s",
+            board_id,
+            approval_id,
+            task_id,
+        )
