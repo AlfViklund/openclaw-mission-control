@@ -157,6 +157,17 @@ type TaskComment = TaskCommentRead;
 
 type Approval = ApprovalRead & { status: string };
 
+function timeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 type BoardChatMessage = BoardMemoryRead;
 
 type LiveFeedEventType =
@@ -3319,6 +3330,12 @@ export default function BoardDetailPage() {
                   ) : (
                     sortedAgents.map((agent) => {
                       const isWorking = workingAgentIds.has(agent.id);
+                      const lastSeen = agent.last_seen_at
+                        ? new Date(agent.last_seen_at)
+                        : null;
+                      const ago = lastSeen
+                        ? timeAgo(lastSeen)
+                        : "never";
                       return (
                         <button
                           key={agent.id}
@@ -3344,7 +3361,10 @@ export default function BoardDetailPage() {
                               {agent.name}
                             </p>
                             <p className="text-[11px] text-slate-500">
-                              {agentRoleLabel(agent)}
+                              {agentRoleLabel(agent)} · {agent.status}
+                            </p>
+                            <p className="text-[10px] text-slate-400">
+                              {ago}
                             </p>
                           </div>
                         </button>
