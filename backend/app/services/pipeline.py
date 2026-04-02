@@ -289,8 +289,20 @@ class PipelineService:
         if stage == "test":
             from app.services.qa import QAService
 
+            # Resolve the project workspace so Playwright runs tests in the
+            # same directory that the build-stage agent just worked in.
+            test_dir: str | None = None
+            if agent is not None and board is not None and board.gateway_id:
+                from app.models.gateways import Gateway
+                from app.services.openclaw.provisioning import _workspace_path as gateway_workspace_path
+
+                gateway = await Gateway.objects.by_id(board.gateway_id).first(self._session)
+                if gateway is not None:
+                    test_dir = gateway_workspace_path(agent, gateway.workspace_root)
+
             report, evidence_paths, success, summary = await QAService(self._session).run_tests_for_existing_run(
                 run,
+                test_dir=test_dir,
             )
             return RunResult(
                 success=success,
