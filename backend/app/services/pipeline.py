@@ -91,6 +91,16 @@ class PipelineService:
         if agent_id:
             agent = await Agent.objects.by_id(agent_id).first(self._session)
 
+        # Compute workspace path for runs that execute in a project workspace.
+        workspace_path: str | None = None
+        if agent is not None and board is not None and board.gateway_id:
+            from app.models.gateways import Gateway
+            from app.services.openclaw.provisioning import _workspace_path as gateway_workspace_path
+
+            gateway = await Gateway.objects.by_id(board.gateway_id).first(self._session)
+            if gateway is not None:
+                workspace_path = gateway_workspace_path(agent, gateway.workspace_root)
+
         run = await create_run(
             self._session,
             task_id=task_id,
@@ -98,6 +108,7 @@ class PipelineService:
             runtime=runtime,
             stage=stage,
             model=model,
+            workspace_path=workspace_path,
         )
 
         run = await start_run(self._session, run)
@@ -286,19 +297,40 @@ class PipelineService:
         model: str | None,
         prompt: str | None,
     ) -> RunResult:
+        board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
+
         if stage == "test":
             from app.services.qa import QAService
 
-            # Resolve the project workspace so Playwright runs tests in the
-            # same directory that the build-stage agent just worked in.
+            # Get workspace from the current run's metadata, or fall back to
+            # the last successful build run for this task.
             test_dir: str | None = None
-            if agent is not None and board is not None and board.gateway_id:
-                from app.models.gateways import Gateway
-                from app.services.openclaw.provisioning import _workspace_path as gateway_workspace_path
+            run_metadata = getattr(run, "metadata", None) or {}
+            if isinstance(run_metadata, dict) and run_metadata.get("workspace_path"):
+                test_dir = run_metadata["workspace_path"]
+            else:
+                # Look for the last successful build run with a workspace path.
+                from app.models.runs import Run as RunModel
+                from sqlmodel import col, select
 
-                gateway = await Gateway.objects.by_id(board.gateway_id).first(self._session)
-                if gateway is not None:
-                    test_dir = gateway_workspace_path(agent, gateway.workspace_root)
+                last_build = (
+                    await select(RunModel)
+                    .where(
+                        col(RunModel.task_id) == task.id,
+                        col(RunModel.stage) == "build",
+                        col(RunModel.status) == "succeeded",
+                    )
+                    .order_by(col(RunModel.created_at).desc())
+                    .limit(1)
+                )
+                last_run = (await self._session.exec(last_build)).first()
+                if last_run:
+                    last_meta = getattr(last_run, "metadata", None) or {}
+                    if isinstance(last_meta, dict) and last_meta.get("workspace_path"):
+                        test_dir = last_meta["workspace_path"]
+
+            if not test_dir:
+                raise ValueError("missing test workspace for task")
 
             report, evidence_paths, success, summary = await QAService(self._session).run_tests_for_existing_run(
                 run,
@@ -321,7 +353,6 @@ class PipelineService:
         from app.services.runtime_adapters.factory import RuntimeAdapterFactory
 
         adapter_kwargs: dict[str, Any] = {"runtime": runtime}
-        board = await Board.objects.by_id(task.board_id).first(self._session) if task.board_id else None
 
         if runtime == "acp":
             if agent is None or task.board_id is None:

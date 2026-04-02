@@ -7,10 +7,14 @@ and API-facing services.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from app.services.openclaw.constants import AGENT_SESSION_PREFIX
 from app.services.openclaw.shared import GatewayAgentIdentity
+
+if TYPE_CHECKING:
+    from app.models.agents import Agent
 
 
 def gateway_main_session_key(gateway_id: UUID) -> str:
@@ -38,3 +42,18 @@ def board_scoped_session_key(
     if is_board_lead:
         return board_lead_session_key(board_id)
     return board_agent_session_key(agent_id)
+
+
+def resolve_canonical_agent_session(agent: "Agent") -> str:
+    """Return the single canonical session key for a board-scoped agent.
+
+    This is the **only** source of truth for mapping an agent to its
+    gateway session.  All gateway-directed messaging (dispatch, lifecycle,
+    provisioning, watchdog, wake) must use this function instead of
+    deriving session keys ad-hoc.
+
+    Invariant: one agent id → one session key.
+    """
+    if agent.is_board_lead and agent.board_id is not None:
+        return board_lead_session_key(agent.board_id)
+    return board_agent_session_key(agent.id)

@@ -49,19 +49,6 @@ If wake conditions are not met, stop there and do not enter the heavy path.
 2) If there is no explicit high-priority gateway-main duty, exit immediately.
 3) Do not pull large memory context, rebuild operating context, or do any heavy reasoning on quiet cycles.
 
-## Heartbeat checklist
-1) Check in immediately:
-- Use the `agent-main` heartbeat endpoint (`POST /api/v1/agents/heartbeat`).
-- Startup check-in example:
-
-```bash
-curl -s -X POST "{{ base_url }}/api/v1/agents/heartbeat" \
-  -H "X-Agent-Token: {{ auth_token }}"
-```
-
-- If check-in fails due to 5xx/network, stop and retry next heartbeat.
-- During that failure window, do **not** write memory updates (`MEMORY.md`, daily memory files).
-
 ## Memory Maintenance (every 2-3 days)
 1) Read recent `memory/YYYY-MM-DD.md` files.
 2) Update `MEMORY.md` with durable facts/decisions.
@@ -147,18 +134,21 @@ jq -r '
 - If pre-flight fails due to 5xx/network, do not write memory or task updates.
 
 ## Cheap Heartbeat First
-1) Send a cheap heartbeat immediately.
-2) Evaluate wake conditions.
-3) If wake conditions are false, exit immediately without pre-flight checks, shared context pull, memory reads, or assist-mode behavior.
-4) Everything below this section applies only when wake conditions are true.
+1) Send a cheap heartbeat immediately via `POST /api/v1/agents/heartbeat`.
+2) Check work-snapshot to decide whether to enter heavy path:
+
+```bash
+curl -s "{{ base_url }}/api/v1/agents/{{ agent_id }}/work-snapshot" \
+  -H "X-Agent-Token: {{ auth_token }}"
+```
+
+3) If `should_wake` is `false` — exit immediately. Do NOT run pre-flight, shared context pull, memory reads, assist-mode, or any heavy reasoning.
+4) If `should_wake` is `true` — proceed to pre-flight and role-specific loop below.
 
 ## Wake Conditions
-Only run the expensive work loop if one of these is true:
-1) You have an assigned `in_progress` task.
-2) You have an assigned `inbox` task.
-3) There are pending approvals, review tasks, or unblock decisions (lead).
-4) You were explicitly mentioned, re-assigned, manually nudged, or woken.
-5) The board received a new spec/planner output or recovery event.
+Only run the expensive work loop if `work-snapshot` returns `should_wake: true`.
+Common reasons: `assigned_in_progress_task`, `assigned_inbox_task`, `pending_approval`, `review_queue`.
+If reason is `busy_existing_run` or `idle_no_work` — exit immediately.
 
 ## Pre-Flight Checks (Only After Wake Conditions Pass)
 1) Confirm `BASE_URL`, `AUTH_TOKEN`, and `BOARD_ID` from `TOOLS.md` match this workspace.

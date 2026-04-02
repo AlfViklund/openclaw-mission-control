@@ -24,8 +24,12 @@ async def create_run(
     model: str | None = None,
     temperature: float | None = None,
     permissions_profile: str | None = None,
+    workspace_path: str | None = None,
 ) -> Run:
     """Create a new run record in queued status."""
+    metadata: dict = {}
+    if workspace_path:
+        metadata["workspace_path"] = workspace_path
     run = Run(
         task_id=task_id,
         agent_id=agent_id,
@@ -36,6 +40,9 @@ async def create_run(
         permissions_profile=permissions_profile,
         status="queued",
     )
+    if metadata:
+        from sqlalchemy import update
+        run.metadata = metadata
     session.add(run)
     await session.commit()
     await session.refresh(run)

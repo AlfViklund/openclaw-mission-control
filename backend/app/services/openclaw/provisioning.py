@@ -50,6 +50,7 @@ from app.services.openclaw.internal.agent_key import slugify
 from app.services.openclaw.internal.session_keys import (
     board_agent_session_key,
     board_lead_session_key,
+    resolve_canonical_agent_session,
 )
 from app.services.openclaw.shared import GatewayAgentIdentity
 
@@ -428,15 +429,7 @@ def _build_main_context(
     }
 
 
-def _session_key(agent: Agent) -> str:
-    """Return the deterministic session key for a board-scoped agent.
-
-    Note: Never derive session keys from a human-provided name; use stable ids instead.
-    """
-
-    if agent.is_board_lead and agent.board_id is not None:
-        return board_lead_session_key(agent.board_id)
-    return board_agent_session_key(agent.id)
+_session_key = resolve_canonical_agent_session
 
 
 def _render_agent_files(

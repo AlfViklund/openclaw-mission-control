@@ -159,6 +159,27 @@ async def heartbeat_or_create_agent(
     return await service.heartbeat_or_create_agent(payload=payload, actor=actor)
 
 
+@router.get("/{agent_id}/work-snapshot")
+async def get_agent_work_snapshot(
+    agent_id: str,
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
+) -> dict:
+    """Return a lightweight work snapshot for an agent.
+
+    Answers "should this agent wake up?" without reasoning, memory pulls,
+    or assist-mode overhead.  Includes busy-gating: if the agent already
+    has a running run, should_wake is false.
+    """
+    from uuid import UUID
+    from app.api.deps import require_user
+
+    require_user(actor)
+    from app.services.agent_work import get_work_snapshot
+
+    return await get_work_snapshot(session, UUID(agent_id))
+
+
 @router.delete("/{agent_id}", response_model=OkResponse)
 async def delete_agent(
     agent_id: str,

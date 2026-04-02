@@ -71,6 +71,7 @@ from app.services.openclaw.internal.retry import GatewayBackoff
 from app.services.openclaw.internal.session_keys import (
     board_agent_session_key,
     board_lead_session_key,
+    resolve_canonical_agent_session,
 )
 from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
 from app.services.openclaw.policies import OpenClawAuthorizationPolicy
@@ -778,22 +779,17 @@ class AgentLifecycleService(OpenClawDBService):
     def resolve_session_key(cls, agent: Agent) -> str:
         """Resolve the gateway session key for an agent.
 
-        Notes:
-        - For board-scoped agents, default to a UUID-based key to avoid name collisions.
+        Thin wrapper around the canonical session key helper.
         """
-
         existing = (agent.openclaw_session_id or "").strip()
         if agent.board_id is None:
-            # Gateway-main agents must have an explicit deterministic key (set elsewhere).
             if existing:
                 return existing
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Gateway main agent session key is required",
             )
-        if agent.is_board_lead:
-            return board_lead_session_key(agent.board_id)
-        return board_agent_session_key(agent.id)
+        return resolve_canonical_agent_session(agent)
 
     @classmethod
     def workspace_path(cls, agent_name: str, workspace_root: str | None) -> str:
