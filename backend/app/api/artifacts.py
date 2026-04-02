@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlmodel import col
 
-from app.api.deps import require_user
+from app.api.deps import AUTH_DEP, require_user_auth
 from app.db.pagination import paginate
 from app.db.session import get_session
 from app.models.artifacts import Artifact
@@ -40,9 +40,11 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
-UPLOAD_DEP = Depends(require_user)
 SESSION_DEP = Depends(get_session)
-USER_DEP = Depends(require_user)
+
+UPLOAD_DEP = AUTH_DEP
+
+USER_DEP = AUTH_DEP
 
 _TEXT_MIME_PREFIXES = (
     "text/",
@@ -73,16 +75,22 @@ async def upload_artifact(
     """Upload a file and create an artifact record."""
     board = await Board.objects.by_id(board_id).first(session)
     if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file"
+        )
 
     filename = file.filename or "unnamed"
     mime_type = file.content_type
 
-    existing = await Artifact.objects.filter_by(board_id=board_id, filename=filename).all(session)
+    existing = await Artifact.objects.filter_by(
+        board_id=board_id, filename=filename
+    ).all(session)
     auto_version = max((a.version for a in existing), default=0) + 1
 
     try:
@@ -114,7 +122,9 @@ async def upload_artifact(
     return artifact
 
 
-@router.post("/metadata", response_model=ArtifactRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/metadata", response_model=ArtifactRead, status_code=status.HTTP_201_CREATED
+)
 async def create_artifact_metadata(
     payload: ArtifactCreate,
     user: ActorContext = USER_DEP,
@@ -123,7 +133,9 @@ async def create_artifact_metadata(
     """Create an artifact record without file upload (for externally-stored files)."""
     board = await Board.objects.by_id(payload.board_id).first(session)
     if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
 
     storage_path = f"external/{payload.board_id}/{payload.filename}"
 
@@ -176,7 +188,9 @@ async def get_artifact(
     """Get artifact metadata by ID."""
     artifact = await get_artifact_by_id(session, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
     return artifact
 
 
@@ -189,7 +203,9 @@ async def download_artifact(
     """Download the artifact file."""
     artifact = await get_artifact_by_id(session, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
 
     try:
         content = read_artifact_file(artifact.storage_path)
@@ -215,7 +231,9 @@ async def preview_artifact(
     """Get a text preview of the artifact (for text-based files only)."""
     artifact = await get_artifact_by_id(session, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
 
     if not _is_text_mime(artifact.mime_type):
         return {"preview": None, "reason": "Binary file type not previewable"}
@@ -237,7 +255,9 @@ async def update_artifact_endpoint(
     """Update artifact metadata."""
     artifact = await get_artifact_by_id(session, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
 
     artifact = await update_artifact(
         session,
@@ -257,7 +277,9 @@ async def delete_artifact_endpoint(
     """Delete an artifact and its stored file."""
     artifact = await get_artifact_by_id(session, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
 
     try:
         delete_artifact_file(artifact.storage_path)

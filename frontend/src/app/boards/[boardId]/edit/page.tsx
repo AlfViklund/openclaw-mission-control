@@ -43,7 +43,7 @@ import type {
   BoardRead,
   BoardUpdate,
 } from "@/api/generated/model";
-import { BoardOnboardingChat } from "@/components/BoardOnboardingChat";
+import { BoardOnboardingWizard } from "@/components/BoardOnboardingWizard";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog";
@@ -1496,7 +1496,7 @@ export default function EditBoardPage() {
             </DialogClose>
           </div>
           {boardId ? (
-            <BoardOnboardingChat
+            <BoardOnboardingWizard
               boardId={boardId}
               onConfirmed={handleOnboardingConfirmed}
             />
