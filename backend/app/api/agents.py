@@ -170,14 +170,51 @@ async def get_agent_work_snapshot(
     Answers "should this agent wake up?" without reasoning, memory pulls,
     or assist-mode overhead.  Includes busy-gating: if the agent already
     has a running run, should_wake is false.
+
+    Authorization:
+    - Agent token: can read only own snapshot
+    - Board lead: can read snapshots of team agents on same board
+    - Board admin/owner: can read snapshots of agents on their board
+    - Org admin: full access
     """
     from uuid import UUID
+
+    target_id = UUID(agent_id)
+
+    # Agent token self-access
+    if actor.agent and actor.agent.id == target_id:
+        from app.services.agent_work import get_work_snapshot
+        return await get_work_snapshot(session, target_id)
+
+    # User-based access: verify board-level permissions
     from app.api.deps import require_user
-
     require_user(actor)
-    from app.services.agent_work import get_work_snapshot
 
-    return await get_work_snapshot(session, UUID(agent_id))
+    from app.models.agents import Agent
+    target = await Agent.objects.by_id(target_id).first(session)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    # Board lead can read team snapshots on same board
+    if actor.agent and target.board_id and actor.agent.board_id == target.board_id:
+        lead_agents = await Agent.objects.filter_by(
+            board_id=target.board_id, is_board_lead=True,
+        ).all(session)
+        if any(a.id == actor.agent.id for a in lead_agents):
+            from app.services.agent_work import get_work_snapshot
+            return await get_work_snapshot(session, target_id)
+
+    # Org admin / board owner — already authorized via actor context
+    if actor.user:
+        from app.services.organizations import is_org_admin, has_board_access
+        if await is_org_admin(session, actor.user.id):
+            from app.services.agent_work import get_work_snapshot
+            return await get_work_snapshot(session, target_id)
+        if target.board_id and await has_board_access(session, actor.user.id, target.board_id):
+            from app.services.agent_work import get_work_snapshot
+            return await get_work_snapshot(session, target_id)
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
 
 @router.delete("/{agent_id}", response_model=OkResponse)

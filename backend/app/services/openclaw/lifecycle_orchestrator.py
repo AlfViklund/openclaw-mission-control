@@ -67,7 +67,29 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
         clear_confirm_token: bool = False,
         raise_gateway_errors: bool = True,
     ) -> Agent:
-        """Provision or update any agent under a per-agent lock."""
+        """Provision or update any agent under a per-agent lock.
+
+        If the agent already has a running run and this is a wake action,
+        skip the heavy cycle to avoid interleaving control loops in the
+        same session. Presence-only actions (heartbeat, status update) are
+        still allowed.
+        """
+        if wake and action != "update":
+            from app.models.runs import Run
+            from sqlmodel import col, select
+
+            busy = (
+                select(Run)
+                .where(col(Run.agent_id) == agent_id, col(Run.status) == "running")
+                .limit(1)
+            )
+            if (await self.session.exec(busy)).first():
+                locked = await self._lock_agent(agent_id=agent_id)
+                locked.last_provision_error = "busy_existing_run"
+                self.session.add(locked)
+                await self.session.commit()
+                await self.session.refresh(locked)
+                return locked
 
         locked = await self._lock_agent(agent_id=agent_id)
         template_user = user

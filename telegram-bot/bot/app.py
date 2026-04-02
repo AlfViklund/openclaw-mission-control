@@ -89,31 +89,26 @@ async def _init_notification_redis() -> None:
         logger.info("Using in-memory notification dedupe semantics")
 
 
-async def _get_notification_watermark(key: str) -> float:
-    """Get a notification watermark timestamp from Redis."""
+async def _get_watermark(event_type: str, destination: str = "default") -> float:
+    """Get a per-type per-destination watermark from Redis."""
     global _notification_redis
     if _notification_redis is None:
         return 0.0
-    val = await _notification_redis.get(f"clawdev:watermark:{key}")
+    val = await _notification_redis.get(f"clawdev:wm:{destination}:{event_type}")
     return float(val) if val else 0.0
 
 
-async def _set_notification_watermark(key: str, ts: float) -> None:
-    """Set a notification watermark timestamp in Redis."""
+async def _set_watermark(event_type: str, ts: float, destination: str = "default") -> None:
+    """Set a per-type per-destination watermark in Redis."""
     global _notification_redis
     if _notification_redis is None:
         return
-    await _notification_redis.set(f"clawdev:watermark:{key}", str(ts))
+    await _notification_redis.set(f"clawdev:wm:{destination}:{event_type}", str(ts))
 
 
 async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     """Poll backend for noteworthy events and push them to Telegram."""
     await _init_notification_redis()
-    seen_approvals: set[str] = set()
-    seen_failed_runs: set[str] = set()
-    seen_escalations: set[str] = set()
-    seen_pipeline_runs: set[str] = set()
-    seen_unblocked_tasks: set[str] = set()
     first_poll = True
     import time
 
@@ -121,58 +116,63 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
         try:
             now_ts = time.time()
             boards = await api.list_boards()
+
+            wm_approval = await _get_watermark("approval")
+            approvals: list[dict] = []
             for board in boards:
                 approvals = await api.list_approvals(board.get("id"))
                 for approval in approvals:
                     approval_id = str(approval.get("id"))
-                    if approval_id and approval_id not in seen_approvals and not await _notification_seen(f"approval:{approval_id}"):
-                        seen_approvals.add(approval_id)
+                    if approval_id and not await _notification_seen(f"approval:{approval_id}"):
                         await _mark_notification_seen(f"approval:{approval_id}")
                         if not first_poll:
                             await notify_approval_pending(approval)
+            if approvals:
+                await _set_watermark("approval", now_ts)
 
+            wm_build = await _get_watermark("build_failed")
             failed_builds = await api.list_failed_build_runs()
             for run in failed_builds:
                 run_id = str(run.get("id"))
-                if run_id and run_id not in seen_failed_runs and not await _notification_seen(f"build_failed:{run_id}"):
-                    seen_failed_runs.add(run_id)
+                if run_id and not await _notification_seen(f"build_failed:{run_id}"):
                     await _mark_notification_seen(f"build_failed:{run_id}")
                     if not first_poll:
                         await notify_build_failed(run)
+            if failed_builds:
+                await _set_watermark("build_failed", now_ts)
 
+            wm_run = await _get_watermark("run_success")
             successful_runs = await api.list_runs_for_notifications(status="succeeded")
             for run in successful_runs:
                 run_id = str(run.get("id"))
-                if not run_id or run_id in seen_pipeline_runs or await _notification_seen(f"pipeline:{run_id}"):
+                if not run_id or await _notification_seen(f"pipeline:{run_id}"):
                     continue
-                seen_pipeline_runs.add(run_id)
                 await _mark_notification_seen(f"pipeline:{run_id}")
                 if not first_poll:
                     await notify_pipeline_stage(run)
+            if successful_runs:
+                await _set_watermark("run_success", now_ts)
 
+            wm_unblocked = await _get_watermark("unblocked")
             tasks = await api.list_unblocked_tasks()
             for task in tasks:
                 task_id = str(task.get("id"))
-                if not task_id or task_id in seen_unblocked_tasks or await _notification_seen(f"unblocked:{task_id}"):
+                if not task_id or await _notification_seen(f"unblocked:{task_id}"):
                     continue
-                seen_unblocked_tasks.add(task_id)
                 await _mark_notification_seen(f"unblocked:{task_id}")
                 if not first_poll:
                     await notify_task_unblocked(task)
+            if tasks:
+                await _set_watermark("unblocked", now_ts)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):
                 key = f"{event.get('type')}:{event.get('agent_id') or event.get('run_id') or event.get('task_id')}"
-                if key in seen_escalations or await _notification_seen(f"escalation:{key}"):
+                if await _notification_seen(f"escalation:{key}"):
                     continue
-                seen_escalations.add(key)
                 await _mark_notification_seen(f"escalation:{key}")
                 if not first_poll and event.get("type") == "agent_offline":
                     await notify_agent_offline(event)
-
-            # Persist watermarks so restarts don't replay old events.
-            if _notification_redis is not None:
-                await _set_notification_watermark("last_poll_ts", now_ts)
 
             first_poll = False
         except Exception as exc:

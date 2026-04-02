@@ -41,4 +41,9 @@ class Run(QueryModel, table=True):
 
     error_message: str | None = None
 
+    run_metadata: dict = Field(
+        default_factory=dict,
+        sa_column=Column("run_metadata", JSON),
+    )
+
     created_at: datetime = Field(default_factory=utcnow)

@@ -208,6 +208,7 @@ class PipelineService:
             runtime=run.runtime,
             stage=next_stage,
             model=run.model,
+            workspace_path=(getattr(run, "run_metadata", None) or {}).get("workspace_path"),
         )
         next_run = await start_run(self._session, next_run)
 
@@ -305,7 +306,7 @@ class PipelineService:
             # Get workspace from the current run's metadata, or fall back to
             # the last successful build run for this task.
             test_dir: str | None = None
-            run_metadata = getattr(run, "metadata", None) or {}
+            run_metadata = getattr(run, "run_metadata", None) or {}
             if isinstance(run_metadata, dict) and run_metadata.get("workspace_path"):
                 test_dir = run_metadata["workspace_path"]
             else:
@@ -314,7 +315,7 @@ class PipelineService:
                 from sqlmodel import col, select
 
                 last_build = (
-                    await select(RunModel)
+                    select(RunModel)
                     .where(
                         col(RunModel.task_id) == task.id,
                         col(RunModel.stage) == "build",
@@ -325,7 +326,7 @@ class PipelineService:
                 )
                 last_run = (await self._session.exec(last_build)).first()
                 if last_run:
-                    last_meta = getattr(last_run, "metadata", None) or {}
+                    last_meta = getattr(last_run, "run_metadata", None) or {}
                     if isinstance(last_meta, dict) and last_meta.get("workspace_path"):
                         test_dir = last_meta["workspace_path"]
 

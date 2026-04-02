@@ -39,10 +39,8 @@ async def create_run(
         temperature=temperature,
         permissions_profile=permissions_profile,
         status="queued",
+        run_metadata=metadata,
     )
-    if metadata:
-        from sqlalchemy import update
-        run.metadata = metadata
     session.add(run)
     await session.commit()
     await session.refresh(run)

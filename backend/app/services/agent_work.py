@@ -20,12 +20,9 @@ WAKE_REASONS = frozenset({
     "assigned_in_progress_task",
     "assigned_inbox_task",
     "pending_approval",
-    "manual_nudge",
-    "watchdog_recovery",
-    "new_spec_artifact",
-    "planner_output_ready",
     "review_queue",
     "busy_existing_run",
+    "board_paused",
     "idle_no_work",
 })
 
