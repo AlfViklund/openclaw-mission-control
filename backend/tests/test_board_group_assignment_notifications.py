@@ -283,6 +283,46 @@ async def test_update_board_skips_lead_notify_when_no_effective_change(
 
 
 @pytest.mark.asyncio
+async def test_update_board_syncs_automation_config_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = _board(board_group_id=None)
+    session = _FakeSession()
+    automation_config = {
+        "online_every_seconds": 150,
+        "wake_on_review": False,
+    }
+    payload = BoardUpdate(automation_config=automation_config)
+    calls: dict[str, object] = {"sync": 0, "config": None}
+
+    async def _fake_apply_board_update(**kwargs: Any) -> Board:
+        target: Board = kwargs["board"]
+        target.automation_config = automation_config
+        return target
+
+    async def _fake_sync_automation_to_agents(**kwargs: Any) -> None:
+        calls["sync"] = int(calls["sync"]) + 1
+        calls["config"] = kwargs["board"].automation_config
+
+    async def _fake_lead_notify(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(boards, "_apply_board_update", _fake_apply_board_update)
+    monkeypatch.setattr(boards, "_sync_automation_to_agents", _fake_sync_automation_to_agents)
+    monkeypatch.setattr(boards, "_notify_lead_on_board_update", _fake_lead_notify)
+
+    updated = await boards.update_board(
+        payload=payload,
+        session=session,  # type: ignore[arg-type]
+        board=board,
+    )
+
+    assert updated.automation_config == automation_config
+    assert calls["sync"] == 1
+    assert calls["config"] == automation_config
+
+
+@pytest.mark.asyncio
 async def test_notify_agents_on_board_group_addition_fanout_and_records_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

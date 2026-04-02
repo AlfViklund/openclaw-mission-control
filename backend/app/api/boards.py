@@ -39,6 +39,7 @@ from app.services.board_snapshot import build_board_snapshot
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
+from app.services.openclaw.provisioning import OpenClawGatewayProvisioner
 from app.services.organizations import OrganizationContext, board_access_filter
 
 if TYPE_CHECKING:
@@ -441,6 +442,8 @@ async def _sync_automation_to_agents(
         return
 
     agents = await Agent.objects.filter(col(Agent.board_id) == board.id).all(session)
+    if not agents:
+        return
     for agent in agents:
         current_hb = getattr(agent, "heartbeat_config", None) or {}
         if not isinstance(current_hb, dict):
@@ -449,6 +452,19 @@ async def _sync_automation_to_agents(
         agent.heartbeat_config = merged
         session.add(agent)
     await session.commit()
+
+    if board.gateway_id is None:
+        logger.warning(
+            "board.automation.sync_skipped board_id=%s reason=no_gateway",
+            board.id,
+        )
+        return
+
+    gateway = await Gateway.objects.by_id(board.gateway_id).first(session)
+    if gateway is None:
+        return
+
+    await OpenClawGatewayProvisioner().sync_gateway_agent_heartbeats(gateway, agents)
 
 
 async def _notify_lead_on_board_update(

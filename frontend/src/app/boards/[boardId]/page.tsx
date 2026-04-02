@@ -132,6 +132,20 @@ import {
   type TaskCustomFieldValues,
 } from "./custom-field-utils";
 
+type ClerkWindow = Window & {
+  clerk?: {
+    session?: {
+      getToken?: () => Promise<string | null>;
+    };
+  };
+};
+
+async function getClerkSessionToken(): Promise<string> {
+  if (typeof window === "undefined") return "";
+  const clerkWindow = window as ClerkWindow;
+  return (await clerkWindow.clerk?.session?.getToken?.()) ?? "";
+}
+
 type Board = BoardRead;
 
 type TaskStatus = Exclude<TaskCardRead["status"], undefined>;
@@ -859,7 +873,6 @@ export default function BoardDetailPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentWakeReasons, setAgentWakeReasons] = useState<Record<string, string>>({});
-  const [agentWakeReasons, setAgentWakeReasons] = useState<Record<string, string>>({});
   const [groupSnapshot, setGroupSnapshot] = useState<BoardGroupSnapshot | null>(
     null,
   );
@@ -992,6 +1005,7 @@ export default function BoardDetailPage() {
     setIsLiveFeedHistoryLoading(false);
     setLiveFeedHistoryError(null);
     setLiveFeed([]);
+    setAgentWakeReasons({});
     setLiveFeedFlashIds({});
     if (typeof window !== "undefined") {
       Object.values(liveFeedFlashTimersRef.current).forEach((timerId) => {
@@ -1001,51 +1015,31 @@ export default function BoardDetailPage() {
     liveFeedFlashTimersRef.current = {};
   }, [boardId]);
 
-  // Fetch real wake reasons from backend work-snapshots
   useEffect(() => {
-    if (!isSignedIn || !boardId || agents.length === 0) return;
+    if (!isSignedIn || !boardId || agents.length === 0) {
+      setAgentWakeReasons({});
+      return;
+    }
     let cancelled = false;
     const fetchWakeReasons = async () => {
       try {
+        const token = await getClerkSessionToken();
         const res = await fetch(`/api/v1/agents/boards/${boardId}/work-snapshots`, {
-          headers: { Authorization: `Bearer ${await (window as any).clerk?.session?.getToken() ?? ""}` },
+          headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;
-        const data = await res.json();
+        const data = (await res.json()) as {
+          snapshots?: Record<string, { reason?: string | null } | null>;
+        };
         if (!cancelled && data.snapshots) {
           const reasons: Record<string, string> = {};
-          for (const [agentId, snap] of Object.entries(data.snapshots) as [string, any][]) {
+          for (const [agentId, snap] of Object.entries(data.snapshots)) {
             if (snap?.reason) reasons[agentId] = snap.reason;
           }
           setAgentWakeReasons(reasons);
         }
       } catch {
-        // Silently ignore — sidebar falls back to local heuristic
-      }
-    };
-    fetchWakeReasons();
-    return () => { cancelled = true; };
-  }, [isSignedIn, boardId, agents.length]);
-
-  useEffect(() => {
-    if (!isSignedIn || !boardId || agents.length === 0) return;
-    let cancelled = false;
-    const fetchWakeReasons = async () => {
-      try {
-        const res = await fetch(`/api/v1/agents/boards/${boardId}/work-snapshots`, {
-          headers: { Authorization: `Bearer ${await (window as any).clerk?.session?.getToken() ?? ""}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled && data.snapshots) {
-          const reasons: Record<string, string> = {};
-          for (const [agentId, snap] of Object.entries(data.snapshots) as [string, any][]) {
-            if (snap?.reason) reasons[agentId] = snap.reason;
-          }
-          setAgentWakeReasons(reasons);
-        }
-      } catch {
-        // Silently ignore — sidebar falls back to local heuristic
+        // Silently ignore; the UI only shows backend-backed wake reasons.
       }
     };
     fetchWakeReasons();
@@ -3427,16 +3421,7 @@ export default function BoardDetailPage() {
                       const ago = lastSeen
                         ? timeAgo(lastSeen)
                         : "never";
-                      const wakeReason = agentWakeReasons[agent.id]
-                        || (isWorking
-                          ? "assigned_task"
-                          : agent.status === "idle"
-                            ? "idle"
-                            : agent.status === "dormant"
-                              ? "dormant"
-                              : agent.status === "offline"
-                                ? "offline"
-                                : null);
+                      const wakeReason = agentWakeReasons[agent.id] ?? null;
                       return (
                         <button
                           key={agent.id}
