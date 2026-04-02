@@ -197,7 +197,7 @@ async def create_agent_from_preset(
     session: AsyncSession = SESSION_DEP,
     _ctx: OrganizationContext = ORG_ADMIN_DEP,
 ) -> AgentRead:
-    """Create an agent using a role preset."""
+    """Create an agent using a role preset and run full gateway provisioning."""
     service = AgentProvisioningService(session)
     agent = await service.create_agent_with_preset(
         name=name,
@@ -216,14 +216,20 @@ async def provision_team(
     session: AsyncSession = SESSION_DEP,
     _ctx: OrganizationContext = ORG_ADMIN_DEP,
 ) -> dict:
-    """Provision a full team of agents for a board."""
+    """Provision a full team of agents for a board with gateway lifecycle.
+
+    Each agent is created, provisioned on the gateway, and woken up.
+    Partial failures are collected in the ``errors`` list while successful
+    agents continue provisioning.
+    """
     service = AgentProvisioningService(session)
-    agents = await service.provision_full_team(
+    result = await service.provision_full_team(
         board_id=board_id,
         gateway_id=gateway_id,
         roles=roles,
     )
     return {
-        "created": len(agents),
-        "agents": [AgentRead.model_validate(a).model_dump() for a in agents],
+        "created": result.created,
+        "errors": result.errors,
+        "agents": [AgentRead.model_validate(a).model_dump() for a in result.agents],
     }
