@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import require_user
+from app.api.deps import AUTH_DEP
 from app.api.utils import http_status_for_value_error
 from app.db.session import get_session
 from app.schemas.common import OkResponse
@@ -20,12 +20,12 @@ from app.services.pipeline_validation import (
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
 
-    from app.api.deps import ActorContext
+    from app.core.auth import AuthContext
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 SESSION_DEP = Depends(get_session)
-USER_DEP = Depends(require_user)
+USER_DEP = AUTH_DEP
 
 
 @router.post("/tasks/{task_id}/execute")
@@ -36,7 +36,7 @@ async def execute_pipeline_stage(
     agent_id: UUID | None = Query(default=None),
     model: str | None = Query(default=None),
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> dict:
     """Execute a pipeline stage for a task."""
     service = PipelineService(session)
@@ -50,7 +50,9 @@ async def execute_pipeline_stage(
         )
     except ValueError as exc:
         message = str(exc)
-        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
+        raise HTTPException(
+            status_code=http_status_for_value_error(message), detail=message
+        ) from exc
     return result
 
 
@@ -58,13 +60,16 @@ async def execute_pipeline_stage(
 async def auto_trigger_next_stage(
     run_id: UUID,
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> dict:
     """Auto-trigger the next pipeline stage after a successful run."""
     service = PipelineService(session)
     result = await service.auto_run_next_stage(run_id)
     if result is None:
-        return {"auto_triggered": False, "reason": "No next stage or run not successful"}
+        return {
+            "auto_triggered": False,
+            "reason": "No next stage or run not successful",
+        }
     return result
 
 
@@ -72,9 +77,11 @@ async def auto_trigger_next_stage(
 async def validate_task_pipeline(
     task_id: UUID,
     stage: str | None = Query(default=None, description="Stage to validate"),
-    new_status: str | None = Query(default=None, description="Target status to validate"),
+    new_status: str | None = Query(
+        default=None, description="Target status to validate"
+    ),
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> dict:
     """Validate pipeline discipline for a task or status change."""
     if stage:

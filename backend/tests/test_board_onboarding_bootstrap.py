@@ -624,3 +624,100 @@ class TestBoardOnboardingAutomationPolicyProfile:
         for profile in ("economy", "normal", "active", "aggressive"):
             policy = BoardOnboardingAutomationPolicy(automation_profile=profile)
             assert policy.automation_profile == profile
+
+
+class TestLegacyBackwardCompatibility:
+    """Tests that old onboarding payloads still validate and work."""
+
+    def test_board_onboarding_confirm_validates_goal_boards(self) -> None:
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm(
+            board_type="goal",
+            objective="Build a great product",
+            success_metrics={"metric": "PRs merged"},
+        )
+        assert confirm.board_type == "goal"
+        assert confirm.objective == "Build a great product"
+
+    def test_board_onboarding_confirm_requires_objective_for_goal(self) -> None:
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            BoardOnboardingConfirm(
+                board_type="goal",
+                objective="",
+                success_metrics={"metric": "PRs merged"},
+            )
+
+    def test_board_onboarding_confirm_allows_general_board_without_objective(
+        self,
+    ) -> None:
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm(board_type="general")
+        assert confirm.board_type == "general"
+        assert confirm.objective is None
+
+    def test_lead_options_from_draft_works_with_minimal_draft(self) -> None:
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import BoardOnboardingAgentComplete
+
+        draft = BoardOnboardingAgentComplete(
+            status="complete",
+            board_type="general",
+        )
+        options = _lead_options_from_draft(draft)
+        assert options.agent_name is None
+        assert options.heartbeat_config is None
+
+    def test_lead_options_from_draft_with_automation_profile_applies_defaults(
+        self,
+    ) -> None:
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import (
+            BoardOnboardingAgentComplete,
+            BoardOnboardingAutomationPolicy,
+        )
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "general",
+            }
+        )
+        draft.automation_policy = BoardOnboardingAutomationPolicy.model_validate(
+            {
+                "automation_profile": "active",
+            }
+        )
+        options = _lead_options_from_draft(draft)
+        assert options.heartbeat_config is not None
+        assert options.heartbeat_config.get("online_every_seconds") == 120
+        assert options.heartbeat_config.get("idle_every_seconds") == 900
+        assert options.heartbeat_config.get("dormant_every_seconds") == 10800
+
+    def test_lead_options_explicit_overrides_profile_defaults(self) -> None:
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import (
+            BoardOnboardingAgentComplete,
+            BoardOnboardingAutomationPolicy,
+        )
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "general",
+            }
+        )
+        draft.automation_policy = BoardOnboardingAutomationPolicy.model_validate(
+            {
+                "automation_profile": "active",
+                "online_every_seconds": 30,
+            }
+        )
+        options = _lead_options_from_draft(draft)
+        assert options.heartbeat_config is not None
+        assert options.heartbeat_config.get("online_every_seconds") == 30
+        assert options.heartbeat_config.get("idle_every_seconds") == 900

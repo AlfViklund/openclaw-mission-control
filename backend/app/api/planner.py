@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import col
 
-from app.api.deps import require_user
+from app.api.deps import AUTH_DEP
 from app.db.pagination import paginate
 from app.db.session import get_session
 from app.models.boards import Board
@@ -33,26 +33,33 @@ from app.services.planner_crud import (
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
 
-    from app.api.deps import ActorContext
+    from app.core.auth import AuthContext
 
 router = APIRouter(prefix="/planner", tags=["planner"])
 
 SESSION_DEP = Depends(get_session)
-USER_DEP = Depends(require_user)
+USER_DEP = AUTH_DEP
 
 
-@router.post("/generate", response_model=PlannerOutputRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/generate", response_model=PlannerOutputRead, status_code=status.HTTP_201_CREATED
+)
 async def generate_backlog_endpoint(
     payload: PlannerGenerateRequest,
-    force: bool = Query(default=False, description="Force regenerate even if draft exists"),
+    force: bool = Query(
+        default=False, description="Force regenerate even if draft exists"
+    ),
     session: AsyncSession = SESSION_DEP,
-    user: ActorContext = USER_DEP,
+    user: AuthContext = USER_DEP,
 ) -> PlannerOutput:
     """Generate a backlog from a spec artifact."""
     from app.models.artifacts import Artifact
+
     artifact = await Artifact.objects.by_id(payload.artifact_id).first(session)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"
+        )
 
     try:
         result = await generate_backlog(
@@ -64,7 +71,9 @@ async def generate_backlog_endpoint(
             force=force,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     return result
 
@@ -74,7 +83,7 @@ async def list_planner_outputs_endpoint(
     board_id: UUID | None = Query(default=None),
     status: str | None = Query(default=None),
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> DefaultLimitOffsetPage[PlannerOutputRead]:
     """List planner outputs with optional filtering."""
     statement = PlannerOutput.objects.all()
@@ -90,12 +99,14 @@ async def list_planner_outputs_endpoint(
 async def get_planner_output(
     planner_output_id: UUID,
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> PlannerOutput:
     """Get a planner output by ID."""
     output = await get_planner_output_by_id(session, planner_output_id)
     if not output:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found"
+        )
     return output
 
 
@@ -104,12 +115,14 @@ async def update_planner_output_endpoint(
     planner_output_id: UUID,
     payload: PlannerUpdateRequest,
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> PlannerOutput:
     """Update a draft planner output's tasks and epics."""
     output = await get_planner_output_by_id(session, planner_output_id)
     if not output:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found"
+        )
 
     try:
         output = await update_planner_output(
@@ -119,7 +132,9 @@ async def update_planner_output_endpoint(
             epics=payload.epics,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     return output
 
@@ -129,12 +144,14 @@ async def apply_planner_output_endpoint(
     planner_output_id: UUID,
     payload: PlannerApplyRequest,
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> PlannerOutput:
     """Apply a planner output, creating real tasks on the board."""
     output = await get_planner_output_by_id(session, planner_output_id)
     if not output:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found"
+        )
 
     try:
         output = await apply_planner_output(
@@ -144,7 +161,9 @@ async def apply_planner_output_endpoint(
             epics_override=payload.epics,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     return output
 
@@ -153,16 +172,20 @@ async def apply_planner_output_endpoint(
 async def delete_planner_output_endpoint(
     planner_output_id: UUID,
     session: AsyncSession = SESSION_DEP,
-    _actor: ActorContext = USER_DEP,
+    _actor: AuthContext = USER_DEP,
 ) -> OkResponse:
     """Delete a draft planner output."""
     output = await get_planner_output_by_id(session, planner_output_id)
     if not output:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Planner output not found"
+        )
 
     try:
         await delete_planner_output(session, output)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     return OkResponse(ok=True)

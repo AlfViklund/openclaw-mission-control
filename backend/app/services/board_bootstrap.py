@@ -89,38 +89,45 @@ def _apply_qa_strictness(
 def _lead_options_from_draft(
     draft: BoardOnboardingAgentComplete | None,
 ) -> LeadAgentOptions:
-    if draft is None or draft.lead_agent is None:
+    if draft is None:
         return LeadAgentOptions(action="provision")
-    lead = draft.lead_agent
-    identity_profile: dict[str, str] = {}
-    if lead.identity_profile:
-        identity_profile.update(lead.identity_profile)
-    if lead.autonomy_level:
-        identity_profile["autonomy_level"] = lead.autonomy_level
-    if lead.verbosity:
-        identity_profile["verbosity"] = lead.verbosity
-    if lead.output_format:
-        identity_profile["output_format"] = lead.output_format
-    if lead.update_cadence:
-        identity_profile["update_cadence"] = lead.update_cadence
 
-    heartbeat_config: dict[str, Any] | None = None
+    identity_profile: dict[str, str] = {}
+    agent_name: str | None = None
+
+    if draft.lead_agent is not None:
+        lead = draft.lead_agent
+        agent_name = lead.name
+        if lead.identity_profile:
+            identity_profile.update(lead.identity_profile)
+        if lead.autonomy_level:
+            identity_profile["autonomy_level"] = lead.autonomy_level
+        if lead.verbosity:
+            identity_profile["verbosity"] = lead.verbosity
+        if lead.output_format:
+            identity_profile["output_format"] = lead.output_format
+        if lead.update_cadence:
+            identity_profile["update_cadence"] = lead.update_cadence
+
+    heartbeat_config: dict[str, Any] = {}
     if draft.automation_policy is not None:
         ap = draft.automation_policy
-        hb: dict[str, Any] = {}
+        profile = ap.automation_profile
+        if profile and profile in AUTOMATION_PROFILE_DEFAULTS:
+            heartbeat_config = dict(AUTOMATION_PROFILE_DEFAULTS[profile])
+        else:
+            heartbeat_config = {}
         if ap.online_every_seconds is not None:
-            hb["online_every_seconds"] = ap.online_every_seconds
+            heartbeat_config["online_every_seconds"] = ap.online_every_seconds
         if ap.idle_every_seconds is not None:
-            hb["idle_every_seconds"] = ap.idle_every_seconds
+            heartbeat_config["idle_every_seconds"] = ap.idle_every_seconds
         if ap.dormant_every_seconds is not None:
-            hb["dormant_every_seconds"] = ap.dormant_every_seconds
-        if hb:
-            heartbeat_config = hb
+            heartbeat_config["dormant_every_seconds"] = ap.dormant_every_seconds
 
     return LeadAgentOptions(
-        agent_name=lead.name,
+        agent_name=agent_name,
         identity_profile=identity_profile or None,
-        heartbeat_config=heartbeat_config,
+        heartbeat_config=heartbeat_config or None,
         action="provision",
     )
 
@@ -220,11 +227,6 @@ async def bootstrap_board_from_onboarding(
             )
         ).first()
 
-        if existing_lead:
-            result.lead_status = "updated"
-        else:
-            result.lead_status = "created"
-
         if gateway_config is not None:
             req = LeadAgentRequest(
                 board=board,
@@ -233,9 +235,10 @@ async def bootstrap_board_from_onboarding(
                 user=user,
                 options=lead_options,
             )
-            agent, _created = await provisioning.ensure_board_lead_agent(request=req)
+            agent, created = await provisioning.ensure_board_lead_agent(request=req)
             result.lead_agent_id = agent.id
             result.lead_name = agent.name
+            result.lead_status = "updated" if not created else "created"
 
     _should_provision = (
         team_plan is not None
@@ -256,7 +259,9 @@ async def bootstrap_board_from_onboarding(
         result.team_agents_created = team_result.created
         result.team_created_roles = list(team_result.created_roles)
         result.team_skipped_roles = list(team_result.skipped_roles)
-        result.team_failed_roles = [str(e.get("role", "")) for e in team_result.errors]
+        result.team_failed_roles = [
+            str(e.get("role", "")) for e in team_result.errors if isinstance(e, dict)
+        ]
 
         if team_result.created > 0 and not team_result.errors:
             result.team_status = "provisioned"

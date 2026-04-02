@@ -399,6 +399,7 @@ class BoardBootstrapResult(SQLModel):
     )
     planner_output_id: UUID | None = None
     automation_sync: BoardAutomationSyncResultData | None = None
+    bootstrap_summary: str | None = None
 
 
 class BoardOnboardingRefineQuestion(SQLModel):

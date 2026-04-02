@@ -222,16 +222,20 @@ class OpenClawProvisioningService(OpenClawDBService):
             if existing.openclaw_session_id != desired_session_key:
                 existing.openclaw_session_id = desired_session_key
                 changed = True
+            preset_identity = dict(board_lead_preset.get("identity_profile") or {})
             if config_options.identity_profile:
-                current_identity = dict(existing.identity_profile or {})
                 for key, value in config_options.identity_profile.items():
                     stripped = value.strip() if isinstance(value, str) else value
                     if stripped:
-                        current_identity[key] = stripped
-                existing.identity_profile = current_identity
+                        preset_identity[key] = stripped
+            if preset_identity:
+                existing.identity_profile = preset_identity
                 changed = True
+            preset_hb = dict(board_lead_preset.get("heartbeat_config") or {})
             if config_options.heartbeat_config:
-                existing.heartbeat_config = dict(config_options.heartbeat_config)
+                preset_hb.update(config_options.heartbeat_config)
+            if preset_hb:
+                existing.heartbeat_config = preset_hb
                 changed = True
             if changed:
                 existing.updated_at = utcnow()

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import require_user
+from app.api.deps import AUTH_DEP
 from app.api.utils import http_status_for_value_error
 from app.db.session import get_session
 from app.models.runs import Run
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/qa", tags=["qa"])
 
 SESSION_DEP = Depends(get_session)
-USER_DEP = Depends(require_user)
+USER_DEP = AUTH_DEP
 
 
 @router.post("/test")
@@ -48,7 +48,9 @@ async def run_tests(
         )
     except ValueError as exc:
         message = str(exc)
-        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
+        raise HTTPException(
+            status_code=http_status_for_value_error(message), detail=message
+        ) from exc
     return result
 
 
@@ -61,7 +63,9 @@ async def get_test_report(
     """Get the test report for a run."""
     run = await Run.objects.by_id(run_id).first(session)
     if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
+        )
     if run.stage != "test":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
