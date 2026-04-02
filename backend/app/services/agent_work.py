@@ -107,16 +107,17 @@ async def get_work_snapshot(
 
     # -- Pending approvals for this board --
     # For workers, only approvals explicitly assigned to them are relevant.
-    # For leads, all pending approvals on the board are relevant.
+    # For leads, all pending approvals on the board are relevant (including unassigned).
     is_lead = bool(agent.is_board_lead)
     approvals_q = select(Approval).where(
         col(Approval.board_id) == board_id,
         col(Approval.status) == "pending",
     )
     if not is_lead:
+        # Workers only wake on approvals assigned directly to them.
+        # Unassigned approvals are lead's responsibility.
         approvals_q = approvals_q.where(
-            col(Approval.assigned_agent_id).is_(None)
-            | (col(Approval.assigned_agent_id) == agent_id),
+            col(Approval.agent_id) == agent_id,
         )
     pending_approvals = (await session.exec(approvals_q)).all()
     pending_approvals_count = len(pending_approvals)

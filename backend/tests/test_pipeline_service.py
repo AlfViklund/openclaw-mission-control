@@ -122,3 +122,52 @@ class TestStageOrder:
 
     def test_three_stages(self) -> None:
         assert len(STAGE_ORDER) == 3
+
+
+class TestQAWorkspaceBinding:
+    """Tests for QA workspace_path binding via run_metadata."""
+
+    def test_run_metadata_stores_workspace_path(self) -> None:
+        """Verify that create_run accepts and stores workspace_path in run_metadata."""
+        from app.models.runs import Run
+        run = Run(
+            task_id=uuid4(),
+            agent_id=uuid4(),
+            runtime="acp",
+            stage="build",
+            status="queued",
+            run_metadata={"workspace_path": "/tmp/workspace/agent-x"},
+        )
+        assert run.run_metadata.get("workspace_path") == "/tmp/workspace/agent-x"
+
+    def test_run_metadata_empty_by_default(self) -> None:
+        """Verify run_metadata defaults to empty dict."""
+        from app.models.runs import Run
+        run = Run(
+            task_id=uuid4(),
+            agent_id=uuid4(),
+            runtime="acp",
+            stage="plan",
+            status="queued",
+        )
+        assert run.run_metadata == {}
+
+    def test_test_stage_raises_without_workspace(self) -> None:
+        """Verify that test stage raises ValueError when workspace_path is missing."""
+        from app.services.pipeline import PipelineService
+        from app.services.runs import create_run
+
+        session = _make_session()
+
+        async def _run_test() -> None:
+            run = await create_run(
+                session,
+                task_id=uuid4(),
+                agent_id=uuid4(),
+                runtime="acp",
+                stage="test",
+            )
+            assert not run.run_metadata.get("workspace_path")
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run_test())

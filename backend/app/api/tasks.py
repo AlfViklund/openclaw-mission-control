@@ -580,15 +580,11 @@ async def _send_lead_task_message(
 async def _send_agent_task_message(
     *,
     dispatch: GatewayDispatchService,
-    session_key: str,
-    config: GatewayClientConfig,
-    agent_name: str,
+    agent: Agent,
     message: str,
 ) -> OpenClawGatewayError | None:
-    return await dispatch.try_send_agent_message(
-        session_key=session_key,
-        config=config,
-        agent_name=agent_name,
+    return await dispatch.try_send_to_agent(
+        agent=agent,
         message=message,
         deliver=False,
     )
@@ -721,9 +717,7 @@ async def _notify_agent_on_task_assign(
     message = _assignment_notification_message(board=board, task=task, agent=agent)
     error = await _send_agent_task_message(
         dispatch=dispatch,
-        session_key=agent.openclaw_session_id,
-        config=config,
-        agent_name=agent.name,
+        agent=agent,
         message=message,
     )
     if error is None:
@@ -774,9 +768,7 @@ async def _notify_agent_on_task_rework(
     )
     error = await _send_agent_task_message(
         dispatch=dispatch,
-        session_key=agent.openclaw_session_id,
-        config=config,
-        agent_name=agent.name,
+        agent=agent,
         message=message,
     )
     if error is None:
@@ -1880,9 +1872,7 @@ async def _notify_task_comment_targets(
         )
         await _send_agent_task_message(
             dispatch=dispatch,
-            session_key=agent.openclaw_session_id,
-            config=config,
-            agent_name=agent.name,
+            agent=agent,
             message=notification,
         )
 

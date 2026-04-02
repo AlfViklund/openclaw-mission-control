@@ -328,10 +328,8 @@ async def _notify_agents_on_board_group_change(
         if config is None or message is None or recipient_board is None:
             skipped_missing_config += 1
             continue
-        error = await dispatch.try_send_agent_message(
-            session_key=agent.openclaw_session_id,
-            config=config,
-            agent_name=agent.name,
+        error = await dispatch.try_send_to_agent(
+            agent=agent,
             message=message,
             deliver=False,
         )
@@ -430,10 +428,8 @@ async def _notify_lead_on_board_update(
         board=board,
         changed_fields=changed_fields,
     )
-    error = await dispatch.try_send_agent_message(
-        session_key=lead.openclaw_session_id,
-        config=config,
-        agent_name=lead.name,
+    error = await dispatch.try_send_to_agent(
+        agent=lead,
         message=message,
         deliver=False,
     )

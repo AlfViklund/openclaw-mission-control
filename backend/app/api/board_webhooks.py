@@ -314,10 +314,8 @@ async def _notify_lead_on_webhook_payload(
         f"{payload_preview}\n"
         "--- END EXTERNAL DATA ---"
     )
-    await dispatch.try_send_agent_message(
-        session_key=target_agent.openclaw_session_id,
-        config=config,
-        agent_name=target_agent.name,
+    await dispatch.try_send_to_agent(
+        agent=target_agent,
         message=message,
         deliver=False,
     )

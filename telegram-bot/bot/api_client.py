@@ -126,10 +126,13 @@ class MissionControlClient:
 
     # -- Approvals --
 
-    async def list_approvals(self, board_id: str | None = None) -> list[dict]:
+    async def list_approvals(self, board_id: str | None = None, since: str | None = None) -> list[dict]:
         if not board_id:
             return []
-        data = await self._get(f"/api/v1/boards/{board_id}/approvals", params={"status": "pending"})
+        params: dict = {"status": "pending"}
+        if since:
+            params["since"] = since
+        data = await self._get(f"/api/v1/boards/{board_id}/approvals", params=params)
         return data.get("items", [])
 
     async def resolve_approval(self, board_id: str, approval_id: str, decision: str) -> dict:

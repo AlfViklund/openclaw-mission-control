@@ -113,10 +113,8 @@ async def _send_control_command(
             continue
         if not agent.openclaw_session_id:
             continue
-        error = await dispatch.try_send_agent_message(
-            session_key=agent.openclaw_session_id,
-            config=config,
-            agent_name=agent.name,
+        error = await dispatch.try_send_to_agent(
+            agent=agent,
             message=command,
             deliver=True,
         )
@@ -206,10 +204,8 @@ async def _notify_chat_targets(
             f"POST {base_url}/api/v1/agent/boards/{board.id}/memory\n"
             'Body: {"content":"...","tags":["chat"]}'
         )
-        error = await dispatch.try_send_agent_message(
-            session_key=agent.openclaw_session_id,
-            config=config,
-            agent_name=agent.name,
+        error = await dispatch.try_send_to_agent(
+            agent=agent,
             message=message,
         )
         if error is not None:

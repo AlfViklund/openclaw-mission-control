@@ -252,10 +252,8 @@ async def _notify_lead_on_approval_resolution(
         approval=approval,
         task_ids=task_ids_by_approval.get(approval.id, []),
     )
-    error = await dispatch.try_send_agent_message(
-        session_key=lead.openclaw_session_id,
-        config=config,
-        agent_name=lead.name,
+    error = await dispatch.try_send_to_agent(
+        agent=lead,
         message=message,
         deliver=False,
     )

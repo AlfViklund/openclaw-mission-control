@@ -127,7 +127,7 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
             since_approval = _ts_to_iso(wm_approval) if wm_approval > 0 else None
             approvals: list[dict] = []
             for board in boards:
-                board_approvals = await api.list_approvals(board.get("id"))
+                board_approvals = await api.list_approvals(board.get("id"), since=since_approval)
                 for approval in board_approvals:
                     approval_id = str(approval.get("id"))
                     if approval_id and not await _notification_seen(f"approval:{approval_id}"):

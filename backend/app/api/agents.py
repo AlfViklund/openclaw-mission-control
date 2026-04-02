@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import ActorContext, require_org_admin, require_user_or_agent
@@ -206,6 +206,21 @@ async def get_agent_work_snapshot(
         from app.services.agent_work import get_work_snapshot
         return await get_work_snapshot(session, target_id)
 
+    # Board lead agent can read snapshots of team agents on same board
+    if actor.agent:
+        from app.models.agents import Agent
+        from app.services.agent_work import get_work_snapshot
+
+        target = await Agent.objects.by_id(target_id).first(session)
+        if target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        if target.board_id and actor.agent.board_id == target.board_id:
+            lead_agents = await Agent.objects.filter_by(
+                board_id=target.board_id, is_board_lead=True,
+            ).all(session)
+            if any(a.id == actor.agent.id for a in lead_agents):
+                return await get_work_snapshot(session, target_id)
+
     # User-based access: verify board-level permissions
     from app.api.deps import require_user
     require_user(actor)
@@ -215,16 +230,7 @@ async def get_agent_work_snapshot(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    # Board lead can read team snapshots on same board
-    if actor.agent and target.board_id and actor.agent.board_id == target.board_id:
-        lead_agents = await Agent.objects.filter_by(
-            board_id=target.board_id, is_board_lead=True,
-        ).all(session)
-        if any(a.id == actor.agent.id for a in lead_agents):
-            from app.services.agent_work import get_work_snapshot
-            return await get_work_snapshot(session, target_id)
-
-    # Org admin / board owner — already authorized via actor context
+    # Org admin / board owner
     if actor.user:
         from app.services.organizations import is_org_admin, has_board_access
         if await is_org_admin(session, actor.user.id):

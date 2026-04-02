@@ -274,10 +274,8 @@ async def _call_llm_via_gateway(
 
     history_before = await _get_history_length(lead.openclaw_session_id, config)
 
-    await dispatch.send_agent_message(
-        session_key=lead.openclaw_session_id,
-        config=config,
-        agent_name=lead.name,
+    await dispatch.send_to_agent(
+        agent=lead,
         message=full_message,
         deliver=True,
     )

@@ -3220,6 +3220,44 @@ export default function BoardDetailPage() {
                   >
                     <Activity className="h-4 w-4" />
                   </Button>
+                  <div className="hidden items-center gap-1 md:flex">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => router.push(`/boards/${boardId}/artifacts`)}
+                      className="h-8 px-2 text-xs"
+                      title="Artifacts"
+                    >
+                      Artifacts
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => router.push(`/boards/${boardId}/planner`)}
+                      className="h-8 px-2 text-xs"
+                      title="Planner"
+                    >
+                      Planner
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => router.push(`/boards/${boardId}/runs`)}
+                      className="h-8 px-2 text-xs"
+                      title="Runs"
+                    >
+                      Runs
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => router.push(`/boards/${boardId}/qa`)}
+                      className="h-8 px-2 text-xs"
+                      title="QA"
+                    >
+                      QA
+                    </Button>
+                  </div>
                   {isOrgAdmin ? (
                     <button
                       type="button"

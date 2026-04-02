@@ -65,15 +65,23 @@ class AbstractGatewayMessagingService(OpenClawDBService, ABC):
         agent_name: str,
         message: str,
         deliver: bool,
+        agent: Agent | None = None,
     ) -> None:
         async def _do_send() -> bool:
-            await GatewayDispatchService(self.session).send_agent_message(
-                session_key=session_key,
-                config=config,
-                agent_name=agent_name,
-                message=message,
-                deliver=deliver,
-            )
+            if agent is not None:
+                await GatewayDispatchService(self.session).send_to_agent(
+                    agent=agent,
+                    message=message,
+                    deliver=deliver,
+                )
+            else:
+                await GatewayDispatchService(self.session).send_agent_message(
+                    session_key=session_key,
+                    config=config,
+                    agent_name=agent_name,
+                    message=message,
+                    deliver=deliver,
+                )
             return True
 
         await self._with_gateway_retry(_do_send)
@@ -197,6 +205,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
                 agent_name=target.name,
                 message=message,
                 deliver=True,
+                agent=target,
             )
         except (OpenClawGatewayError, TimeoutError) as exc:
             record_activity(
@@ -555,6 +564,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             agent_name=lead.name,
             message=message,
             deliver=False,
+            agent=lead,
         )
         return lead, lead_created
 

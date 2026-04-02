@@ -88,6 +88,26 @@ class GatewayDispatchService(OpenClawDBService):
             deliver=deliver,
         )
 
+    async def try_send_to_agent(
+        self,
+        *,
+        agent: Agent,
+        message: str,
+        deliver: bool = False,
+    ) -> OpenClawGatewayError | None:
+        """Send a message to an agent using its canonical session key.
+
+        Like ``send_to_agent`` but returns the error instead of raising,
+        matching the ``try_send_agent_message`` contract.
+        """
+        try:
+            await self.send_to_agent(agent=agent, message=message, deliver=deliver)
+        except OpenClawGatewayError as exc:
+            return exc
+        except ValueError as exc:
+            return OpenClawGatewayError(str(exc))
+        return None
+
     async def try_send_agent_message(
         self,
         *,
