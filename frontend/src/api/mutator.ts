@@ -92,13 +92,17 @@ export const customFetch = async <T>(
           ? `${structured.code}: ${structured.message}`
           : structured.message;
       } else if (Array.isArray(detail) && detail.length) {
-        const first = detail[0] as { msg?: unknown };
-        if (
-          first &&
-          typeof first === "object" &&
-          typeof first.msg === "string"
-        ) {
-          message = first.msg;
+        const msgs = detail
+          .slice(0, 3)
+          .map((d: { msg?: unknown }) => {
+            if (d && typeof d === "object" && typeof d.msg === "string") {
+              return d.msg;
+            }
+            return null;
+          })
+          .filter(Boolean) as string[];
+        if (msgs.length) {
+          message = msgs.join("; ");
         }
       }
     }

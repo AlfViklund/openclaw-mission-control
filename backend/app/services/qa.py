@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +43,8 @@ class TestResult:
 class TestReport:
     """Parsed Playwright test report."""
 
+    __test__ = False
+
     total: int = 0
     passed: int = 0
     failed: int = 0
@@ -49,6 +53,7 @@ class TestReport:
     tests: list[TestResult] = field(default_factory=list)
     raw_path: str = ""
     screenshot_paths: list[str] = field(default_factory=list)
+    error: str = ""
 
 
 class PlaywrightRunner:
@@ -65,6 +70,26 @@ class PlaywrightRunner:
         timeout: int = 120000,
     ) -> TestReport:
         """Run Playwright tests and return parsed report."""
+        npx = shutil.which("npx")
+        if not npx:
+            report = TestReport()
+            report.error = "npx not found on PATH — Playwright cannot run"
+            return report
+
+        try:
+            ver = subprocess.run(
+                [npx, "playwright", "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if ver.returncode != 0:
+                report = TestReport()
+                report.error = f"Playwright not installed: {ver.stderr.strip()}"
+                return report
+        except subprocess.TimeoutExpired:
+            report = TestReport()
+            report.error = "Timed out checking Playwright installation"
+            return report
+
         run_id = str(uuid4())
         output_dir = EVIDENCE_DIR / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +99,7 @@ class PlaywrightRunner:
         screenshot_dir.mkdir(exist_ok=True)
 
         cmd = [
-            "npx", "playwright", "test",
+            npx, "playwright", "test",
             "--reporter=json",
             f"--output={screenshot_dir}",
         ]

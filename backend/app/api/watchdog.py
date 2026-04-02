@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import require_org_admin
+from app.api.utils import http_status_for_value_error
 from app.db.session import get_session
 from app.schemas.common import OkResponse
 from app.services.watchdog import (
@@ -95,7 +96,8 @@ async def sync_agent_templates(
     try:
         return await template_sync_agent(session, agent_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
 
 
 @router.post("/agents/{agent_id}/rotate-tokens")
@@ -108,7 +110,8 @@ async def rotate_tokens(
     try:
         return await rotate_agent_tokens(session, agent_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
 
 
 @router.post("/agents/{agent_id}/reset-session")
@@ -121,7 +124,8 @@ async def reset_session(
     try:
         return await reset_agent_session(session, agent_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
 
 
 @router.post("/agents/{agent_id}/wake")
@@ -134,7 +138,8 @@ async def wake(
     try:
         return await wake_agent(session, agent_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
 
 
 @router.post("/cleanup-evidence")

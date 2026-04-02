@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import require_user
+from app.api.utils import http_status_for_value_error
 from app.db.session import get_session
 from app.models.runs import Run
 from app.schemas.common import OkResponse
@@ -46,7 +47,8 @@ async def run_tests(
             grep=grep,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
     return result
 
 

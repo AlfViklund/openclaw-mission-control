@@ -97,6 +97,7 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     seen_escalations: set[str] = set()
     seen_pipeline_runs: set[str] = set()
     seen_unblocked_tasks: set[str] = set()
+    first_poll = True
 
     while not stop_event.is_set():
         try:
@@ -108,7 +109,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     if approval_id and approval_id not in seen_approvals and not await _notification_seen(f"approval:{approval_id}"):
                         seen_approvals.add(approval_id)
                         await _mark_notification_seen(f"approval:{approval_id}")
-                        await notify_approval_pending(approval)
+                        if not first_poll:
+                            await notify_approval_pending(approval)
 
             failed_builds = await api.list_failed_build_runs()
             for run in failed_builds:
@@ -116,7 +118,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                 if run_id and run_id not in seen_failed_runs and not await _notification_seen(f"build_failed:{run_id}"):
                     seen_failed_runs.add(run_id)
                     await _mark_notification_seen(f"build_failed:{run_id}")
-                    await notify_build_failed(run)
+                    if not first_poll:
+                        await notify_build_failed(run)
 
             successful_runs = await api.list_runs_for_notifications(status="succeeded")
             for run in successful_runs:
@@ -125,7 +128,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     continue
                 seen_pipeline_runs.add(run_id)
                 await _mark_notification_seen(f"pipeline:{run_id}")
-                await notify_pipeline_stage(run)
+                if not first_poll:
+                    await notify_pipeline_stage(run)
 
             tasks = await api.list_unblocked_tasks()
             for task in tasks:
@@ -134,7 +138,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     continue
                 seen_unblocked_tasks.add(task_id)
                 await _mark_notification_seen(f"unblocked:{task_id}")
-                await notify_task_unblocked(task)
+                if not first_poll:
+                    await notify_task_unblocked(task)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):
@@ -143,8 +148,10 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     continue
                 seen_escalations.add(key)
                 await _mark_notification_seen(f"escalation:{key}")
-                if event.get("type") == "agent_offline":
+                if not first_poll and event.get("type") == "agent_offline":
                     await notify_agent_offline(event)
+
+            first_poll = False
         except Exception as exc:
             logger.warning("Notification poller failed: %s", exc)
 

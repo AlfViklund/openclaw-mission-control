@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import require_user
+from app.api.utils import http_status_for_value_error
 from app.db.session import get_session
 from app.schemas.common import OkResponse
 from app.services.pipeline import PipelineService
@@ -25,21 +26,6 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 SESSION_DEP = Depends(get_session)
 USER_DEP = Depends(require_user)
-
-
-def _http_status_for_value_error(message: str) -> int:
-    lowered = message.lower()
-    if "not found" in lowered or "does not exist" in lowered:
-        return status.HTTP_404_NOT_FOUND
-    if (
-        "paused" in lowered
-        or "requires" in lowered
-        or "missing required" in lowered
-        or "no successful" in lowered
-        or "awaiting_approval" in lowered
-    ):
-        return status.HTTP_409_CONFLICT
-    return status.HTTP_400_BAD_REQUEST
 
 
 @router.post("/tasks/{task_id}/execute")
@@ -64,7 +50,7 @@ async def execute_pipeline_stage(
         )
     except ValueError as exc:
         message = str(exc)
-        raise HTTPException(status_code=_http_status_for_value_error(message), detail=message) from exc
+        raise HTTPException(status_code=http_status_for_value_error(message), detail=message) from exc
     return result
 
 
