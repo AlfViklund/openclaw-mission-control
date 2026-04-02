@@ -3225,6 +3225,72 @@ export default function BoardDetailPage() {
             </div>
           </div>
 
+          {/* Project Status Cockpit */}
+          <div className="border-b border-slate-200 bg-white px-4 py-3 md:px-8">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Status
+                </span>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+                    isBoardPaused
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-emerald-100 text-emerald-800",
+                  )}
+                >
+                  <StatusDot
+                    status={isBoardPaused ? "idle" : "online"}
+                    size="sm"
+                  />
+                  {isBoardPaused ? "Paused" : "Active"}
+                </span>
+              </div>
+              {pendingApprovals.length > 0 && (
+                <div className="flex items-center gap-1.5 text-slate-600">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span className="text-xs font-medium">
+                    {pendingApprovals.length} pending approval
+                    {pendingApprovals.length > 1 ? "s" : ""}
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 text-slate-600">
+                <span className="text-xs font-medium">
+                  {sortedAgents.length} agent{sortedAgents.length !== 1 ? "s" : ""}
+                </span>
+                {(() => {
+                  const onlineCount = sortedAgents.filter(
+                    (a) => a.status === "online",
+                  ).length;
+                  const idleCount = sortedAgents.filter(
+                    (a) => a.status === "idle",
+                  ).length;
+                  const offlineCount = sortedAgents.filter(
+                    (a) => a.status === "offline",
+                  ).length;
+                  if (onlineCount === 0 && idleCount === 0 && offlineCount === 0)
+                    return null;
+                  return (
+                    <span className="text-xs text-slate-400">
+                      ({onlineCount > 0 && `${onlineCount} online`}
+                      {onlineCount > 0 && idleCount > 0 && ", "}
+                      {idleCount > 0 && `${idleCount} idle`}
+                      {(onlineCount > 0 || idleCount > 0) && offlineCount > 0 && ", "}
+                      {offlineCount > 0 && `${offlineCount} offline`})
+                    </span>
+                  );
+                })()}
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-600">
+                <span className="text-xs font-medium">
+                  {tasks.length} task{tasks.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div className="relative flex flex-col gap-4 p-4 md:flex-row md:gap-6 md:p-6">
             {isOrgAdmin ? (
               <aside className="flex w-full flex-col rounded-xl border border-slate-200 bg-white shadow-sm md:h-full md:w-64">

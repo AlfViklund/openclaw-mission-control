@@ -12,7 +12,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from uuid import UUID, uuid4
 
@@ -102,6 +102,43 @@ if TYPE_CHECKING:
 
 
 _T = TypeVar("_T")
+
+
+def _effective_offline_tolerance(agent: Agent) -> timedelta:
+    """Compute the offline tolerance for an agent from heartbeat_config.
+
+    Reads cadence from heartbeat_config JSON if present:
+    - online_every_seconds (default: 300 = 5m)
+    - idle_every_seconds (default: 1800 = 30m)
+    - dormant_every_seconds (default: 21600 = 6h)
+
+    Falls back to OFFLINE_AFTER with role-based multipliers if not configured.
+    """
+    hb = getattr(agent, "heartbeat_config", None) or {}
+    if not isinstance(hb, dict):
+        hb = {}
+
+    status = getattr(agent, "status", "online") or "online"
+
+    key = "online_every_seconds"
+    if status == "idle":
+        key = "idle_every_seconds"
+    elif status == "dormant":
+        key = "dormant_every_seconds"
+
+    seconds = hb.get(key)
+    if seconds is not None:
+        try:
+            return timedelta(seconds=int(seconds))
+        except (ValueError, TypeError):
+            pass
+
+    tolerated = OFFLINE_AFTER
+    if status == "idle":
+        tolerated = OFFLINE_AFTER * 3
+    elif status == "dormant":
+        tolerated = OFFLINE_AFTER * 12
+    return tolerated
 
 
 @dataclass(frozen=True)
@@ -868,11 +905,7 @@ class AgentLifecycleService(OpenClawDBService):
         if agent.last_seen_at is None:
             agent.status = "provisioning"
         else:
-            tolerated = OFFLINE_AFTER
-            if agent.status == "idle":
-                tolerated = OFFLINE_AFTER * 3
-            elif agent.status == "dormant":
-                tolerated = OFFLINE_AFTER * 12
+            tolerated = _effective_offline_tolerance(agent)
             if now - agent.last_seen_at > tolerated:
                 agent.status = "offline"
         return agent

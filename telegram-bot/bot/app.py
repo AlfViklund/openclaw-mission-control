@@ -89,6 +89,23 @@ async def _init_notification_redis() -> None:
         logger.info("Using in-memory notification dedupe semantics")
 
 
+async def _get_notification_watermark(key: str) -> float:
+    """Get a notification watermark timestamp from Redis."""
+    global _notification_redis
+    if _notification_redis is None:
+        return 0.0
+    val = await _notification_redis.get(f"clawdev:watermark:{key}")
+    return float(val) if val else 0.0
+
+
+async def _set_notification_watermark(key: str, ts: float) -> None:
+    """Set a notification watermark timestamp in Redis."""
+    global _notification_redis
+    if _notification_redis is None:
+        return
+    await _notification_redis.set(f"clawdev:watermark:{key}", str(ts))
+
+
 async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     """Poll backend for noteworthy events and push them to Telegram."""
     await _init_notification_redis()
@@ -98,9 +115,11 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
     seen_pipeline_runs: set[str] = set()
     seen_unblocked_tasks: set[str] = set()
     first_poll = True
+    import time
 
     while not stop_event.is_set():
         try:
+            now_ts = time.time()
             boards = await api.list_boards()
             for board in boards:
                 approvals = await api.list_approvals(board.get("id"))
@@ -150,6 +169,10 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                 await _mark_notification_seen(f"escalation:{key}")
                 if not first_poll and event.get("type") == "agent_offline":
                     await notify_agent_offline(event)
+
+            # Persist watermarks so restarts don't replay old events.
+            if _notification_redis is not None:
+                await _set_notification_watermark("last_poll_ts", now_ts)
 
             first_poll = False
         except Exception as exc:

@@ -15,6 +15,7 @@ from app.models.boards import Board
 from app.models.runs import Run
 from app.models.task_dependencies import TaskDependency
 from app.models.tasks import Task
+from app.services.openclaw.provisioning_db import _effective_offline_tolerance
 
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -39,17 +40,10 @@ async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
         if not agent.last_seen_at:
             continue
 
-        hb_config = agent.heartbeat_config or {}
-        interval_str = hb_config.get("every", "10m")
-        interval_minutes = _parse_interval(interval_str)
-        tolerance = interval_minutes * DEFAULT_MISSING_TOLERANCE_MULTIPLIER
-        if agent.status == "idle":
-            tolerance *= 3
-        elif agent.status == "dormant":
-            tolerance *= 12
+        tolerance = _effective_offline_tolerance(agent)
 
         missed = now - agent.last_seen_at
-        if missed > timedelta(minutes=tolerance):
+        if missed > tolerance:
             logger.warning(
                 "Agent %s (%s) missed heartbeat: last_seen=%s, tolerance=%sm",
                 agent.name,
