@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -76,6 +77,7 @@ async def list_runs_endpoint(
     agent_id: UUID | None = Query(default=None),
     stage: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    since: datetime | None = Query(default=None, description="Filter by finished_at or created_at after this time"),
     session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = USER_DEP,
 ) -> DefaultLimitOffsetPage[RunRead]:
@@ -89,6 +91,10 @@ async def list_runs_endpoint(
         statement = statement.filter(col(Run.stage) == stage)
     if status is not None:
         statement = statement.filter(col(Run.status) == status)
+    if since is not None:
+        statement = statement.filter(
+            (col(Run.finished_at) >= since) | (col(Run.created_at) >= since)
+        )
     statement = statement.order_by(col(Run.created_at).desc())
     return await paginate(session, statement.statement)
 

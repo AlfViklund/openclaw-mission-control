@@ -1465,6 +1465,7 @@ async def list_tasks(
     status_filter: str | None = STATUS_QUERY,
     assigned_agent_id: UUID | None = None,
     unassigned: bool | None = None,
+    since: datetime | None = Query(default=None, description="Filter by updated_at after this time"),
     board: Board = BOARD_READ_DEP,
     session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = ACTOR_DEP,
@@ -1476,6 +1477,8 @@ async def list_tasks(
         assigned_agent_id=assigned_agent_id,
         unassigned=unassigned,
     )
+    if since is not None:
+        statement = statement.filter(col(Task.updated_at) >= since)
 
     async def _transform(items: Sequence[object]) -> Sequence[object]:
         tasks = _coerce_task_items(items)

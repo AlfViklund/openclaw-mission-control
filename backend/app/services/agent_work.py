@@ -106,19 +106,29 @@ async def get_work_snapshot(
             review_tasks_count += 1
 
     # -- Pending approvals for this board --
-    approvals_statement = (
-        select(Approval)
-        .where(
-            col(Approval.board_id) == board_id,
-            col(Approval.status) == "pending",
-        )
+    # For workers, only approvals explicitly assigned to them are relevant.
+    # For leads, all pending approvals on the board are relevant.
+    is_lead = bool(agent.is_board_lead)
+    approvals_q = select(Approval).where(
+        col(Approval.board_id) == board_id,
+        col(Approval.status) == "pending",
     )
-    pending_approvals = (await session.exec(approvals_statement)).all()
+    if not is_lead:
+        approvals_q = approvals_q.where(
+            col(Approval.assigned_agent_id).is_(None)
+            | (col(Approval.assigned_agent_id) == agent_id),
+        )
+    pending_approvals = (await session.exec(approvals_q)).all()
     pending_approvals_count = len(pending_approvals)
+
+    # -- Review tasks: only relevant for leads --
+    if not is_lead:
+        review_tasks_count = 0
 
     # -- Wake decision --
     should_wake, reason = _decide_wake(
         board_paused=board_paused,
+        is_lead=is_lead,
         assigned_in_progress_task_id=assigned_in_progress_task_id,
         assigned_inbox_task_ids=assigned_inbox_task_ids,
         pending_approvals_count=pending_approvals_count,
@@ -128,6 +138,7 @@ async def get_work_snapshot(
     return {
         "board_id": str(board_id),
         "board_paused": board_paused,
+        "is_lead": is_lead,
         "assigned_in_progress_task_id": assigned_in_progress_task_id,
         "assigned_inbox_task_ids": assigned_inbox_task_ids,
         "pending_approvals_count": pending_approvals_count,
@@ -141,22 +152,29 @@ async def get_work_snapshot(
 def _decide_wake(
     *,
     board_paused: bool,
+    is_lead: bool,
     assigned_in_progress_task_id: str | None,
     assigned_inbox_task_ids: list[str],
     pending_approvals_count: int,
     review_tasks_count: int,
 ) -> tuple[bool, str]:
-    """Decide whether an agent should wake based on work snapshot data."""
+    """Decide whether an agent should wake based on work snapshot data.
+
+    Role-aware rules:
+    - pending_approval and review_queue wake leads only.
+    - workers wake on assigned tasks only.
+    """
     if board_paused:
         return False, "board_paused"
     if assigned_in_progress_task_id:
         return True, "assigned_in_progress_task"
     if assigned_inbox_task_ids:
         return True, "assigned_inbox_task"
-    if pending_approvals_count > 0:
-        return True, "pending_approval"
-    if review_tasks_count > 0:
-        return True, "review_queue"
+    if is_lead:
+        if pending_approvals_count > 0:
+            return True, "pending_approval"
+        if review_tasks_count > 0:
+            return True, "review_queue"
     return False, "idle_no_work"
 
 

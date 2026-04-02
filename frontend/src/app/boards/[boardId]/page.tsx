@@ -3336,6 +3336,15 @@ export default function BoardDetailPage() {
                       const ago = lastSeen
                         ? timeAgo(lastSeen)
                         : "never";
+                      const wakeReason = isWorking
+                        ? "assigned_task"
+                        : agent.status === "idle"
+                          ? "idle"
+                          : agent.status === "dormant"
+                            ? "dormant"
+                            : agent.status === "offline"
+                              ? "offline"
+                              : null;
                       return (
                         <button
                           key={agent.id}
@@ -3364,7 +3373,7 @@ export default function BoardDetailPage() {
                               {agentRoleLabel(agent)} · {agent.status}
                             </p>
                             <p className="text-[10px] text-slate-400">
-                              {ago}
+                              {ago}{wakeReason ? ` · ${wakeReason}` : ""}
                             </p>
                           </div>
                         </button>

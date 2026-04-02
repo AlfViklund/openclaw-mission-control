@@ -136,16 +136,36 @@ async def update_agent(
     )
 
 
-@router.post("/{agent_id}/heartbeat", response_model=AgentRead)
+@router.post("/{agent_id}/heartbeat", response_model=dict)
 async def heartbeat_agent(
     agent_id: str,
     payload: AgentHeartbeat,
     session: AsyncSession = SESSION_DEP,
     actor: ActorContext = ACTOR_DEP,
-) -> AgentRead:
-    """Record a heartbeat for a specific agent."""
+) -> dict:
+    """Record a heartbeat for a specific agent.
+
+    Returns the agent profile plus an ``is_busy`` flag indicating whether
+    the agent already has a running pipeline run (in which case the agent
+    should skip heavy work cycles and stay in presence-only mode).
+    """
+    from uuid import UUID
+    from app.models.runs import Run
+    from sqlmodel import col, select
+
     service = AgentLifecycleService(session)
-    return await service.heartbeat_agent(agent_id=agent_id, payload=payload, actor=actor)
+    agent_read = await service.heartbeat_agent(agent_id=agent_id, payload=payload, actor=actor)
+
+    busy_statement = (
+        select(Run)
+        .where(col(Run.agent_id) == agent_read.id, col(Run.status) == "running")
+        .limit(1)
+    )
+    is_busy = (await session.exec(busy_statement)).first() is not None
+
+    result = agent_read.model_dump(mode="json")
+    result["is_busy"] = is_busy
+    return result
 
 
 @router.post("/heartbeat", response_model=AgentRead)

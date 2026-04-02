@@ -75,8 +75,8 @@ class MissionControlClient:
 
     # -- Tasks --
 
-    async def list_tasks(self, board_id: str) -> list[dict]:
-        data = await self._get(f"/api/v1/boards/{board_id}/tasks")
+    async def list_tasks(self, board_id: str, params: dict | None = None) -> list[dict]:
+        data = await self._get(f"/api/v1/boards/{board_id}/tasks", params=params or {})
         return data.get("items", [])
 
     async def get_task(self, board_id: str, task_id: str) -> dict:
@@ -94,8 +94,19 @@ class MissionControlClient:
         data = await self._get(f"/api/v1/runs/by-task/{task_id}")
         return data.get("items", [])
 
-    async def list_runs_for_notifications(self, status: str | None = None) -> list[dict]:
-        params = {"status": status} if status else None
+    async def list_runs_for_notifications(self, status: str | None = None, since: str | None = None) -> list[dict]:
+        params: dict = {}
+        if status:
+            params["status"] = status
+        if since:
+            params["since"] = since
+        data = await self._get("/api/v1/runs", params=params)
+        return data.get("items", [])
+
+    async def list_failed_build_runs(self, since: str | None = None) -> list[dict]:
+        params: dict = {"status": "failed", "stage": "build"}
+        if since:
+            params["since"] = since
         data = await self._get("/api/v1/runs", params=params)
         return data.get("items", [])
 
@@ -136,11 +147,14 @@ class MissionControlClient:
         data = await self._get("/api/v1/artifacts", params=params)
         return data.get("items", [])
 
-    async def list_unblocked_tasks(self) -> list[dict]:
+    async def list_unblocked_tasks(self, since: str | None = None) -> list[dict]:
         boards = await self.list_boards()
         tasks: list[dict] = []
         for board in boards:
-            board_tasks = await self.list_tasks(board["id"])
+            params: dict = {}
+            if since:
+                params["since"] = since
+            board_tasks = await self.list_tasks(board["id"], params=params)
             tasks.extend(task for task in board_tasks if not task.get("is_blocked"))
         return tasks
 
@@ -163,10 +177,6 @@ class MissionControlClient:
 
     async def get_escalations(self) -> dict:
         return await self._get("/api/v1/watchdog/escalations")
-
-    async def list_failed_build_runs(self) -> list[dict]:
-        data = await self._get("/api/v1/runs", params={"status": "failed", "stage": "build"})
-        return data.get("items", [])
 
     # -- QA --
 

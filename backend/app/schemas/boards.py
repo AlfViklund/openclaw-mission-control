@@ -84,6 +84,7 @@ class BoardUpdate(SQLModel):
     is_paused: bool | None = None
     paused_reason: str | None = None
     max_agents: int | None = Field(default=None, ge=0)
+    automation_config: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_gateway_id(self) -> Self:

@@ -314,6 +314,23 @@ export default function EditBoardPage() {
   const [webhookError, setWebhookError] = useState<string | null>(null);
   const [copiedWebhookId, setCopiedWebhookId] = useState<string | null>(null);
 
+  type AutomationCadence = {
+    online: number;
+    idle: number;
+    dormant: number;
+    wakeOnApprovals: boolean;
+    wakeOnReview: boolean;
+    allowAssistMode: boolean;
+  };
+  const [automationCadence, setAutomationCadence] = useState<AutomationCadence>({
+    online: 300,
+    idle: 1800,
+    dormant: 21600,
+    wakeOnApprovals: true,
+    wakeOnReview: true,
+    allowAssistMode: false,
+  });
+
   const onboardingParam = searchParams.get("onboarding");
   const searchParamsString = searchParams.toString();
   const shouldAutoOpenOnboarding =
@@ -361,6 +378,21 @@ export default function EditBoardPage() {
       qs ? `/boards/${boardId}/edit?${qs}` : `/boards/${boardId}/edit`,
     );
   }, [boardId, router, searchParamsString, shouldAutoOpenOnboarding]);
+
+  // Initialize automation cadence from board automation_config
+  useEffect(() => {
+    const cfg = baseBoard?.automation_config;
+    if (cfg && typeof cfg === "object") {
+      setAutomationCadence({
+        online: Number(cfg.online_every_seconds) || 300,
+        idle: Number(cfg.idle_every_seconds) || 1800,
+        dormant: Number(cfg.dormant_every_seconds) || 21600,
+        wakeOnApprovals: cfg.wake_on_approvals !== false,
+        wakeOnReview: cfg.wake_on_review !== false,
+        allowAssistMode: Boolean(cfg.allow_assist_mode),
+      });
+    }
+  }, [baseBoard?.automation_config]);
 
   const gatewaysQuery = useListGatewaysApiV1GatewaysGet<
     listGatewaysApiV1GatewaysGetResponse,
@@ -673,6 +705,14 @@ export default function EditBoardPage() {
         resolvedBoardType === "general"
           ? null
           : localDateInputToUtcIso(resolvedTargetDate),
+      automation_config: {
+        online_every_seconds: automationCadence.online,
+        idle_every_seconds: automationCadence.idle,
+        dormant_every_seconds: automationCadence.dormant,
+        wake_on_approvals: automationCadence.wakeOnApprovals,
+        wake_on_review: automationCadence.wakeOnReview,
+        allow_assist_mode: automationCadence.allowAssistMode,
+      },
     };
 
     updateBoardMutation.mutate({ boardId, data: payload });
@@ -1165,6 +1205,125 @@ export default function EditBoardPage() {
                 {isLoading ? "Saving…" : "Save changes"}
               </Button>
             </div>
+
+            <section className="space-y-4 border-t border-slate-200 pt-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">
+                  Automation Policy
+                </h2>
+                <p className="text-xs text-slate-600">
+                  Control agent heartbeat cadence, wake triggers, and idle behavior.
+                </p>
+              </div>
+              <div className="space-y-4 rounded-lg border border-slate-200 px-4 py-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-900">
+                      Online cadence
+                    </label>
+                    <Input
+                      type="number"
+                      value={automationCadence.online}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          online: Math.max(30, Number(e.target.value)),
+                        }))
+                      }
+                      min={30}
+                      step={30}
+                      disabled={isLoading}
+                    />
+                    <p className="text-[10px] text-slate-400">Seconds between heartbeats when agent has work</p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-900">
+                      Idle cadence
+                    </label>
+                    <Input
+                      type="number"
+                      value={automationCadence.idle}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          idle: Math.max(60, Number(e.target.value)),
+                        }))
+                      }
+                      min={60}
+                      step={60}
+                      disabled={isLoading}
+                    />
+                    <p className="text-[10px] text-slate-400">Seconds between heartbeats when no work is assigned</p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-900">
+                      Dormant cadence
+                    </label>
+                    <Input
+                      type="number"
+                      value={automationCadence.dormant}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          dormant: Math.max(300, Number(e.target.value)),
+                        }))
+                      }
+                      min={300}
+                      step={300}
+                      disabled={isLoading}
+                    />
+                    <p className="text-[10px] text-slate-400">Seconds between heartbeats when board is parked</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={automationCadence.wakeOnApprovals}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          wakeOnApprovals: e.target.checked,
+                        }))
+                      }
+                      disabled={isLoading}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Wake on approvals
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={automationCadence.wakeOnReview}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          wakeOnReview: e.target.checked,
+                        }))
+                      }
+                      disabled={isLoading}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Wake on review queue
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={automationCadence.allowAssistMode}
+                      onChange={(e) =>
+                        setAutomationCadence((prev) => ({
+                          ...prev,
+                          allowAssistMode: e.target.checked,
+                        }))
+                      }
+                      disabled={isLoading}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Allow assist mode when no tasks
+                  </label>
+                </div>
+              </div>
+            </section>
 
             <section className="space-y-4 border-t border-slate-200 pt-4">
               <div>

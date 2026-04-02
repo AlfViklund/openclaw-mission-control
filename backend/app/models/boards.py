@@ -47,5 +47,9 @@ class Board(TenantScoped, table=True):
     is_paused: bool = Field(default=False)
     paused_reason: str | None = None
     max_agents: int = Field(default=1)
+    automation_config: dict | None = Field(
+        default=None,
+        sa_column=Column(JSON),
+    )
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

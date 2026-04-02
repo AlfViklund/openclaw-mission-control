@@ -98,6 +98,12 @@ async def _get_watermark(event_type: str, destination: str = "default") -> float
     return float(val) if val else 0.0
 
 
+def _ts_to_iso(ts: float) -> str:
+    """Convert a Unix timestamp to ISO 8601 string for API since parameter."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
 async def _set_watermark(event_type: str, ts: float, destination: str = "default") -> None:
     """Set a per-type per-destination watermark in Redis."""
     global _notification_redis
@@ -118,20 +124,23 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
             boards = await api.list_boards()
 
             wm_approval = await _get_watermark("approval")
+            since_approval = _ts_to_iso(wm_approval) if wm_approval > 0 else None
             approvals: list[dict] = []
             for board in boards:
-                approvals = await api.list_approvals(board.get("id"))
-                for approval in approvals:
+                board_approvals = await api.list_approvals(board.get("id"))
+                for approval in board_approvals:
                     approval_id = str(approval.get("id"))
                     if approval_id and not await _notification_seen(f"approval:{approval_id}"):
                         await _mark_notification_seen(f"approval:{approval_id}")
                         if not first_poll:
                             await notify_approval_pending(approval)
+                approvals.extend(board_approvals)
             if approvals:
                 await _set_watermark("approval", now_ts)
 
             wm_build = await _get_watermark("build_failed")
-            failed_builds = await api.list_failed_build_runs()
+            since_build = _ts_to_iso(wm_build) if wm_build > 0 else None
+            failed_builds = await api.list_failed_build_runs(since=since_build)
             for run in failed_builds:
                 run_id = str(run.get("id"))
                 if run_id and not await _notification_seen(f"build_failed:{run_id}"):
@@ -142,7 +151,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                 await _set_watermark("build_failed", now_ts)
 
             wm_run = await _get_watermark("run_success")
-            successful_runs = await api.list_runs_for_notifications(status="succeeded")
+            since_run = _ts_to_iso(wm_run) if wm_run > 0 else None
+            successful_runs = await api.list_runs_for_notifications(status="succeeded", since=since_run)
             for run in successful_runs:
                 run_id = str(run.get("id"))
                 if not run_id or await _notification_seen(f"pipeline:{run_id}"):
@@ -154,7 +164,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                 await _set_watermark("run_success", now_ts)
 
             wm_unblocked = await _get_watermark("unblocked")
-            tasks = await api.list_unblocked_tasks()
+            since_unblocked = _ts_to_iso(wm_unblocked) if wm_unblocked > 0 else None
+            tasks = await api.list_unblocked_tasks(since=since_unblocked)
             for task in tasks:
                 task_id = str(task.get("id"))
                 if not task_id or await _notification_seen(f"unblocked:{task_id}"):
