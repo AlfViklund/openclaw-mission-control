@@ -89,7 +89,7 @@ async def _init_notification_redis() -> None:
         logger.info("Using in-memory escalation dedupe semantics")
 
 
-async def _get_watermark(event_type: str, destination: str = "default") -> float:
+async def _get_watermark(event_type: str, destination: str) -> float:
     """Get a per-type per-destination watermark from Redis."""
     global _notification_redis
     if _notification_redis is None:
@@ -104,7 +104,7 @@ def _ts_to_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-async def _set_watermark(event_type: str, ts: float, destination: str = "default") -> None:
+async def _set_watermark(event_type: str, ts: float, destination: str) -> None:
     """Set a per-type per-destination watermark in Redis."""
     global _notification_redis
     if _notification_redis is None:
@@ -135,35 +135,39 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     await notify_approval_pending(approval)
                 await _set_watermark("approval", now_ts, destination=board_id)
 
-            wm_build = await _get_watermark("build_failed")
-            since_build = _ts_to_iso(wm_build) if wm_build > 0 else None
-            failed_builds = await api.list_failed_build_runs(since=since_build)
-            for run in failed_builds:
-                run_id = str(run.get("id"))
-                if not run_id or first_poll:
-                    continue
-                await notify_build_failed(run)
-            await _set_watermark("build_failed", now_ts)
+                wm_build = await _get_watermark("build_failed", destination=board_id)
+                since_build = _ts_to_iso(wm_build) if wm_build > 0 else None
+                failed_builds = await api.list_failed_build_runs(since=since_build, board_id=board_id)
+                for run in failed_builds:
+                    run_id = str(run.get("id"))
+                    if not run_id or first_poll:
+                        continue
+                    await notify_build_failed(run)
+                await _set_watermark("build_failed", now_ts, destination=board_id)
 
-            wm_run = await _get_watermark("run_success")
-            since_run = _ts_to_iso(wm_run) if wm_run > 0 else None
-            successful_runs = await api.list_runs_for_notifications(status="succeeded", since=since_run)
-            for run in successful_runs:
-                run_id = str(run.get("id"))
-                if not run_id or first_poll:
-                    continue
-                await notify_pipeline_stage(run)
-            await _set_watermark("run_success", now_ts)
+                wm_run = await _get_watermark("run_success", destination=board_id)
+                since_run = _ts_to_iso(wm_run) if wm_run > 0 else None
+                successful_runs = await api.list_runs_for_notifications(
+                    status="succeeded",
+                    since=since_run,
+                    board_id=board_id,
+                )
+                for run in successful_runs:
+                    run_id = str(run.get("id"))
+                    if not run_id or first_poll:
+                        continue
+                    await notify_pipeline_stage(run)
+                await _set_watermark("run_success", now_ts, destination=board_id)
 
-            wm_unblocked = await _get_watermark("unblocked")
-            since_unblocked = _ts_to_iso(wm_unblocked) if wm_unblocked > 0 else None
-            tasks = await api.list_unblocked_tasks(since=since_unblocked)
-            for task in tasks:
-                task_id = str(task.get("id"))
-                if not task_id or first_poll:
-                    continue
-                await notify_task_unblocked(task)
-            await _set_watermark("unblocked", now_ts)
+                wm_unblocked = await _get_watermark("unblocked", destination=board_id)
+                since_unblocked = _ts_to_iso(wm_unblocked) if wm_unblocked > 0 else None
+                tasks = await api.list_unblocked_tasks(since=since_unblocked, board_id=board_id)
+                for task in tasks:
+                    task_id = str(task.get("id"))
+                    if not task_id or first_poll:
+                        continue
+                    await notify_task_unblocked(task)
+                await _set_watermark("unblocked", now_ts, destination=board_id)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):

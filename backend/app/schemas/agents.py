@@ -245,6 +245,10 @@ class AgentRead(AgentBase):
         default=None,
         description="Last heartbeat timestamp.",
     )
+    wake_reason: str | None = Field(
+        default=None,
+        description="Backend-computed reason this agent should wake or stay active.",
+    )
     created_at: datetime = Field(description="Creation timestamp.")
     updated_at: datetime = Field(description="Last update timestamp.")
 

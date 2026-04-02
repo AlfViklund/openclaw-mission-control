@@ -16,6 +16,7 @@ from app.schemas.board_memory import BoardMemoryRead
 from app.schemas.boards import BoardRead
 from app.schemas.view_models import BoardSnapshot, TaskCardRead
 from app.services.approval_task_links import load_task_ids_by_approval, task_counts_for_board
+from app.services.agent_work import get_board_wake_reasons
 from app.services.openclaw.provisioning_db import AgentLifecycleService
 from app.services.tags import TagState, load_tag_state
 from app.services.task_dependencies import (
@@ -121,8 +122,12 @@ async def build_board_snapshot(session: AsyncSession, board: Board) -> BoardSnap
         .order_by(col(Agent.created_at).desc())
         .all(session)
     )
+    wake_reason_by_agent_id = await get_board_wake_reasons(session, board.id, agents)
     agent_reads = [
-        AgentLifecycleService.to_agent_read(AgentLifecycleService.with_computed_status(agent))
+        AgentLifecycleService.to_agent_read(
+            AgentLifecycleService.with_computed_status(agent),
+            wake_reason=wake_reason_by_agent_id.get(str(agent.id)),
+        )
         for agent in agents
     ]
     agent_name_by_id = {agent.id: agent.name for agent in agents}

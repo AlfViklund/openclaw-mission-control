@@ -132,20 +132,6 @@ import {
   type TaskCustomFieldValues,
 } from "./custom-field-utils";
 
-type ClerkWindow = Window & {
-  clerk?: {
-    session?: {
-      getToken?: () => Promise<string | null>;
-    };
-  };
-};
-
-async function getClerkSessionToken(): Promise<string> {
-  if (typeof window === "undefined") return "";
-  const clerkWindow = window as ClerkWindow;
-  return (await clerkWindow.clerk?.session?.getToken?.()) ?? "";
-}
-
 type Board = BoardRead;
 
 type TaskStatus = Exclude<TaskCardRead["status"], undefined>;
@@ -165,7 +151,7 @@ type Task = Omit<
   custom_field_values?: TaskCustomFieldValues | null;
 };
 
-type Agent = AgentRead & { status: string };
+type Agent = AgentRead & { status: string; wake_reason?: string | null };
 
 type TaskComment = TaskCommentRead;
 
@@ -519,6 +505,7 @@ const normalizeTask = (task: TaskCardRead): Task => ({
 const normalizeAgent = (agent: AgentRead): Agent => ({
   ...agent,
   status: agent.status ?? "offline",
+  wake_reason: (agent as AgentRead & { wake_reason?: string | null }).wake_reason ?? null,
 });
 
 const normalizeApproval = (approval: ApprovalRead): Approval => ({
@@ -872,7 +859,6 @@ export default function BoardDetailPage() {
   const [board, setBoard] = useState<Board | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [agentWakeReasons, setAgentWakeReasons] = useState<Record<string, string>>({});
   const [groupSnapshot, setGroupSnapshot] = useState<BoardGroupSnapshot | null>(
     null,
   );
@@ -1005,7 +991,6 @@ export default function BoardDetailPage() {
     setIsLiveFeedHistoryLoading(false);
     setLiveFeedHistoryError(null);
     setLiveFeed([]);
-    setAgentWakeReasons({});
     setLiveFeedFlashIds({});
     if (typeof window !== "undefined") {
       Object.values(liveFeedFlashTimersRef.current).forEach((timerId) => {
@@ -1014,37 +999,6 @@ export default function BoardDetailPage() {
     }
     liveFeedFlashTimersRef.current = {};
   }, [boardId]);
-
-  useEffect(() => {
-    if (!isSignedIn || !boardId || agents.length === 0) {
-      setAgentWakeReasons({});
-      return;
-    }
-    let cancelled = false;
-    const fetchWakeReasons = async () => {
-      try {
-        const token = await getClerkSessionToken();
-        const res = await fetch(`/api/v1/agents/boards/${boardId}/work-snapshots`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          snapshots?: Record<string, { reason?: string | null } | null>;
-        };
-        if (!cancelled && data.snapshots) {
-          const reasons: Record<string, string> = {};
-          for (const [agentId, snap] of Object.entries(data.snapshots)) {
-            if (snap?.reason) reasons[agentId] = snap.reason;
-          }
-          setAgentWakeReasons(reasons);
-        }
-      } catch {
-        // Silently ignore; the UI only shows backend-backed wake reasons.
-      }
-    };
-    fetchWakeReasons();
-    return () => { cancelled = true; };
-  }, [isSignedIn, boardId, agents.length]);
 
   useEffect(() => {
     return () => {
@@ -1610,6 +1564,7 @@ export default function BoardDetailPage() {
                         approvals_pending_count?: number;
                       }>;
                   pending_approvals_count?: number;
+                  agent_wake_reasons?: Record<string, string | null>;
                 };
                 if (payload.approval) {
                   const normalized = normalizeApproval(payload.approval);
@@ -1634,6 +1589,15 @@ export default function BoardDetailPage() {
                     };
                     return next;
                   });
+                }
+                if (payload.agent_wake_reasons) {
+                  setAgents((prev) =>
+                    prev.map((agent) => {
+                      const wakeReason = payload.agent_wake_reasons?.[agent.id];
+                      if (wakeReason === undefined) return agent;
+                      return { ...agent, wake_reason: wakeReason };
+                    }),
+                  );
                 }
                 const taskCounts = Array.isArray(payload.task_counts)
                   ? payload.task_counts
@@ -1786,6 +1750,7 @@ export default function BoardDetailPage() {
                   activity?: ActivityEventRead;
                   task?: TaskRead;
                   comment?: TaskCommentRead;
+                  agent_wake_reasons?: Record<string, string | null>;
                 };
                 const liveEvent = payload.activity
                   ? toLiveFeedFromActivity(payload.activity)
@@ -1863,6 +1828,15 @@ export default function BoardDetailPage() {
                       };
                     });
                   }
+                }
+                if (payload.agent_wake_reasons) {
+                  setAgents((prev) =>
+                    prev.map((agent) => {
+                      const wakeReason = payload.agent_wake_reasons?.[agent.id];
+                      if (wakeReason === undefined) return agent;
+                      return { ...agent, wake_reason: wakeReason };
+                    }),
+                  );
                 }
               } catch {
                 // Ignore malformed payloads.
@@ -3421,7 +3395,7 @@ export default function BoardDetailPage() {
                       const ago = lastSeen
                         ? timeAgo(lastSeen)
                         : "never";
-                      const wakeReason = agentWakeReasons[agent.id] ?? null;
+                      const wakeReason = agent.wake_reason ?? null;
                       return (
                         <button
                           key={agent.id}

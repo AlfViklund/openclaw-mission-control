@@ -80,6 +80,7 @@ async def get_work_snapshot(
             "active_run_id": active_run_id,
             "should_wake": False,
             "reason": "busy_existing_run",
+            "wake_reason": "busy_existing_run",
         }
 
     # -- Assigned tasks --
@@ -147,6 +148,7 @@ async def get_work_snapshot(
         "active_run_id": None,
         "should_wake": should_wake,
         "reason": reason,
+        "wake_reason": reason,
     }
 
 
@@ -190,4 +192,25 @@ def _empty_snapshot(agent_id: UUID) -> dict:
         "active_run_id": None,
         "should_wake": False,
         "reason": "idle_no_work",
+        "wake_reason": "idle_no_work",
     }
+
+
+async def get_board_wake_reasons(
+    session: AsyncSession,
+    board_id: UUID,
+    agents: list[Agent] | None = None,
+) -> dict[str, str]:
+    """Return backend-computed wake reasons for every agent on a board."""
+    if agents is None:
+        agents = await Agent.objects.filter(col(Agent.board_id) == board_id).all(session)
+    reasons: dict[str, str] = {}
+    for agent in agents:
+        try:
+            snapshot = await get_work_snapshot(session, agent.id)
+        except ValueError:
+            continue
+        reason = snapshot.get("wake_reason") or snapshot.get("reason")
+        if isinstance(reason, str) and reason:
+            reasons[str(agent.id)] = reason
+    return reasons

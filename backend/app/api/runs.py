@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlmodel import col
+from sqlmodel import col, select
 
-from app.api.deps import require_user
+from app.api.deps import require_user_auth
 from app.db.pagination import paginate
 from app.db.session import get_session
 from app.models.agents import Agent
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 SESSION_DEP = Depends(get_session)
-USER_DEP = Depends(require_user)
+USER_DEP = Depends(require_user_auth)
 
 
 @router.post("", response_model=RunRead, status_code=status.HTTP_201_CREATED)
@@ -73,6 +73,7 @@ async def create_and_start_run(
 
 @router.get("", response_model=DefaultLimitOffsetPage[RunRead])
 async def list_runs_endpoint(
+    board_id: UUID | None = Query(default=None),
     task_id: UUID | None = Query(default=None),
     agent_id: UUID | None = Query(default=None),
     stage: str | None = Query(default=None),
@@ -83,6 +84,9 @@ async def list_runs_endpoint(
 ) -> DefaultLimitOffsetPage[RunRead]:
     """List runs with optional filtering."""
     statement = Run.objects.all()
+    if board_id is not None:
+        task_ids = select(Task.id).where(col(Task.board_id) == board_id)
+        statement = statement.filter(col(Run.task_id).in_(task_ids))
     if task_id is not None:
         statement = statement.filter(col(Run.task_id) == task_id)
     if agent_id is not None:

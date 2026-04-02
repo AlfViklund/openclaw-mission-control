@@ -9,10 +9,11 @@ from uuid import uuid4
 
 import pytest
 
-from app.api import boards
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
+from app.services.openclaw.provisioning import OpenClawGatewayError
+from app.services import board_automation
 
 
 @dataclass
@@ -89,7 +90,7 @@ async def test_sync_automation_to_agents_updates_db_and_gateway_runtime(
             return _FakeGatewayQuery()
 
     async def _fake_sync(
-        self: boards.OpenClawGatewayProvisioner,
+        self: board_automation.OpenClawGatewayProvisioner,
         target_gateway: Gateway,
         agents: list[Agent],
     ) -> None:
@@ -102,18 +103,21 @@ async def test_sync_automation_to_agents_updates_db_and_gateway_runtime(
             },
         )
 
-    monkeypatch.setattr(boards.Agent, "objects", _FakeAgentObjects())
-    monkeypatch.setattr(boards.Gateway, "objects", _FakeGatewayObjects())
+    monkeypatch.setattr(board_automation.Agent, "objects", _FakeAgentObjects())
+    monkeypatch.setattr(board_automation.Gateway, "objects", _FakeGatewayObjects())
     monkeypatch.setattr(
-        boards.OpenClawGatewayProvisioner,
+        board_automation.OpenClawGatewayProvisioner,
         "sync_gateway_agent_heartbeats",
         _fake_sync,
     )
 
-    await boards._sync_automation_to_agents(session, board)
+    result = await board_automation.sync_board_automation_policy(session, board)  # type: ignore[arg-type]
 
     assert session.commits == 1
     assert len(session.added) == 2
+    assert result.agents_updated == 2
+    assert result.gateway_syncs_succeeded == 1
+    assert result.gateway_syncs_failed == 0
     assert agent_one.heartbeat_config == {
         "every": "10m",
         "target": "last",
@@ -133,3 +137,71 @@ async def test_sync_automation_to_agents_updates_db_and_gateway_runtime(
     assert sync_calls[0]["gateway_id"] == gateway_id
     assert sync_calls[0]["workspace_root"] == "/workspace"
     assert sync_calls[0]["heartbeat_configs"][0]["online_every_seconds"] == 120
+
+
+@pytest.mark.asyncio
+async def test_sync_board_automation_policy_reports_gateway_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = Board(
+        id=uuid4(),
+        organization_id=uuid4(),
+        name="Platform",
+        slug="platform",
+        gateway_id=uuid4(),
+        automation_config={"online_every_seconds": 120},
+    )
+    session = _FakeSession()
+    agent = Agent(
+        id=uuid4(),
+        board_id=board.id,
+        gateway_id=board.gateway_id,
+        name="Worker",
+        heartbeat_config={"every": "10m"},
+    )
+
+    class _FakeAgentQuery:
+        async def all(self, _session: object) -> list[Agent]:
+            return [agent]
+
+    class _FakeAgentObjects:
+        @staticmethod
+        def filter(*_args: Any, **_kwargs: Any) -> _FakeAgentQuery:
+            return _FakeAgentQuery()
+
+    class _FakeGatewayQuery:
+        async def first(self, _session: object) -> Gateway | None:
+            return Gateway(
+                id=board.gateway_id,
+                organization_id=board.organization_id,
+                name="Main Gateway",
+                url="wss://gateway.example/ws",
+                workspace_root="/workspace",
+            )
+
+    class _FakeGatewayObjects:
+        @staticmethod
+        def by_id(*_args: Any, **_kwargs: Any) -> _FakeGatewayQuery:
+            return _FakeGatewayQuery()
+
+    async def _fake_sync(
+        self: board_automation.OpenClawGatewayProvisioner,
+        _target_gateway: Gateway,
+        _agents: list[Agent],
+    ) -> None:
+        _ = self
+        raise OpenClawGatewayError("gateway down")
+
+    monkeypatch.setattr(board_automation.Agent, "objects", _FakeAgentObjects())
+    monkeypatch.setattr(board_automation.Gateway, "objects", _FakeGatewayObjects())
+    monkeypatch.setattr(
+        board_automation.OpenClawGatewayProvisioner,
+        "sync_gateway_agent_heartbeats",
+        _fake_sync,
+    )
+
+    result = await board_automation.sync_board_automation_policy(session, board)  # type: ignore[arg-type]
+
+    assert result.agents_updated == 1
+    assert result.gateway_syncs_succeeded == 0
+    assert result.gateway_syncs_failed == 1

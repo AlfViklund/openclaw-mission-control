@@ -7,7 +7,7 @@ import json
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Sequence, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -57,6 +57,7 @@ from app.services.approval_task_links import (
     load_task_ids_by_approval,
     pending_approval_conflicts_by_task,
 )
+from app.services.agent_work import get_board_wake_reasons
 from app.services.mentions import extract_mentions, matches_agent_mention
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
@@ -402,7 +403,7 @@ def _coerce_task_event_rows(
             first, second = item
         else:
             try:
-                row_len = len(item)  # type: ignore[arg-type]
+                row_len = len(cast(Any, item))
                 first = item[0]  # type: ignore[index]
                 second = item[1]  # type: ignore[index]
             except (IndexError, KeyError, TypeError):
@@ -1353,6 +1354,7 @@ def _task_event_payload(
     dep_status: dict[UUID, str],
     tag_state_by_task_id: dict[UUID, TagState],
     custom_field_values_by_task_id: dict[UUID, TaskCustomFieldValues] | None = None,
+    agent_wake_reasons_by_id: dict[str, str] | None = None,
 ) -> dict[str, object]:
     resolved_custom_field_values_by_task_id = custom_field_values_by_task_id or {}
     payload: dict[str, object] = {
@@ -1394,6 +1396,8 @@ def _task_event_payload(
         )
         .model_dump(mode="json")
     )
+    if agent_wake_reasons_by_id:
+        payload["agent_wake_reasons"] = agent_wake_reasons_by_id
     return payload
 
 
@@ -1420,6 +1424,9 @@ async def _task_event_generator(
                     rows=rows,
                 )
             )
+            wake_reasons_by_agent_id = (
+                await get_board_wake_reasons(session, board_id) if rows else {}
+            )
 
         for event, task in rows:
             if event.id in seen_ids:
@@ -1438,6 +1445,7 @@ async def _task_event_generator(
                 dep_status=dep_status,
                 tag_state_by_task_id=tag_state_by_task_id,
                 custom_field_values_by_task_id=custom_field_values_by_task_id,
+                agent_wake_reasons_by_id=wake_reasons_by_agent_id,
             )
             yield {"event": "task", "data": json.dumps(payload)}
         await asyncio.sleep(2)

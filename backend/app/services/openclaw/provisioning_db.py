@@ -876,10 +876,10 @@ class AgentLifecycleService(OpenClawDBService):
         return agent.board_id is None
 
     @classmethod
-    def to_agent_read(cls, agent: Agent) -> AgentRead:
+    def to_agent_read(cls, agent: Agent, *, wake_reason: str | None = None) -> AgentRead:
         model = AgentRead.model_validate(agent, from_attributes=True)
         return model.model_copy(
-            update={"is_gateway_main": cls.is_gateway_main(agent)},
+            update={"is_gateway_main": cls.is_gateway_main(agent), "wake_reason": wake_reason},
         )
 
     @staticmethod
@@ -911,8 +911,11 @@ class AgentLifecycleService(OpenClawDBService):
         return agent
 
     @classmethod
-    def serialize_agent(cls, agent: Agent) -> dict[str, object]:
-        return cls.to_agent_read(cls.with_computed_status(agent)).model_dump(mode="json")
+    def serialize_agent(cls, agent: Agent, *, wake_reason: str | None = None) -> dict[str, object]:
+        return cls.to_agent_read(
+            cls.with_computed_status(agent),
+            wake_reason=wake_reason,
+        ).model_dump(mode="json")
 
     async def fetch_agent_events(
         self,
@@ -1547,6 +1550,7 @@ class AgentLifecycleService(OpenClawDBService):
         allowed_ids = set(board_ids)
         if board_id is not None:
             OpenClawAuthorizationPolicy.require_board_write_access(allowed=board_id in allowed_ids)
+        from app.services.agent_work import get_work_snapshot
 
         async def event_generator() -> AsyncIterator[dict[str, str]]:
             nonlocal last_seen
@@ -1569,7 +1573,15 @@ class AgentLifecycleService(OpenClawDBService):
                 for agent in agents:
                     updated_at = agent.updated_at or agent.last_seen_at or utcnow()
                     last_seen = max(updated_at, last_seen)
-                    payload = {"agent": self.serialize_agent(agent)}
+                    wake_reason = None
+                    if agent.board_id is not None:
+                        try:
+                            wake_reason = (await get_work_snapshot(stream_session, agent.id)).get(
+                                "wake_reason"
+                            )
+                        except ValueError:
+                            wake_reason = None
+                    payload = {"agent": self.serialize_agent(agent, wake_reason=wake_reason)}
                     yield {"event": "agent", "data": json.dumps(payload)}
                 await asyncio.sleep(2)
 

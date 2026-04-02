@@ -38,6 +38,7 @@ from app.services.approval_task_links import (
     replace_approval_task_links,
     task_counts_for_board,
 )
+from app.services.agent_work import get_board_wake_reasons
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 
 if TYPE_CHECKING:
@@ -316,7 +317,7 @@ async def list_approvals(
                 msg = "Expected Approval items from approvals pagination query."
                 raise TypeError(msg)
             approvals.append(item)
-        return await _approval_reads(session, approvals)
+    return await _approval_reads(session, approvals)
 
     return await paginate(session, statement.statement, transformer=_transform)
 
@@ -340,6 +341,9 @@ async def stream_approvals(
             async with async_session_maker() as session:
                 approvals = await _fetch_approval_events(session, board.id, last_seen)
                 approval_reads = await _approval_reads(session, approvals)
+                wake_reasons_by_agent_id = (
+                    await get_board_wake_reasons(session, board.id) if approvals else {}
+                )
                 pending_approvals_count = int(
                     (
                         await session.exec(
@@ -366,6 +370,8 @@ async def stream_approvals(
                     "approval": _serialize_approval(approval_read),
                     "pending_approvals_count": pending_approvals_count,
                 }
+                if wake_reasons_by_agent_id:
+                    payload["agent_wake_reasons"] = wake_reasons_by_agent_id
                 task_counts = [
                     {
                         "task_id": str(task_id),

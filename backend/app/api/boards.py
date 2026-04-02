@@ -34,12 +34,12 @@ from app.schemas.pagination import DefaultLimitOffsetPage
 from app.schemas.view_models import BoardGroupSnapshot, BoardSnapshot
 from app.services.activity_log import record_activity
 from app.services.board_group_snapshot import build_board_group_snapshot
+from app.services.board_automation import sync_board_automation_policy
 from app.services.board_lifecycle import delete_board as delete_board_service
 from app.services.board_snapshot import build_board_snapshot
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
-from app.services.openclaw.provisioning import OpenClawGatewayProvisioner
 from app.services.organizations import OrganizationContext, board_access_filter
 
 if TYPE_CHECKING:
@@ -406,67 +406,6 @@ async def _notify_agents_on_board_group_removal(
     )
 
 
-async def _sync_automation_to_agents(
-    session: AsyncSession,
-    board: Board,
-) -> None:
-    """Propagate board automation_config to all agents' heartbeat_config.
-
-    Reads cadence and toggles from board.automation_config and merges them
-    into each agent's heartbeat_config so that gateway heartbeat behaviour
-    actually reflects the UI settings.
-    """
-    from app.models.agents import Agent
-    from sqlmodel import col
-
-    automation = getattr(board, "automation_config", None) or {}
-    if not isinstance(automation, dict):
-        return
-
-    # Build the heartbeat_config fragment from automation_config
-    hb_update: dict = {}
-    if "online_every_seconds" in automation:
-        hb_update["online_every_seconds"] = automation["online_every_seconds"]
-    if "idle_every_seconds" in automation:
-        hb_update["idle_every_seconds"] = automation["idle_every_seconds"]
-    if "dormant_every_seconds" in automation:
-        hb_update["dormant_every_seconds"] = automation["dormant_every_seconds"]
-    if "wake_on_approvals" in automation:
-        hb_update["wake_on_approvals"] = automation["wake_on_approvals"]
-    if "wake_on_review" in automation:
-        hb_update["wake_on_review"] = automation["wake_on_review"]
-    if "allow_assist_mode" in automation:
-        hb_update["allow_assist_mode"] = automation["allow_assist_mode"]
-
-    if not hb_update:
-        return
-
-    agents = await Agent.objects.filter(col(Agent.board_id) == board.id).all(session)
-    if not agents:
-        return
-    for agent in agents:
-        current_hb = getattr(agent, "heartbeat_config", None) or {}
-        if not isinstance(current_hb, dict):
-            current_hb = {}
-        merged = {**current_hb, **hb_update}
-        agent.heartbeat_config = merged
-        session.add(agent)
-    await session.commit()
-
-    if board.gateway_id is None:
-        logger.warning(
-            "board.automation.sync_skipped board_id=%s reason=no_gateway",
-            board.id,
-        )
-        return
-
-    gateway = await Gateway.objects.by_id(board.gateway_id).first(session)
-    if gateway is None:
-        return
-
-    await OpenClawGatewayProvisioner().sync_gateway_agent_heartbeats(gateway, agents)
-
-
 async def _notify_lead_on_board_update(
     *,
     session: AsyncSession,
@@ -659,7 +598,14 @@ async def update_board(
     # Sync automation policy to agent heartbeat configs when changed
     if "automation_config" in changed_fields:
         try:
-            await _sync_automation_to_agents(session, updated)
+            result = await sync_board_automation_policy(session, updated)
+            if result.gateway_syncs_failed:
+                logger.warning(
+                    "board.automation.sync_partial board_id=%s agents_updated=%s gateway_syncs_failed=%s",
+                    updated.id,
+                    result.agents_updated,
+                    result.gateway_syncs_failed,
+                )
         except Exception:
             logger.exception(
                 "board.automation.sync_failed board_id=%s",
