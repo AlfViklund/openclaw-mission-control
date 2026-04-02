@@ -727,16 +727,6 @@ async def confirm_onboarding(
     if onboarding is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    board.board_type = payload.board_type
-    board.objective = payload.objective
-    board.success_metrics = payload.success_metrics
-    board.target_date = payload.target_date
-    board.goal_confirmed = True
-    board.goal_source = "lead_agent_onboarding"
-
-    onboarding.status = "confirmed"
-    onboarding.updated_at = utcnow()
-
     user_profile = _parse_draft_user_profile(onboarding.draft_goal)
     if _apply_user_profile(auth, user_profile) and auth.user is not None:
         session.add(auth.user)
@@ -747,6 +737,28 @@ async def confirm_onboarding(
             draft = BoardOnboardingAgentComplete.model_validate(onboarding.draft_goal)
         except ValidationError:
             pass
+
+    project_info = getattr(draft, "project_info", None) if draft else None
+    context = getattr(draft, "context", None) if draft else None
+    if project_info and project_info.project_mode:
+        board.objective = project_info.project_mode
+    elif payload.objective:
+        board.objective = payload.objective
+    if (
+        project_info
+        and project_info.deadline_mode
+        and project_info.deadline_mode != "none"
+    ):
+        board.target_date = payload.target_date
+    elif payload.target_date:
+        board.target_date = payload.target_date
+    board.board_type = payload.board_type
+    board.success_metrics = payload.success_metrics
+    board.goal_confirmed = True
+    board.goal_source = "lead_agent_onboarding"
+
+    onboarding.status = "confirmed"
+    onboarding.updated_at = utcnow()
 
     bootstrap_result = await bootstrap_board_from_onboarding(
         session=session,
