@@ -740,10 +740,15 @@ async def confirm_onboarding(
 
     project_info = getattr(draft, "project_info", None) if draft else None
     context = getattr(draft, "context", None) if draft else None
-    if project_info and project_info.project_mode:
-        board.objective = project_info.project_mode
+
+    human_readable_objective = None
+    if context and context.description:
+        human_readable_objective = context.description
     elif payload.objective:
-        board.objective = payload.objective
+        human_readable_objective = payload.objective
+    if human_readable_objective:
+        board.objective = human_readable_objective
+
     if (
         project_info
         and project_info.deadline_mode

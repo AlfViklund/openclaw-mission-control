@@ -394,9 +394,9 @@ class BoardBootstrapResult(SQLModel):
     team_created_roles: list[str] = Field(default_factory=list)
     team_skipped_roles: list[str] = Field(default_factory=list)
     team_failed_roles: list[str] = Field(default_factory=list)
-    planner_status: Literal["not_requested", "queued", "started", "failed"] = (
-        "not_requested"
-    )
+    planner_status: Literal[
+        "not_requested", "draft_created", "queued", "started", "failed"
+    ] = "not_requested"
     planner_output_id: UUID | None = None
     automation_sync: BoardAutomationSyncResultData | None = None
     bootstrap_summary: str | None = None

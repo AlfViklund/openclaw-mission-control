@@ -285,7 +285,7 @@ async def bootstrap_board_from_onboarding(
         or planning_policy.bootstrap_after_confirm
     ):
         output = await _start_planner_bootstrap(session, board, planning_policy)
-        result.planner_status = "queued"
+        result.planner_status = "draft_created"
         if output is not None:
             result.planner_output_id = output.id
     else:

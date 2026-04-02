@@ -1,0 +1,432 @@
+/// <reference types="cypress" />
+
+describe("BoardOnboardingWizard E2E", () => {
+  const apiBase = "**/api/v1";
+  const boardId = "b-onboarding-1";
+
+  const originalDefaultCommandTimeout = Cypress.config("defaultCommandTimeout");
+
+  beforeEach(() => {
+    Cypress.config("defaultCommandTimeout", 30_000);
+
+    cy.intercept("GET", "**/healthz", { statusCode: 200, body: { ok: true } }).as("healthz");
+    cy.intercept("GET", `${apiBase}/users/me*`, {
+      statusCode: 200,
+      body: {
+        id: "u1",
+        clerk_user_id: "clerk_u1",
+        email: "test@example.com",
+        name: "Test User",
+        preferred_name: "Test",
+        timezone: "UTC",
+      },
+    }).as("usersMe");
+    cy.intercept("GET", `${apiBase}/organizations/me/list*`, {
+      statusCode: 200,
+      body: [{ id: "o1", name: "Testing Org", is_active: true, role: "owner" }],
+    }).as("organizations");
+    cy.intercept("GET", `${apiBase}/organizations/me/member*`, {
+      statusCode: 200,
+      body: {
+        id: "m1",
+        organization_id: "o1",
+        user_id: "u1",
+        role: "owner",
+        all_boards_read: true,
+        all_boards_write: true,
+        board_access: [{ board_id: boardId, can_read: true, can_write: true }],
+      },
+    }).as("membership");
+    cy.intercept("GET", `${apiBase}/organizations/me/custom-fields*`, {
+      statusCode: 200,
+      body: [],
+    }).as("customFields");
+    cy.intercept("GET", `${apiBase}/tags*`, {
+      statusCode: 200,
+      body: { items: [], total: 0, limit: 200, offset: 0 },
+    }).as("tags");
+  });
+
+  afterEach(() => {
+    Cypress.config("defaultCommandTimeout", originalDefaultCommandTimeout);
+  });
+
+  function openOnboardingWizard() {
+    cy.visit(`/boards/${boardId}/edit?onboarding=1`);
+    cy.get('[aria-label="Board onboarding"]', { timeout: 15_000 }).should("be.visible");
+  }
+
+  function stubEmptySse() {
+    const emptySse = { statusCode: 200, headers: { "content-type": "text/event-stream" }, body: "" };
+    cy.intercept("GET", `${apiBase}/boards/*/tasks/stream*`, emptySse).as("tasksStream");
+    cy.intercept("GET", `${apiBase}/boards/*/approvals/stream*`, emptySse).as("approvalsStream");
+    cy.intercept("GET", `${apiBase}/boards/*/memory/stream*`, emptySse).as("memoryStream");
+    cy.intercept("GET", `${apiBase}/agents/stream*`, emptySse).as("agentsStream");
+  }
+
+  function stubBoard() {
+    cy.intercept("GET", `${apiBase}/boards/${boardId}/snapshot*`, {
+      statusCode: 200,
+      body: {
+        board: {
+          id: boardId,
+          name: "Onboarding Test Board",
+          slug: "onboarding-test",
+          description: "",
+          gateway_id: "g1",
+          board_group_id: null,
+          board_type: "general",
+          objective: null,
+          success_metrics: null,
+          target_date: null,
+          goal_confirmed: false,
+          goal_source: "test",
+          organization_id: "o1",
+          created_at: "2026-02-11T00:00:00Z",
+          updated_at: "2026-02-11T00:00:00Z",
+        },
+        tasks: [],
+        agents: [],
+        approvals: [],
+        chat_messages: [],
+        pending_approvals_count: 0,
+      },
+    }).as("snapshot");
+    cy.intercept("GET", `${apiBase}/boards/${boardId}/group-snapshot*`, {
+      statusCode: 200,
+      body: { group: null, boards: [] },
+    }).as("groupSnapshot");
+    cy.intercept("GET", `${apiBase}/boards/${boardId}$`, {
+      statusCode: 200,
+      body: {
+        id: boardId,
+        name: "Onboarding Test Board",
+        slug: "onboarding-test",
+        description: "",
+        gateway_id: "g1",
+        board_group_id: null,
+        board_type: "general",
+        objective: null,
+        success_metrics: null,
+        target_date: null,
+        goal_confirmed: false,
+        goal_source: "test",
+        organization_id: "o1",
+        created_at: "2026-02-11T00:00:00Z",
+        updated_at: "2026-02-11T00:00:00Z",
+      },
+    }).as("boardGet");
+  }
+
+  function interceptDraft() {
+    cy.intercept("PATCH", `${apiBase}/boards/${boardId}/onboarding/draft`, (req) => {
+      expect(req.body).to.be.an("object");
+      req.reply({ statusCode: 200, body: { data: {} } });
+    }).as("draftPatch");
+  }
+
+  function interceptRefine() {
+    cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/refine`, (req) => {
+      req.reply({ statusCode: 200, body: { data: {} } });
+    }).as("refinePost");
+  }
+
+  function interceptConfirmWithBootstrap(overrides: Record<string, unknown> = {}) {
+    cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/confirm`, (req) => {
+      req.reply({
+        statusCode: 200,
+        body: {
+          data: {
+            board: {
+              id: boardId,
+              name: "Onboarding Test Board",
+              slug: "onboarding-test",
+              description: "",
+              gateway_id: "g1",
+              board_group_id: null,
+              board_type: "goal",
+              objective: "Build a new SaaS product",
+              success_metrics: null,
+              target_date: null,
+              goal_confirmed: true,
+              goal_source: "onboarding_wizard",
+              organization_id: "o1",
+              created_at: "2026-02-11T00:00:00Z",
+              updated_at: "2026-02-11T00:00:00Z",
+            },
+            bootstrap: {
+              lead_status: "created",
+              lead_name: "Ava",
+              team_status: "provisioned",
+              team_agents_created: 3,
+              team_created_roles: ["developer", "qa_engineer", "technical_writer"],
+              team_skipped_roles: [],
+              planner_status: "draft_created",
+              automation_sync: { status: "success", agents_updated: 4 },
+              ...overrides,
+            },
+          },
+        },
+      });
+    }).as("confirmPost");
+  }
+
+  function clickNext() {
+    cy.contains("button", /^next$/i, { timeout: 10_000 }).should("not.be.disabled").click();
+    cy.wait("@draftPatch", { timeout: 10_000 });
+  }
+
+  function clickReview() {
+    cy.contains("button", /^review$/i, { timeout: 10_000 }).should("not.be.disabled").click();
+    cy.wait("@draftPatch", { timeout: 10_000 });
+  }
+
+  function clickConfirmAndBootstrap() {
+    cy.contains("button", /confirm.*bootstrap/i, { timeout: 10_000 }).should("not.be.disabled").click();
+    cy.wait("@confirmPost", { timeout: 10_000 });
+  }
+
+  describe("new product → full team → planner → confirm → outcome", () => {
+    it("completes full wizard flow and shows outcome screen", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      interceptRefine();
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+
+      // Step 1 — project mode & stage
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /new product/i).click();
+      cy.contains("button", /codebase exists/i).click();
+      clickNext();
+
+      // Step 2 — milestone & delivery
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /mvp/i).click();
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /no deadline/i).click();
+      clickNext();
+
+      // Step 3 — project context
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      cy.get("textarea").first().type("Build a new SaaS product for teams");
+      clickNext();
+
+      // Step 4 — lead agent
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      cy.get('input[placeholder*="ava"]').type("Ava");
+      cy.contains("button", /autonomous/i).click();
+      cy.contains("button", /concise/i).click();
+      cy.contains("button", /bullets/i).click();
+      cy.contains("button", /daily/i).click();
+      clickNext();
+
+      // Step 5 — team provisioning
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /full standard team/i).click();
+      clickNext();
+
+      // Step 6 — planning
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /generate initial backlog/i).click();
+      clickNext();
+
+      // Step 7 — QA
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /balanced/i).click();
+      clickNext();
+
+      // Step 8 — automation
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /active/i).click();
+      clickNext();
+
+      // Step 9 — AI refinement
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /let ai refine/i).click();
+      cy.wait("@refinePost", { timeout: 10_000 });
+      cy.contains(/configuration looks good/i, { timeout: 10_000 }).should("be.visible");
+      clickReview();
+
+      // Step 10 — review
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      clickConfirmAndBootstrap();
+
+      // Step 11 — outcome
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
+      cy.contains(/created/i).should("be.visible");
+      cy.contains(/provisioned/i).should("be.visible");
+      cy.contains(/draft_created/i).should("be.visible");
+    });
+  });
+
+  describe("existing product → lead+dev+qa → no deadline → confirm", () => {
+    it("skips deadline fields and proceeds to confirm", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      interceptRefine();
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+
+      // Step 1 — existing product evolution
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /existing product evolution/i).click();
+      cy.contains("button", /active development/i).click();
+      clickNext();
+
+      // Step 2 — milestone, no deadline
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /key feature/i).click();
+      cy.contains("button", /no deadline/i).should("be.visible");
+      clickNext();
+
+      // Step 3
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 4 — lead agent
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      cy.get('input[placeholder*="ava"]').type("LeadBot");
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /mixed/i).click();
+      cy.contains("button", /hourly/i).click();
+      clickNext();
+
+      // Step 5 — selected roles (lead + dev + qa)
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /lead.*selected roles/i).click();
+      cy.contains("button", /developer/i).click();
+      cy.contains("button", /qa engineer/i).click();
+      clickNext();
+
+      // Step 6
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /architecture first/i).click();
+      clickNext();
+
+      // Step 7
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /strict/i).click();
+      clickNext();
+
+      // Step 8
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /normal/i).click();
+      clickNext();
+
+      // Step 9
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /let ai refine/i).click();
+      cy.wait("@refinePost", { timeout: 10_000 });
+      clickReview();
+
+      // Step 10
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      clickConfirmAndBootstrap();
+
+      // Step 11
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
+    });
+  });
+
+  describe("legacy payload still confirms", () => {
+    it("confirm endpoint accepts minimal legacy payload", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      interceptRefine();
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/confirm`, (req) => {
+        req.reply({
+          statusCode: 200,
+          body: {
+            data: {
+              board: {
+                id: boardId,
+                name: "Legacy Board",
+                slug: "legacy",
+                description: "",
+                gateway_id: "g1",
+                board_group_id: null,
+                board_type: "general",
+                objective: null,
+                success_metrics: null,
+                target_date: null,
+                goal_confirmed: true,
+                goal_source: "onboarding_wizard",
+                organization_id: "o1",
+                created_at: "2026-02-11T00:00:00Z",
+                updated_at: "2026-02-11T00:00:00Z",
+              },
+              bootstrap: {
+                lead_status: "unchanged",
+                team_status: "already_provisioned",
+                team_agents_created: 0,
+                team_created_roles: [],
+                team_skipped_roles: [],
+                planner_status: "not_requested",
+              },
+            },
+          },
+        });
+      }).as("confirmPost");
+
+      openOnboardingWizard();
+
+      // Minimal: just select product mode and stage, skip everything else
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /research.*prototype/i).click();
+      cy.contains("button", /idea only/i).click();
+      clickNext();
+
+      // Step 2 — skip all optional fields
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /mvp/i).click();
+      clickNext();
+
+      // Step 3 — skip
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 4 — skip lead agent name
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      // lead name is required — fill it
+      cy.get('input[placeholder*="ava"]').type("R");
+      clickNext();
+
+      // Step 5 — lead only
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /only lead/i).click();
+      clickNext();
+
+      // Step 6
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /lead only/i).click();
+      clickNext();
+
+      // Step 7
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /flexible/i).click();
+      clickNext();
+
+      // Step 8
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /economy/i).click();
+      clickNext();
+
+      // Step 9
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      clickReview();
+
+      // Step 10
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      clickConfirmAndBootstrap();
+
+      // Step 11 — outcome
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
+    });
+  });
+});

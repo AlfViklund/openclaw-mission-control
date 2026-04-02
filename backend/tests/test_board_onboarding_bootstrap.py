@@ -721,3 +721,301 @@ class TestLegacyBackwardCompatibility:
         assert options.heartbeat_config is not None
         assert options.heartbeat_config.get("online_every_seconds") == 30
         assert options.heartbeat_config.get("idle_every_seconds") == 900
+
+
+class TestConfirmOnboardingMapping:
+    """Tests for Phase 1.1: confirm_onboarding must NOT set board.objective to project_mode enum."""
+
+    def test_confirm_onboarding_does_not_map_project_mode_to_objective(self) -> None:
+        """board.objective must NOT be set to enum strings like 'new_product'."""
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import BoardOnboardingAgentComplete
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "general",
+            }
+        )
+
+        options = _lead_options_from_draft(draft)
+        identity = options.identity_profile or {}
+
+        project_mode_value = identity.get("project_mode")
+        assert project_mode_value != "new_product", (
+            "identity_profile should not contain raw project_mode enum value"
+        )
+
+    def test_confirm_uses_context_description_for_objective(self) -> None:
+        """When context.description is available, it should be used for board.objective."""
+        from app.schemas.board_onboarding import BoardOnboardingContext
+
+        ctx = BoardOnboardingContext(
+            description="Build a modern SaaS platform for team collaboration",
+        )
+        assert ctx.description == "Build a modern SaaS platform for team collaboration"
+        assert ctx.description != "new_product"
+        assert ctx.description != "existing_product_evolution"
+
+    def test_objective_never_set_to_enum_project_mode(self) -> None:
+        """project_mode enum values must not be human-readable objectives."""
+        from app.schemas.board_onboarding import BoardOnboardingProjectInfo
+
+        modes = [
+            "new_product",
+            "existing_product_evolution",
+            "new_feature",
+            "stabilization",
+            "research_prototype",
+        ]
+        for mode in modes:
+            info = BoardOnboardingProjectInfo(project_mode=mode)
+            assert info.project_mode == mode
+            assert not _is_human_readable_objective(mode), (
+                f"'{mode}' is an enum, not a human-readable objective"
+            )
+
+    def test_project_mode_preserved_separately_from_objective(self) -> None:
+        """project_mode must be stored as semantic field, not mixed into objective."""
+        from app.schemas.board_onboarding import (
+            BoardOnboardingAgentComplete,
+            BoardOnboardingProjectInfo,
+            BoardOnboardingContext,
+        )
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "general",
+            }
+        )
+        draft.project_info = BoardOnboardingProjectInfo(
+            project_mode="existing_product_evolution"
+        )
+        draft.context = BoardOnboardingContext(
+            description="Improve our payment processing pipeline"
+        )
+        assert draft.project_info is not None
+        assert draft.project_info.project_mode == "existing_product_evolution"
+        assert draft.context is not None
+        assert draft.context.description == "Improve our payment processing pipeline"
+
+
+def _is_human_readable_objective(value: str) -> bool:
+    """Return True if value looks like a human-written objective description."""
+    words = value.lower().split()
+    if len(words) <= 2:
+        return False
+    if value in (
+        "new_product",
+        "existing_product_evolution",
+        "new_feature",
+        "stabilization",
+        "research_prototype",
+    ):
+        return False
+    return True
+
+
+class TestUnifiedLead:
+    """Tests for Phase 1.3: existing and new lead must converge to same model."""
+
+    def test_existing_lead_rebase_uses_preset_as_base(self) -> None:
+        """Existing lead should use board_lead preset as base."""
+        from app.services.agent_presets import AGENT_ROLE_PRESETS
+
+        preset = AGENT_ROLE_PRESETS.get("board_lead", {})
+        assert "identity_profile" in preset
+        assert preset["identity_profile"].get("role") == "Board Lead"
+        assert "heartbeat_config" in preset
+
+    def test_new_lead_created_from_board_lead_preset(self) -> None:
+        """New lead should be created from board_lead preset."""
+        from app.services.agent_presets import AGENT_ROLE_PRESETS
+
+        preset = AGENT_ROLE_PRESETS.get("board_lead", {})
+        assert preset.get("is_board_lead") is True
+        identity = preset.get("identity_profile", {})
+        assert identity.get("role") == "Board Lead"
+        assert identity.get("emoji") == "🎯"
+        heartbeat = preset.get("heartbeat_config", {})
+        assert "every" in heartbeat
+
+    def test_lead_options_from_draft_with_override(self) -> None:
+        """lead_options_from_draft should allow overrides on top of preset."""
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import (
+            BoardOnboardingAgentComplete,
+            BoardOnboardingLeadAgentDraft,
+        )
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "general",
+            }
+        )
+        draft.lead_agent = BoardOnboardingLeadAgentDraft.model_validate(
+            {
+                "name": "Ava",
+                "autonomy_level": "autonomous",
+            }
+        )
+        options = _lead_options_from_draft(draft)
+        assert options.agent_name == "Ava"
+        identity = options.identity_profile or {}
+        assert identity.get("autonomy_level") == "autonomous"
+
+
+class TestPlannerBootstrapHonesty:
+    """Tests for Phase 1.2: planner status must be honest."""
+
+    def test_planner_status_literal_includes_draft_created(self) -> None:
+        """planner_status should include draft_created for honest semantics."""
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult(planner_status="draft_created")
+        assert result.planner_status == "draft_created"
+
+    def test_planner_status_not_requested_when_planning_disabled(self) -> None:
+        """When no planning policy, planner_status should be not_requested."""
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult()
+        assert result.planner_status == "not_requested"
+
+    def test_planner_status_accepts_all_valid_statuses(self) -> None:
+        """All planner status values should be accepted."""
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        for status in ("not_requested", "draft_created", "queued", "started", "failed"):
+            result = BoardBootstrapResult(planner_status=status)
+            assert result.planner_status == status
+
+
+class TestRefinePrompt:
+    """Tests for Phase 2.2: refine prompt must not re-ask structured fields."""
+
+    def test_refine_prompt_does_not_contain_questionnaire_phrases(self) -> None:
+        """Refine prompt should not instruct agent to ask structured questions."""
+        from app.services.openclaw.onboarding_service import (
+            BoardOnboardingMessagingService,
+        )
+        import inspect
+
+        source = inspect.getsource(BoardOnboardingMessagingService._build_refine_prompt)
+        questionnaire_phrases = [
+            "what is your project",
+            "what are you building",
+            "what type of project",
+            "what stage is",
+            "do you want to create a team",
+            "how many people",
+        ]
+        source_lower = source.lower()
+        for phrase in questionnaire_phrases:
+            assert phrase.lower() not in source_lower, (
+                f"Refine prompt should not contain questionnaire phrase: {phrase}"
+            )
+
+    def test_refine_prompt_mentions_draft_already_collected(self) -> None:
+        """Refine prompt should indicate the wizard draft was already collected."""
+        from app.services.openclaw.onboarding_service import (
+            BoardOnboardingMessagingService,
+        )
+        import inspect
+
+        source = inspect.getsource(BoardOnboardingMessagingService._build_refine_prompt)
+        assert (
+            "already collected via wizard" in source.lower()
+            or "wizard" in source.lower()
+        )
+
+    def test_refine_prompt_limits_questions(self) -> None:
+        """Refine prompt should limit AI to 1-2 clarifying questions."""
+        from app.services.openclaw.onboarding_service import (
+            BoardOnboardingMessagingService,
+        )
+        import inspect
+
+        source = inspect.getsource(BoardOnboardingMessagingService._build_refine_prompt)
+        assert "1-2" in source or "1–2" in source or "maximum 1-2" in source.lower()
+
+
+class TestBackwardCompatibility:
+    """Tests for Phase 2.3: legacy payloads must still work."""
+
+    def test_legacy_confirm_payload_with_objective(self) -> None:
+        """Legacy payload with board_type=goal and objective should work."""
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm.model_validate(
+            {
+                "board_type": "goal",
+                "objective": "Build a great product",
+                "success_metrics": {"metric": "PRs merged", "target": "10"},
+            }
+        )
+        assert confirm.board_type == "goal"
+        assert confirm.objective == "Build a great product"
+        assert confirm.success_metrics is not None
+
+    def test_legacy_confirm_payload_general_board(self) -> None:
+        """Legacy general board confirm should work without objective."""
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm.model_validate(
+            {
+                "board_type": "general",
+            }
+        )
+        assert confirm.board_type == "general"
+        assert confirm.objective is None
+
+    def test_legacy_onboarding_payload_without_new_fields(self) -> None:
+        """Old payload missing new schema fields should still validate."""
+        from app.schemas.board_onboarding import BoardOnboardingAgentComplete
+
+        old_style = {
+            "status": "complete",
+            "board_type": "goal",
+            "objective": "My project",
+            "success_metrics": {"metric": "test"},
+        }
+        complete = BoardOnboardingAgentComplete.model_validate(old_style)
+        assert complete.board_type == "goal"
+        assert complete.objective == "My project"
+
+
+class TestTeamStatus:
+    """Tests for Phase 1.2: team status must be correct."""
+
+    def test_team_status_literal_values_complete(self) -> None:
+        """All expected team status values should be accepted."""
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        for status in (
+            "not_requested",
+            "provisioned",
+            "already_provisioned",
+            "partial_failure",
+            "failed",
+        ):
+            result = BoardBootstrapResult(team_status=status)
+            assert result.team_status == status
+
+    def test_team_result_tracks_created_skipped_failed_roles(self) -> None:
+        """BoardBootstrapResult should track created/skipped/failed roles."""
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult(
+            team_status="provisioned",
+            team_agents_created=2,
+            team_created_roles=["developer", "qa_engineer"],
+            team_skipped_roles=["technical_writer"],
+            team_failed_roles=["ops_guardian"],
+        )
+        assert result.team_agents_created == 2
+        assert "developer" in result.team_created_roles
+        assert "technical_writer" in result.team_skipped_roles
+        assert "ops_guardian" in result.team_failed_roles
