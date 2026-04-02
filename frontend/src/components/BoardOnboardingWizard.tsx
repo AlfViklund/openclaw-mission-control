@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, ChevronRight, Loader2, RefreshCw, ArrowLeft } from "lucide-react";
 
 import {
@@ -363,6 +363,7 @@ export function BoardOnboardingWizard({
   const [refined, setRefined] = useState(false);
   const [refining, setRefining] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BoardBootstrapResult | null>(null);
+  const [confirmedBoard, setConfirmedBoard] = useState<BoardRead | null>(null);
 
   const [draft, setDraft] = useState<BoardOnboardingDraftUpdate>({
     project_info: {},
@@ -373,6 +374,35 @@ export function BoardOnboardingWizard({
     qa_policy: {},
     automation_policy: {},
   });
+
+  useEffect(() => {
+    const loadDraft = async () => {
+      try {
+        const result = await customFetch<{
+          data: { draft_goal?: Record<string, unknown> | null; status?: string };
+          status: number;
+        }>(`/boards/${boardId}/onboarding`, { method: "GET" });
+
+        if (result.status === 200 && result.data.draft_goal) {
+          const goal = result.data.draft_goal as Partial<BoardOnboardingDraftUpdate>;
+          if (goal && typeof goal === "object") {
+            setDraft({
+              project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
+              context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
+              lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
+              team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
+              planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
+              qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
+              automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
+            });
+          }
+        }
+      } catch {
+        // No existing onboarding session — start fresh with default empty draft
+      }
+    };
+    void loadDraft();
+  }, [boardId]);
 
   const totalSteps = 11;
 
@@ -483,7 +513,7 @@ export function BoardOnboardingWizard({
     [],
   );
 
-  const saveDraft = useCallback(async () => {
+  const saveDraft = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     setError(null);
     try {
@@ -495,19 +525,21 @@ export function BoardOnboardingWizard({
         },
       );
       if (result.status >= 400) throw new Error("Failed to save draft");
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save draft");
+      return false;
     } finally {
       setLoading(false);
     }
   }, [boardId, draft]);
 
   const handleNext = useCallback(async () => {
-    await saveDraft();
-    if (!error) {
+    const saved = await saveDraft();
+    if (saved) {
       setCurrentStep((prev) => Math.min(prev + 1, totalSteps));
     }
-  }, [saveDraft, error, totalSteps]);
+  }, [saveDraft, totalSteps]);
 
   const handleBack = useCallback(() => {
     setCurrentStep((prev) => Math.max(prev - 1, 1));
@@ -534,7 +566,7 @@ export function BoardOnboardingWizard({
     setLoading(true);
     setError(null);
     try {
-      const result = await customFetch<{ data: { board?: BoardRead; bootstrap?: BoardBootstrapResult }; status: number }>(
+      const result = await customFetch<{ data: { board: BoardRead; bootstrap: BoardBootstrapResult }; status: number }>(
         `/boards/${boardId}/onboarding/confirm`,
         {
           method: "POST",
@@ -545,16 +577,16 @@ export function BoardOnboardingWizard({
         },
       );
       if (result.status >= 400) throw new Error("Failed to confirm");
-      if (result.data.bootstrap) {
-        setBootstrapResult(result.data.bootstrap);
-      }
+      setBootstrapResult(result.data.bootstrap);
+      setConfirmedBoard(result.data.board);
+      onConfirmed(result.data.board);
       setCurrentStep(11);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to confirm");
     } finally {
       setLoading(false);
     }
-  }, [boardId, draft]);
+  }, [boardId, draft, onConfirmed]);
 
   const renderStep = () => {
     switch (currentStep) {
@@ -1081,7 +1113,7 @@ export function BoardOnboardingWizard({
                 )}
               </div>
             )}
-            <Button onClick={() => onConfirmed({} as BoardRead)} className="w-full">
+            <Button onClick={() => confirmedBoard && onConfirmed(confirmedBoard)} className="w-full">
               Open project board
             </Button>
           </div>

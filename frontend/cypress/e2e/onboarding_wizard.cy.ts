@@ -429,4 +429,216 @@ describe("BoardOnboardingWizard E2E", () => {
       cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
     });
   });
+
+  describe("save draft → reload → wizard restores progress", () => {
+    it("restores wizard state from saved draft on reload", () => {
+      stubBoard();
+      stubEmptySse();
+      cy.intercept("GET", `${apiBase}/boards/${boardId}/onboarding*`, {
+        statusCode: 200,
+        body: {
+          data: {
+            id: "sess-1",
+            board_id: boardId,
+            status: "in_progress",
+            draft_goal: {
+              project_info: {
+                project_mode: "new_product",
+                project_stage: "codebase_exists",
+                first_milestone_type: "mvp",
+                delivery_mode: "balanced",
+                deadline_mode: "none",
+              },
+            },
+          },
+        },
+      }).as("onboardingGet");
+      interceptDraft();
+      interceptRefine();
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+      cy.wait("@onboardingGet", { timeout: 10_000 });
+
+      // Should be on step 2 since step 1 fields are pre-filled
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      // Project mode and stage should be pre-selected from draft
+      cy.contains("button", /new product/i).should("have.attr", "aria-selected", "true");
+      cy.contains("button", /codebase exists/i).should("have.attr", "aria-selected", "true");
+      // MVP should be pre-selected
+      cy.contains("button", /mvp/i).should("have.attr", "aria-selected", "true");
+    });
+  });
+
+  describe("team already provisioned → onboarding later → outcome shows already_provisioned", () => {
+    it("shows already_provisioned status in outcome when team was pre-existing", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      interceptRefine();
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/confirm`, (req) => {
+        req.reply({
+          statusCode: 200,
+          body: {
+            data: {
+              board: {
+                id: boardId,
+                name: "Test Board",
+                slug: "test",
+                description: "",
+                gateway_id: "g1",
+                board_group_id: null,
+                board_type: "goal",
+                objective: "Maintain existing product",
+                success_metrics: null,
+                target_date: null,
+                goal_confirmed: true,
+                goal_source: "onboarding_wizard",
+                organization_id: "o1",
+                created_at: "2026-02-11T00:00:00Z",
+                updated_at: "2026-02-11T00:00:00Z",
+              },
+              bootstrap: {
+                lead_status: "updated",
+                lead_name: "Nova",
+                team_status: "already_provisioned",
+                team_agents_created: 0,
+                team_created_roles: [],
+                team_skipped_roles: ["developer", "qa_engineer"],
+                planner_status: "not_requested",
+                automation_sync: { status: "success", agents_updated: 1 },
+              },
+            },
+          },
+        });
+      }).as("confirmPost");
+
+      openOnboardingWizard();
+
+      // Quick path: select new product and stage
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /new product/i).click();
+      cy.contains("button", /idea only/i).click();
+      clickNext();
+
+      // Step 2
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /mvp/i).click();
+      clickNext();
+
+      // Step 3 — skip
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 4 — fill lead name
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      cy.get('input[placeholder*="ava"]').type("Nova");
+      clickNext();
+
+      // Step 5 — lead only
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /only lead/i).click();
+      clickNext();
+
+      // Step 6
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /empty board/i).click();
+      clickNext();
+
+      // Step 7
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 8
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 9 — skip refine
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      clickReview();
+
+      // Step 10
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /confirm.*bootstrap/i).should("not.be.disabled").click();
+      cy.wait("@confirmPost", { timeout: 10_000 });
+
+      // Step 11 — outcome
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
+      // Should show already_provisioned team status
+      cy.contains(/already_provisioned/i).should("be.visible");
+      // Should show lead status
+      cy.contains(/updated.*nova/i).should("be.visible");
+    });
+  });
+
+  describe("refine updates review → outcome shows refined bootstrap result", () => {
+    it("refine flow completes and shows refined outcome", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      interceptRefine();
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+
+      // Step 1
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /new product/i).click();
+      cy.contains("button", /codebase exists/i).click();
+      clickNext();
+
+      // Step 2
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /mvp/i).click();
+      clickNext();
+
+      // Step 3
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      cy.get("textarea").first().type("Build a collaborative tool");
+      clickNext();
+
+      // Step 4
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      cy.get('input[placeholder*="ava"]').type("Ava");
+      clickNext();
+
+      // Step 5
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /full standard team/i).click();
+      clickNext();
+
+      // Step 6
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /generate initial backlog/i).click();
+      clickNext();
+
+      // Step 7
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 8
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      // Step 9 — refine
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /let ai refine/i).click();
+      cy.wait("@refinePost", { timeout: 10_000 });
+      cy.contains(/configuration looks good/i, { timeout: 10_000 }).should("be.visible");
+      clickReview();
+
+      // Step 10 — review
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      clickConfirmAndBootstrap();
+
+      // Step 11 — outcome shows bootstrap result from confirm
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
+      cy.contains(/created/i).should("be.visible");
+      cy.contains(/provisioned/i).should("be.visible");
+      cy.contains(/draft_created/i).should("be.visible");
+      cy.contains(/success/i).should("be.visible");
+      // Open project board button should be present
+      cy.contains("button", /open project board/i).should("be.visible");
+    });
+  });
 });

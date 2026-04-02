@@ -1019,3 +1019,105 @@ class TestTeamStatus:
         assert "developer" in result.team_created_roles
         assert "technical_writer" in result.team_skipped_roles
         assert "ops_guardian" in result.team_failed_roles
+
+
+class TestBootstrapSummary:
+    """Tests for Phase A5: bootstrap_summary must be populated."""
+
+    def test_bootstrap_summary_is_human_readable(self) -> None:
+        """bootstrap_summary should be a non-empty human-readable string."""
+        from app.services.board_bootstrap import _build_bootstrap_summary
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult(
+            lead_status="created",
+            lead_name="Ava",
+            team_status="provisioned",
+            team_agents_created=3,
+            team_created_roles=["developer", "qa_engineer", "technical_writer"],
+            team_skipped_roles=[],
+            planner_status="draft_created",
+            bootstrap_summary=None,
+        )
+        summary = _build_bootstrap_summary(result)
+        assert isinstance(summary, str)
+        assert len(summary) > 0
+        assert "Ava" in summary
+        assert "provisioned" in summary.lower()
+
+    def test_bootstrap_summary_reflects_partial_failure(self) -> None:
+        """Partial failure should be reflected in the summary."""
+        from app.services.board_bootstrap import _build_bootstrap_summary
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult(
+            lead_status="unchanged",
+            team_status="partial_failure",
+            team_agents_created=1,
+            team_created_roles=["developer"],
+            team_skipped_roles=["qa_engineer"],
+            team_failed_roles=["ops_guardian"],
+            planner_status="not_requested",
+        )
+        summary = _build_bootstrap_summary(result)
+        assert "partial" in summary.lower()
+        assert "developer" in summary
+        assert "ops_guardian" in summary
+
+    def test_bootstrap_summary_not_requested_cases(self) -> None:
+        """Summary should handle not_requested cases gracefully."""
+        from app.services.board_bootstrap import _build_bootstrap_summary
+        from app.schemas.board_onboarding import BoardBootstrapResult
+
+        result = BoardBootstrapResult(
+            lead_status="created",
+            lead_name="Nova",
+            team_status="not_requested",
+            planner_status="not_requested",
+        )
+        summary = _build_bootstrap_summary(result)
+        assert isinstance(summary, str)
+        assert len(summary) > 0
+
+
+class TestOnboardingProvisionOrder:
+    """Tests for Phase A2: lead must be identical regardless of onboarding/provision order."""
+
+    def test_lead_options_identical_for_same_draft(self) -> None:
+        """_lead_options_from_draft must produce identical options for the same draft."""
+        from app.services.board_bootstrap import _lead_options_from_draft
+        from app.schemas.board_onboarding import BoardOnboardingAgentComplete
+
+        draft = BoardOnboardingAgentComplete.model_validate(
+            {
+                "status": "complete",
+                "board_type": "goal",
+                "objective": "Build a great product",
+                "success_metrics": {"metric": "PRs merged", "target": "10"},
+                "lead_agent": {
+                    "name": "Ava",
+                    "autonomy_level": "autonomous",
+                    "verbosity": "concise",
+                    "output_format": "bullets",
+                    "update_cadence": "daily",
+                },
+                "automation_policy": {
+                    "automation_profile": "active",
+                },
+            }
+        )
+
+        options_a = _lead_options_from_draft(draft)
+        options_b = _lead_options_from_draft(draft)
+
+        assert options_a.agent_name == options_b.agent_name
+        hb_a = options_a.heartbeat_config
+        hb_b = options_b.heartbeat_config
+        assert hb_a is not None and hb_b is not None
+        assert hb_a.get("online_interval_seconds") == hb_b.get(
+            "online_interval_seconds"
+        )
+        id_a = options_a.identity_profile
+        id_b = options_b.identity_profile
+        assert id_a is not None and id_b is not None
+        assert id_a.get("verbosity") == id_b.get("verbosity")

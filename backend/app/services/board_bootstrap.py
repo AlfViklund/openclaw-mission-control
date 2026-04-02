@@ -297,4 +297,65 @@ async def bootstrap_board_from_onboarding(
     else:
         result.automation_sync = BoardAutomationSyncResultData(status="not_run")
 
+    result.bootstrap_summary = _build_bootstrap_summary(result)
+
     return result
+
+
+def _build_bootstrap_summary(result: BoardBootstrapResult) -> str:
+    """Build a human-readable bootstrap summary."""
+    parts: list[str] = []
+
+    if result.lead_status == "created":
+        name = result.lead_name or "lead"
+        parts.append(f"Lead '{name}' created")
+    elif result.lead_status == "updated":
+        name = result.lead_name or "lead"
+        parts.append(f"Lead '{name}' updated")
+    elif result.lead_status == "unchanged":
+        parts.append("Lead unchanged")
+
+    if result.team_status == "provisioned":
+        created = result.team_agents_created
+        roles = result.team_created_roles
+        parts.append(
+            f"Team provisioned ({created} role{'s' if created != 1 else ''}: {', '.join(roles)})"
+        )
+    elif result.team_status == "already_provisioned":
+        skipped = result.team_skipped_roles
+        parts.append(
+            f"Team already provisioned ({len(skipped)} role{'s' if len(skipped) != 1 else ''} skipped)"
+        )
+    elif result.team_status == "partial_failure":
+        created_roles: list[str] = result.team_created_roles
+        failed_roles: list[str] = result.team_failed_roles
+        parts.append(
+            f"Team partial: {', '.join(created_roles)} created, {', '.join(failed_roles)} failed"
+        )
+    elif result.team_status == "failed":
+        parts.append("Team provisioning failed")
+    elif result.team_status == "not_requested":
+        parts.append("Team not requested")
+
+    if result.planner_status == "started":
+        parts.append("Planner started")
+    elif result.planner_status == "draft_created":
+        parts.append("Planner draft created")
+    elif result.planner_status == "queued":
+        parts.append("Planner queued")
+    elif result.planner_status == "failed":
+        parts.append("Planner bootstrap failed")
+    elif result.planner_status == "not_requested":
+        parts.append("Planner not requested")
+
+    if result.automation_sync and result.automation_sync.status == "success":
+        updated = result.automation_sync.agents_updated
+        parts.append(
+            f"Automation synced ({updated} agent{'s' if updated != 1 else ''} updated)"
+        )
+    elif result.automation_sync and result.automation_sync.status == "partial_failure":
+        parts.append("Automation partial sync")
+    elif result.automation_sync and result.automation_sync.status == "failed":
+        parts.append("Automation sync failed")
+
+    return "; ".join(parts) if parts else "Bootstrap complete"
