@@ -60,7 +60,6 @@ from app.services.approval_task_links import (
 from app.services.agent_work import get_board_wake_reasons
 from app.services.mentions import extract_mentions, matches_agent_mention
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
-from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
 from app.services.openclaw.provisioning_db import AgentLifecycleService
 from app.services.organizations import require_board_access
@@ -572,22 +571,6 @@ def _serialize_comment(event: ActivityEvent) -> dict[str, object]:
     return TaskCommentRead.model_validate(event).model_dump(mode="json")
 
 
-async def _send_lead_task_message(
-    *,
-    dispatch: GatewayDispatchService,
-    session_key: str,
-    config: GatewayClientConfig,
-    message: str,
-) -> OpenClawGatewayError | None:
-    return await dispatch.try_send_agent_message(
-        session_key=session_key,
-        config=config,
-        agent_name="Lead Agent",
-        message=message,
-        deliver=False,
-    )
-
-
 async def _send_agent_task_message(
     *,
     dispatch: GatewayDispatchService,
@@ -678,8 +661,6 @@ async def _wake_agent_online_for_task(
     agent: Agent,
     reason: str,
 ) -> None:
-    if not agent.openclaw_session_id:
-        return
     service = AgentLifecycleService(session)
     try:
         await service.commit_heartbeat(agent=agent, status_value="online")
@@ -711,8 +692,6 @@ async def _notify_agent_on_task_assign(
     agent: Agent,
     wake_assignee: bool = True,
 ) -> None:
-    if not agent.openclaw_session_id:
-        return
     if wake_assignee:
         await _wake_agent_online_for_task(
             session=session,
@@ -761,8 +740,6 @@ async def _notify_agent_on_task_rework(
     agent: Agent,
     lead: Agent,
 ) -> None:
-    if not agent.openclaw_session_id:
-        return
     dispatch = GatewayDispatchService(session)
     config = await dispatch.optional_gateway_config_for_board(board)
     if config is None:
@@ -831,12 +808,9 @@ async def _notify_lead_on_task_create(
         .filter(col(Agent.is_board_lead).is_(True))
         .first(session)
     )
-    if lead is None or not lead.openclaw_session_id:
+    if lead is None:
         return
     dispatch = GatewayDispatchService(session)
-    config = await dispatch.optional_gateway_config_for_board(board)
-    if config is None:
-        return
     description = _truncate_snippet(task.description or "")
     details = [
         f"Board: {board.name}",
@@ -851,12 +825,7 @@ async def _notify_lead_on_task_create(
         + "\n".join(details)
         + "\n\nTake action: triage, assign, or plan next steps."
     )
-    error = await _send_lead_task_message(
-        dispatch=dispatch,
-        session_key=lead.openclaw_session_id,
-        config=config,
-        message=message,
-    )
+    error = await dispatch.try_send_to_agent(agent=lead, message=message)
     if error is None:
         record_activity(
             session,
@@ -890,12 +859,9 @@ async def _notify_lead_on_task_unassigned(
         .filter(col(Agent.is_board_lead).is_(True))
         .first(session)
     )
-    if lead is None or not lead.openclaw_session_id:
+    if lead is None:
         return
     dispatch = GatewayDispatchService(session)
-    config = await dispatch.optional_gateway_config_for_board(board)
-    if config is None:
-        return
     description = _truncate_snippet(task.description or "")
     details = [
         f"Board: {board.name}",
@@ -910,12 +876,7 @@ async def _notify_lead_on_task_unassigned(
         + "\n".join(details)
         + "\n\nTake action: assign a new owner or adjust the plan."
     )
-    error = await _send_lead_task_message(
-        dispatch=dispatch,
-        session_key=lead.openclaw_session_id,
-        config=config,
-        message=message,
-    )
+    error = await dispatch.try_send_to_agent(agent=lead, message=message)
     if error is None:
         record_activity(
             session,
@@ -1515,7 +1476,8 @@ async def list_unblocked_transitions(
     snapshot of all currently unblocked tasks.
     """
     query = (
-        select(ActivityEvent)
+        select(ActivityEvent, Task.title, Task.status)
+        .outerjoin(Task, col(ActivityEvent.task_id) == col(Task.id))
         .where(
             col(ActivityEvent.board_id) == board.id,
             col(ActivityEvent.event_type) == "task.unblocked",
@@ -1528,11 +1490,13 @@ async def list_unblocked_transitions(
 
     events = (await session.exec(query)).all()
     result = []
-    for event in events:
+    for event, task_title, task_status in events:
         result.append({
             "id": str(event.task_id),
             "task_id": str(event.task_id),
             "board_id": str(event.board_id),
+            "task_title": task_title,
+            "task_status": task_status,
             "unblocked_at": event.created_at.isoformat() if event.created_at else None,
             "message": event.message,
         })
@@ -1906,8 +1870,6 @@ async def _notify_task_comment_targets(
     snippet = _truncate_snippet(request.message)
     actor_name = _comment_actor_name(request.actor)
     for agent in request.targets.values():
-        if not agent.openclaw_session_id:
-            continue
         mentioned = matches_agent_mention(agent, request.mention_names)
         header = "TASK MENTION" if mentioned else "NEW TASK COMMENT"
         action_line = (

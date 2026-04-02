@@ -66,11 +66,16 @@ async def notify_agent_offline(agent: dict[str, Any]) -> None:
 
 async def notify_task_unblocked(task: dict[str, Any]) -> None:
     """Send notification about an unblocked task."""
+    title = task.get("task_title") or task.get("title") or "Untitled"
+    status = task.get("task_status") or task.get("status") or "inbox"
+    message = task.get("message")
     text = (
         f"✅ *Задача разблокирована*\n\n"
-        f"Task: `{task.get('title', 'Untitled')}`\n"
-        f"Status: {task.get('status', 'inbox')}"
+        f"Task: `{title}`\n"
+        f"Status: `{status}`"
     )
+    if message:
+        text += f"\nMessage: {message}"
     await notify(text)
 
 

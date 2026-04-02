@@ -18,6 +18,7 @@ from bot.handlers.board import router as board_router
 from bot.handlers.approvals import router as approvals_router
 from bot.handlers.control import router as control_router
 from bot.handlers.files import router as files_router
+from bot.notification_watermarks import get_watermark, set_watermark
 from bot.notifications import (
     init_notifications,
     notify_agent_offline,
@@ -89,27 +90,10 @@ async def _init_notification_redis() -> None:
         logger.info("Using in-memory escalation dedupe semantics")
 
 
-async def _get_watermark(event_type: str, destination: str) -> float:
-    """Get a per-type per-destination watermark from Redis."""
-    global _notification_redis
-    if _notification_redis is None:
-        return 0.0
-    val = await _notification_redis.get(f"clawdev:wm:{destination}:{event_type}")
-    return float(val) if val else 0.0
-
-
 def _ts_to_iso(ts: float) -> str:
     """Convert a Unix timestamp to ISO 8601 string for API since parameter."""
     from datetime import datetime, timezone
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-async def _set_watermark(event_type: str, ts: float, destination: str) -> None:
-    """Set a per-type per-destination watermark in Redis."""
-    global _notification_redis
-    if _notification_redis is None:
-        return
-    await _notification_redis.set(f"clawdev:wm:{destination}:{event_type}", str(ts))
 
 
 async def notification_poll_loop(stop_event: asyncio.Event) -> None:
@@ -125,7 +109,7 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
 
             for board in boards:
                 board_id = board.get("id", "unknown")
-                board_wm = await _get_watermark("approval", destination=board_id)
+                board_wm = await get_watermark(_notification_redis, "approval", destination=board_id)
                 board_since = _ts_to_iso(board_wm) if board_wm > 0 else None
                 board_approvals = await api.list_approvals(board_id, since=board_since)
                 for approval in board_approvals:
@@ -133,9 +117,9 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     if not approval_id or first_poll:
                         continue
                     await notify_approval_pending(approval)
-                await _set_watermark("approval", now_ts, destination=board_id)
+                await set_watermark(_notification_redis, "approval", now_ts, destination=board_id)
 
-                wm_build = await _get_watermark("build_failed", destination=board_id)
+                wm_build = await get_watermark(_notification_redis, "build_failed", destination=board_id)
                 since_build = _ts_to_iso(wm_build) if wm_build > 0 else None
                 failed_builds = await api.list_failed_build_runs(since=since_build, board_id=board_id)
                 for run in failed_builds:
@@ -143,9 +127,9 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     if not run_id or first_poll:
                         continue
                     await notify_build_failed(run)
-                await _set_watermark("build_failed", now_ts, destination=board_id)
+                await set_watermark(_notification_redis, "build_failed", now_ts, destination=board_id)
 
-                wm_run = await _get_watermark("run_success", destination=board_id)
+                wm_run = await get_watermark(_notification_redis, "run_success", destination=board_id)
                 since_run = _ts_to_iso(wm_run) if wm_run > 0 else None
                 successful_runs = await api.list_runs_for_notifications(
                     status="succeeded",
@@ -157,9 +141,9 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     if not run_id or first_poll:
                         continue
                     await notify_pipeline_stage(run)
-                await _set_watermark("run_success", now_ts, destination=board_id)
+                await set_watermark(_notification_redis, "run_success", now_ts, destination=board_id)
 
-                wm_unblocked = await _get_watermark("unblocked", destination=board_id)
+                wm_unblocked = await get_watermark(_notification_redis, "unblocked", destination=board_id)
                 since_unblocked = _ts_to_iso(wm_unblocked) if wm_unblocked > 0 else None
                 tasks = await api.list_unblocked_tasks(since=since_unblocked, board_id=board_id)
                 for task in tasks:
@@ -167,7 +151,7 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                     if not task_id or first_poll:
                         continue
                     await notify_task_unblocked(task)
-                await _set_watermark("unblocked", now_ts, destination=board_id)
+                await set_watermark(_notification_redis, "unblocked", now_ts, destination=board_id)
 
             escalations = await api.get_escalations()
             for event in escalations.get("escalations", []):
