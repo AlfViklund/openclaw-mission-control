@@ -127,7 +127,10 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
             since_approval = _ts_to_iso(wm_approval) if wm_approval > 0 else None
             approvals: list[dict] = []
             for board in boards:
-                board_approvals = await api.list_approvals(board.get("id"), since=since_approval)
+                board_id = board.get("id", "unknown")
+                board_wm = await _get_watermark("approval", destination=board_id)
+                board_since = _ts_to_iso(board_wm) if board_wm > 0 else since_approval
+                board_approvals = await api.list_approvals(board_id, since=board_since)
                 for approval in board_approvals:
                     approval_id = str(approval.get("id"))
                     if approval_id and not await _notification_seen(f"approval:{approval_id}"):
@@ -135,8 +138,8 @@ async def notification_poll_loop(stop_event: asyncio.Event) -> None:
                         if not first_poll:
                             await notify_approval_pending(approval)
                 approvals.extend(board_approvals)
-            if approvals:
-                await _set_watermark("approval", now_ts)
+                if board_approvals:
+                    await _set_watermark("approval", now_ts, destination=board_id)
 
             wm_build = await _get_watermark("build_failed")
             since_build = _ts_to_iso(wm_build) if wm_build > 0 else None

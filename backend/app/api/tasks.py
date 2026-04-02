@@ -96,6 +96,7 @@ TASK_EVENT_TYPES = {
     "task.updated",
     "task.status_changed",
     "task.comment",
+    "task.unblocked",
 }
 SSE_SEEN_MAX = 2000
 TASK_SNIPPET_MAX_LEN = 500
@@ -530,6 +531,15 @@ async def _reconcile_dependents_for_dependency_toggle(
                 event_type="task.updated",
                 task_id=dependent.id,
                 message=f"Dependency completion changed: {dependency_task.title}.",
+                agent_id=actor_agent_id,
+                board_id=dependent.board_id,
+            )
+            # Record unblocked transition so notification poller can detect it
+            record_activity(
+                session,
+                event_type="task.unblocked",
+                task_id=dependent.id,
+                message=f"Task unblocked: dependency completed ({dependency_task.title}).",
                 agent_id=actor_agent_id,
                 board_id=dependent.board_id,
             )
@@ -1481,6 +1491,44 @@ async def list_tasks(
         )
 
     return await paginate(session, statement, transformer=_transform)
+
+
+@router.get("/unblocked-transitions")
+async def list_unblocked_transitions(
+    since: datetime | None = Query(default=None, description="Return unblocked events after this time"),
+    board: Board = BOARD_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = ACTOR_DEP,
+) -> list[dict]:
+    """Return tasks that recently transitioned from blocked→unblocked.
+
+    Uses the activity log to find task.unblocked events after the given
+    timestamp, so callers only receive genuine transitions instead of a
+    snapshot of all currently unblocked tasks.
+    """
+    query = (
+        select(ActivityEvent)
+        .where(
+            col(ActivityEvent.board_id) == board.id,
+            col(ActivityEvent.event_type) == "task.unblocked",
+        )
+        .order_by(desc(col(ActivityEvent.created_at)))
+        .limit(50)
+    )
+    if since is not None:
+        query = query.where(col(ActivityEvent.created_at) >= since)
+
+    events = (await session.exec(query)).all()
+    result = []
+    for event in events:
+        result.append({
+            "id": str(event.task_id),
+            "task_id": str(event.task_id),
+            "board_id": str(event.board_id),
+            "unblocked_at": event.created_at.isoformat() if event.created_at else None,
+            "message": event.message,
+        })
+    return result
 
 
 @router.post("", response_model=TaskRead, responses={409: {"model": BlockedTaskError}})

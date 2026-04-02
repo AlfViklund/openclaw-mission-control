@@ -151,14 +151,22 @@ class MissionControlClient:
         return data.get("items", [])
 
     async def list_unblocked_tasks(self, since: str | None = None) -> list[dict]:
+        """Return tasks that recently transitioned from blocked→unblocked.
+
+        Uses the transition-based endpoint so we only get genuine
+        unblocked events, not a snapshot of all currently unblocked tasks.
+        """
         boards = await self.list_boards()
         tasks: list[dict] = []
         for board in boards:
             params: dict = {}
             if since:
                 params["since"] = since
-            board_tasks = await self.list_tasks(board["id"], params=params)
-            tasks.extend(task for task in board_tasks if not task.get("is_blocked"))
+            transitions = await self._get(
+                f"/api/v1/boards/{board['id']}/tasks/unblocked-transitions",
+                params=params,
+            )
+            tasks.extend(transitions)
         return tasks
 
     # -- Planner --

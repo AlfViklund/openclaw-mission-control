@@ -858,6 +858,8 @@ export default function BoardDetailPage() {
   const [board, setBoard] = useState<Board | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentWakeReasons, setAgentWakeReasons] = useState<Record<string, string>>({});
+  const [agentWakeReasons, setAgentWakeReasons] = useState<Record<string, string>>({});
   const [groupSnapshot, setGroupSnapshot] = useState<BoardGroupSnapshot | null>(
     null,
   );
@@ -998,6 +1000,57 @@ export default function BoardDetailPage() {
     }
     liveFeedFlashTimersRef.current = {};
   }, [boardId]);
+
+  // Fetch real wake reasons from backend work-snapshots
+  useEffect(() => {
+    if (!isSignedIn || !boardId || agents.length === 0) return;
+    let cancelled = false;
+    const fetchWakeReasons = async () => {
+      try {
+        const res = await fetch(`/api/v1/agents/boards/${boardId}/work-snapshots`, {
+          headers: { Authorization: `Bearer ${await (window as any).clerk?.session?.getToken() ?? ""}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.snapshots) {
+          const reasons: Record<string, string> = {};
+          for (const [agentId, snap] of Object.entries(data.snapshots) as [string, any][]) {
+            if (snap?.reason) reasons[agentId] = snap.reason;
+          }
+          setAgentWakeReasons(reasons);
+        }
+      } catch {
+        // Silently ignore — sidebar falls back to local heuristic
+      }
+    };
+    fetchWakeReasons();
+    return () => { cancelled = true; };
+  }, [isSignedIn, boardId, agents.length]);
+
+  useEffect(() => {
+    if (!isSignedIn || !boardId || agents.length === 0) return;
+    let cancelled = false;
+    const fetchWakeReasons = async () => {
+      try {
+        const res = await fetch(`/api/v1/agents/boards/${boardId}/work-snapshots`, {
+          headers: { Authorization: `Bearer ${await (window as any).clerk?.session?.getToken() ?? ""}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.snapshots) {
+          const reasons: Record<string, string> = {};
+          for (const [agentId, snap] of Object.entries(data.snapshots) as [string, any][]) {
+            if (snap?.reason) reasons[agentId] = snap.reason;
+          }
+          setAgentWakeReasons(reasons);
+        }
+      } catch {
+        // Silently ignore — sidebar falls back to local heuristic
+      }
+    };
+    fetchWakeReasons();
+    return () => { cancelled = true; };
+  }, [isSignedIn, boardId, agents.length]);
 
   useEffect(() => {
     return () => {
@@ -3220,12 +3273,12 @@ export default function BoardDetailPage() {
                   >
                     <Activity className="h-4 w-4" />
                   </Button>
-                  <div className="hidden items-center gap-1 md:flex">
+                  <div className="flex items-center gap-1 overflow-x-auto">
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => router.push(`/boards/${boardId}/artifacts`)}
-                      className="h-8 px-2 text-xs"
+                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
                       title="Artifacts"
                     >
                       Artifacts
@@ -3234,7 +3287,7 @@ export default function BoardDetailPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => router.push(`/boards/${boardId}/planner`)}
-                      className="h-8 px-2 text-xs"
+                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
                       title="Planner"
                     >
                       Planner
@@ -3243,7 +3296,7 @@ export default function BoardDetailPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => router.push(`/boards/${boardId}/runs`)}
-                      className="h-8 px-2 text-xs"
+                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
                       title="Runs"
                     >
                       Runs
@@ -3252,7 +3305,7 @@ export default function BoardDetailPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => router.push(`/boards/${boardId}/qa`)}
-                      className="h-8 px-2 text-xs"
+                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
                       title="QA"
                     >
                       QA
@@ -3374,15 +3427,16 @@ export default function BoardDetailPage() {
                       const ago = lastSeen
                         ? timeAgo(lastSeen)
                         : "never";
-                      const wakeReason = isWorking
-                        ? "assigned_task"
-                        : agent.status === "idle"
-                          ? "idle"
-                          : agent.status === "dormant"
-                            ? "dormant"
-                            : agent.status === "offline"
-                              ? "offline"
-                              : null;
+                      const wakeReason = agentWakeReasons[agent.id]
+                        || (isWorking
+                          ? "assigned_task"
+                          : agent.status === "idle"
+                            ? "idle"
+                            : agent.status === "dormant"
+                              ? "dormant"
+                              : agent.status === "offline"
+                                ? "offline"
+                                : null);
                       return (
                         <button
                           key={agent.id}

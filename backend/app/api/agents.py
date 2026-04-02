@@ -243,6 +243,35 @@ async def get_agent_work_snapshot(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
 
+@router.get("/boards/{board_id}/work-snapshots")
+async def get_board_work_snapshots(
+    board_id: str,
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
+) -> dict:
+    """Return work-snapshots for all agents on a board.
+
+    Batch endpoint so the UI can fetch real wake reasons for every agent
+    in a single call instead of N individual requests.
+    """
+    from uuid import UUID
+    from app.models.agents import Agent
+    from sqlmodel import col
+
+    require_user(actor)
+    bid = UUID(board_id)
+    agents = await Agent.objects.filter(col(Agent.board_id) == bid).all(session)
+    from app.services.agent_work import get_work_snapshot
+
+    snapshots: dict[str, dict] = {}
+    for agent in agents:
+        try:
+            snapshots[str(agent.id)] = await get_work_snapshot(session, agent.id)
+        except ValueError:
+            snapshots[str(agent.id)] = {"should_wake": False, "reason": "error"}
+    return {"snapshots": snapshots}
+
+
 @router.delete("/{agent_id}", response_model=OkResponse)
 async def delete_agent(
     agent_id: str,
