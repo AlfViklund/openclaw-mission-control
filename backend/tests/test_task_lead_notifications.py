@@ -32,7 +32,7 @@ def _lead_agent(board_id, gateway_id) -> Agent:
         board_id=board_id,
         gateway_id=gateway_id,
         name="Lead Agent",
-        openclaw_session_id=None,
+        openclaw_session_id="stale-session-key",
         is_board_lead=True,
     )
 
@@ -88,7 +88,7 @@ async def test_notify_lead_on_task_create_uses_canonical_agent_send(
     monkeypatch.setattr(tasks_api.Agent, "objects", _LeadObjects(lead))
     monkeypatch.setattr(tasks_api.GatewayDispatchService, "try_send_to_agent", _fake_try_send_to_agent)
 
-    await tasks_api._notify_lead_on_task_create(session=session, board=board, task=task)
+    await tasks_api._notify_lead_on_task_create(session=session, board=board, task=task)  # type: ignore[arg-type]
 
     assert session.commits == 1
     assert len(calls) == 1
@@ -115,7 +115,7 @@ async def test_notify_lead_on_task_unassigned_uses_canonical_agent_send(
     monkeypatch.setattr(tasks_api.Agent, "objects", _LeadObjects(lead))
     monkeypatch.setattr(tasks_api.GatewayDispatchService, "try_send_to_agent", _fake_try_send_to_agent)
 
-    await tasks_api._notify_lead_on_task_unassigned(session=session, board=board, task=task)
+    await tasks_api._notify_lead_on_task_unassigned(session=session, board=board, task=task)  # type: ignore[arg-type]
 
     assert session.commits == 1
     assert len(calls) == 1
