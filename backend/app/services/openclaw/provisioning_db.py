@@ -238,6 +238,22 @@ class OpenClawProvisioningService(OpenClawDBService):
                 self.session.add(existing)
                 await self.session.commit()
                 await self.session.refresh(existing)
+                auth_token = mint_agent_token(existing)
+                await AgentLifecycleOrchestrator(self.session).run_lifecycle(
+                    gateway=request.gateway,
+                    agent_id=existing.id,
+                    board=board,
+                    user=request.user,
+                    action="update",
+                    auth_token=auth_token,
+                    force_bootstrap=False,
+                    reset_session=False,
+                    wake=True,
+                    deliver_wakeup=True,
+                    wakeup_verb="updated",
+                    clear_confirm_token=False,
+                    raise_gateway_errors=False,
+                )
             return existing, False
 
         merged_identity_profile: dict[str, Any] = {}
