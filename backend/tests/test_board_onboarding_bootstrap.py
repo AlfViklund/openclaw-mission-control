@@ -10,16 +10,24 @@ from uuid import uuid4
 import pytest
 
 from app.schemas.board_onboarding import (
+    AUTOMATION_PROFILE_DEFAULTS,
+    QA_STRICTNESS_DEFAULTS,
     BoardOnboardingAgentComplete,
     BoardOnboardingAutomationPolicy,
+    BoardOnboardingContext,
+    BoardOnboardingDraftUpdate,
     BoardOnboardingLeadAgentDraft,
     BoardOnboardingPlanningPolicy,
+    BoardOnboardingProjectInfo,
     BoardOnboardingQaPolicy,
+    BoardOnboardingRefineQuestion,
+    BoardOnboardingRefineResult,
     BoardOnboardingTeamPlan,
     BoardOnboardingUserProfile,
 )
 from app.services.agent_presets import AGENT_ROLE_PRESETS
 from app.services.board_bootstrap import (
+    _apply_qa_strictness,
     _automation_config_from_policy,
     _lead_options_from_draft,
     _require_approval_for_done_from_qa,
@@ -263,7 +271,7 @@ class TestAgentCompleteSchemaExtended:
         assert draft.automation_policy is not None
         assert draft.automation_policy.online_every_seconds == 300
 
-    def test_accepts_full_extended_payload(self) -> None:
+    def test_accepts_full_extended_payload_with_all_new_fields(self) -> None:
         draft = BoardOnboardingAgentComplete(
             status="complete",
             board_type="goal",
@@ -338,3 +346,281 @@ class TestBoardLeadPresetIntegrity:
     def test_board_lead_preset_is_marked_as_board_lead(self) -> None:
         preset = AGENT_ROLE_PRESETS["board_lead"]
         assert preset["is_board_lead"] is True
+
+
+class TestQaStrictnessDefaults:
+    """Tests for QA strictness profile defaults."""
+
+    def test_flexible_maps_to_smoke_and_no_approval(self) -> None:
+        defaults = QA_STRICTNESS_DEFAULTS["flexible"]
+        assert defaults["level"] == "smoke"
+        assert defaults["require_approval_for_done"] is False
+
+    def test_balanced_maps_to_standard_and_approval(self) -> None:
+        defaults = QA_STRICTNESS_DEFAULTS["balanced"]
+        assert defaults["level"] == "standard"
+        assert defaults["require_approval_for_done"] is True
+
+    def test_strict_maps_to_strict_and_approval(self) -> None:
+        defaults = QA_STRICTNESS_DEFAULTS["strict"]
+        assert defaults["level"] == "strict"
+        assert defaults["require_approval_for_done"] is True
+
+
+class TestAutomationProfileDefaults:
+    """Tests for automation profile defaults."""
+
+    def test_economy_has_slow_heartbeat(self) -> None:
+        defaults = AUTOMATION_PROFILE_DEFAULTS["economy"]
+        assert defaults["online_every_seconds"] == 600
+        assert defaults["idle_every_seconds"] == 3600
+        assert defaults["dormant_every_seconds"] == 21600
+
+    def test_normal_has_balanced_heartbeat(self) -> None:
+        defaults = AUTOMATION_PROFILE_DEFAULTS["normal"]
+        assert defaults["online_every_seconds"] == 300
+        assert defaults["idle_every_seconds"] == 1800
+        assert defaults["dormant_every_seconds"] == 21600
+
+    def test_active_has_fast_heartbeat(self) -> None:
+        defaults = AUTOMATION_PROFILE_DEFAULTS["active"]
+        assert defaults["online_every_seconds"] == 120
+        assert defaults["idle_every_seconds"] == 900
+        assert defaults["dormant_every_seconds"] == 10800
+
+    def test_aggressive_has_max_heartbeat(self) -> None:
+        defaults = AUTOMATION_PROFILE_DEFAULTS["aggressive"]
+        assert defaults["online_every_seconds"] == 60
+        assert defaults["idle_every_seconds"] == 600
+        assert defaults["dormant_every_seconds"] == 3600
+
+
+class TestApplyQaStrictness:
+    """Tests for _apply_qa_strictness helper."""
+
+    def test_returns_default_policy_when_none(self) -> None:
+        result = _apply_qa_strictness(None)
+        assert result.strictness is None
+        assert result.level is None
+
+    def test_applies_flexible_defaults(self) -> None:
+        policy = BoardOnboardingQaPolicy(strictness="flexible")
+        result = _apply_qa_strictness(policy)
+        assert result.strictness == "flexible"
+        assert result.level == "smoke"
+        assert result.require_approval_for_done is False
+
+    def test_applies_balanced_defaults(self) -> None:
+        policy = BoardOnboardingQaPolicy(strictness="balanced")
+        result = _apply_qa_strictness(policy)
+        assert result.strictness == "balanced"
+        assert result.level == "standard"
+        assert result.require_approval_for_done is True
+
+    def test_applies_strict_defaults(self) -> None:
+        policy = BoardOnboardingQaPolicy(strictness="strict")
+        result = _apply_qa_strictness(policy)
+        assert result.strictness == "strict"
+        assert result.level == "strict"
+        assert result.require_approval_for_done is True
+
+    def test_explicit_values_override_defaults(self) -> None:
+        policy = BoardOnboardingQaPolicy(
+            strictness="balanced",
+            level="smoke",
+            require_approval_for_done=False,
+        )
+        result = _apply_qa_strictness(policy)
+        assert result.strictness == "balanced"
+        assert result.level == "smoke"
+        assert result.require_approval_for_done is False
+
+
+class TestBoardOnboardingProjectInfo:
+    """Tests for BoardOnboardingProjectInfo schema."""
+
+    def test_accepts_valid_project_mode(self) -> None:
+        info = BoardOnboardingProjectInfo(project_mode="new_product")
+        assert info.project_mode == "new_product"
+
+    def test_accepts_all_project_stages(self) -> None:
+        for stage in (
+            "idea_only",
+            "spec_exists",
+            "codebase_exists",
+            "active_development",
+            "shipped_product",
+        ):
+            info = BoardOnboardingProjectInfo(project_stage=stage)
+            assert info.project_stage == stage
+
+    def test_accepts_all_milestone_types(self) -> None:
+        for milestone in (
+            "mvp",
+            "architecture_plan",
+            "key_feature",
+            "stabilization",
+            "research_prototype",
+            "other",
+        ):
+            info = BoardOnboardingProjectInfo(first_milestone_type=milestone)
+            assert info.first_milestone_type == milestone
+
+    def test_accepts_all_delivery_modes(self) -> None:
+        for mode in (
+            "quality_first",
+            "balanced",
+            "fast_first_milestone",
+            "aggressive_push",
+        ):
+            info = BoardOnboardingProjectInfo(delivery_mode=mode)
+            assert info.delivery_mode == mode
+
+    def test_accepts_all_deadline_modes(self) -> None:
+        for mode in ("none", "few_days", "one_two_weeks", "one_month", "custom"):
+            info = BoardOnboardingProjectInfo(deadline_mode=mode)
+            assert info.deadline_mode == mode
+
+
+class TestBoardOnboardingDraftUpdate:
+    """Tests for BoardOnboardingDraftUpdate schema."""
+
+    def test_accepts_partial_project_info(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "project_info": {"project_mode": "new_product"},
+            }
+        )
+        assert update.project_info is not None
+        assert update.project_info.project_mode == "new_product"
+
+    def test_accepts_partial_context(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "context": {"description": "Test project"},
+            }
+        )
+        assert update.context is not None
+        assert update.context.description == "Test project"
+
+    def test_accepts_partial_lead_agent(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "lead_agent": {"name": "Ava", "autonomy_level": "balanced"},
+            }
+        )
+        assert update.lead_agent is not None
+        assert update.lead_agent.name == "Ava"
+        assert update.lead_agent.autonomy_level == "balanced"
+
+    def test_accepts_partial_team_plan(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "team_plan": {"provision_mode": "full_team"},
+            }
+        )
+        assert update.team_plan is not None
+        assert update.team_plan.provision_mode == "full_team"
+
+    def test_accepts_partial_planning_policy(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "planning_policy": {"bootstrap_mode": "generate_backlog"},
+            }
+        )
+        assert update.planning_policy is not None
+        assert update.planning_policy.bootstrap_mode == "generate_backlog"
+
+    def test_accepts_partial_qa_policy(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "qa_policy": {"strictness": "strict"},
+            }
+        )
+        assert update.qa_policy is not None
+        assert update.qa_policy.strictness == "strict"
+
+    def test_accepts_partial_automation_policy(self) -> None:
+        update = BoardOnboardingDraftUpdate.model_validate(
+            {
+                "automation_policy": {"automation_profile": "active"},
+            }
+        )
+        assert update.automation_policy is not None
+        assert update.automation_policy.automation_profile == "active"
+
+
+class TestBoardOnboardingRefineResult:
+    """Tests for BoardOnboardingRefineResult schema."""
+
+    def test_accepts_complete_status_with_draft(self) -> None:
+        result = BoardOnboardingRefineResult(
+            status="complete",
+            draft=BoardOnboardingDraftUpdate.model_validate(
+                {
+                    "project_info": {"project_mode": "new_product"},
+                }
+            ),
+            summary="Looks good",
+        )
+        assert result.status == "complete"
+        assert result.draft is not None
+        assert result.draft.project_info is not None
+        assert result.summary == "Looks good"
+
+    def test_accepts_questions_status(self) -> None:
+        result = BoardOnboardingRefineResult(
+            status="questions",
+            questions=[
+                BoardOnboardingRefineQuestion(
+                    id="1",
+                    question="What is the main goal?",
+                    options=[],
+                ),
+            ],
+        )
+        assert result.status == "questions"
+        assert len(result.questions) == 1
+        assert result.questions[0].question == "What is the main goal?"
+
+    def test_accepts_refining_status(self) -> None:
+        result = BoardOnboardingRefineResult(status="refining")
+        assert result.status == "refining"
+
+
+class TestBoardOnboardingTeamPlanProvisionMode:
+    """Tests for team plan provision_mode field."""
+
+    def test_accepts_lead_only(self) -> None:
+        plan = BoardOnboardingTeamPlan(provision_mode="lead_only")
+        assert plan.provision_mode == "lead_only"
+
+    def test_accepts_selected_roles(self) -> None:
+        plan = BoardOnboardingTeamPlan(
+            provision_mode="selected_roles",
+            roles=["developer", "qa_engineer"],
+        )
+        assert plan.provision_mode == "selected_roles"
+        assert plan.roles == ["developer", "qa_engineer"]
+
+    def test_accepts_full_team(self) -> None:
+        plan = BoardOnboardingTeamPlan(provision_mode="full_team")
+        assert plan.provision_mode == "full_team"
+
+
+class TestBoardOnboardingPlanningPolicyBootstrapMode:
+    """Tests for planning policy bootstrap_mode field."""
+
+    def test_accepts_all_bootstrap_modes(self) -> None:
+        for mode in ("generate_backlog", "empty_board", "lead_only", "draft_only"):
+            policy = BoardOnboardingPlanningPolicy(bootstrap_mode=mode)
+            assert policy.bootstrap_mode == mode
+
+
+class TestBoardOnboardingAutomationPolicyProfile:
+    """Tests for automation policy automation_profile field."""
+
+    def test_accepts_all_profiles(self) -> None:
+        for profile in ("economy", "normal", "active", "aggressive"):
+            policy = BoardOnboardingAutomationPolicy(automation_profile=profile)
+            assert policy.automation_profile == profile
