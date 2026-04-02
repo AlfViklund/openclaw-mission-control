@@ -26,8 +26,10 @@ from app.schemas.board_onboarding import (
     BoardOnboardingAgentUpdate,
     BoardOnboardingAnswer,
     BoardOnboardingConfirm,
+    BoardOnboardingDraftUpdate,
     BoardOnboardingLeadAgentDraft,
     BoardOnboardingRead,
+    BoardOnboardingRefineResult,
     BoardOnboardingStart,
     BoardOnboardingUserProfile,
     BoardOnboardingBootstrapResponse,
@@ -498,6 +500,214 @@ async def agent_onboarding_update(
         len(onboarding.messages or []),
         onboarding.status,
     )
+    return onboarding
+
+
+@router.patch("/draft", response_model=BoardOnboardingRead)
+async def update_draft(
+    payload: BoardOnboardingDraftUpdate,
+    board: Board = BOARD_USER_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+) -> BoardOnboardingSession:
+    """Save structured wizard draft incrementally without calling gateway."""
+    onboarding = (
+        await BoardOnboardingSession.objects.filter_by(board_id=board.id)
+        .order_by(col(BoardOnboardingSession.updated_at).desc())
+        .first(session)
+    )
+    if onboarding is None:
+        onboarding = BoardOnboardingSession(
+            board_id=board.id,
+            session_key=f"wizard-draft:{board.id}",
+            status="active",
+            messages=[],
+        )
+        session.add(onboarding)
+        await session.flush()
+    elif onboarding.status == "confirmed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot update draft on a confirmed onboarding.",
+        )
+
+    existing_draft: dict[str, object] = dict(onboarding.draft_goal or {})
+
+    if payload.board_type is not None:
+        existing_draft["board_type"] = payload.board_type
+    if payload.objective is not None:
+        existing_draft["objective"] = payload.objective
+    if payload.success_metrics is not None:
+        existing_draft["success_metrics"] = payload.success_metrics
+    if payload.target_date is not None:
+        existing_draft["target_date"] = payload.target_date.isoformat()
+    if payload.user_profile is not None:
+        existing_draft["user_profile"] = payload.user_profile.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.project_info is not None:
+        existing_draft["project_info"] = payload.project_info.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.context is not None:
+        existing_draft["context"] = payload.context.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.lead_agent is not None:
+        existing_draft["lead_agent"] = payload.lead_agent.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.team_plan is not None:
+        existing_draft["team_plan"] = payload.team_plan.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.planning_policy is not None:
+        existing_draft["planning_policy"] = payload.planning_policy.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.qa_policy is not None:
+        existing_draft["qa_policy"] = payload.qa_policy.model_dump(
+            mode="json", exclude_none=True
+        )
+    if payload.automation_policy is not None:
+        existing_draft["automation_policy"] = payload.automation_policy.model_dump(
+            mode="json", exclude_none=True
+        )
+
+    onboarding.draft_goal = existing_draft
+    onboarding.updated_at = utcnow()
+    session.add(onboarding)
+    await session.commit()
+    await session.refresh(onboarding)
+    return onboarding
+
+
+@router.post("/refine", response_model=BoardOnboardingRead)
+async def refine_onboarding(
+    board: Board = BOARD_USER_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+) -> BoardOnboardingSession:
+    """Trigger AI refinement of the current structured draft."""
+    onboarding = (
+        await BoardOnboardingSession.objects.filter_by(board_id=board.id)
+        .order_by(col(BoardOnboardingSession.updated_at).desc())
+        .first(session)
+    )
+    if onboarding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    if onboarding.status == "confirmed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot refine a confirmed onboarding.",
+        )
+
+    if not onboarding.draft_goal:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No draft to refine. Complete wizard steps first.",
+        )
+
+    dispatcher = BoardOnboardingMessagingService(session)
+    await dispatcher.dispatch_refine_prompt(
+        board=board,
+        draft=onboarding.draft_goal,
+        correlation_id=f"onboarding.refine:{board.id}:{onboarding.id}",
+    )
+
+    messages = list(onboarding.messages or [])
+    messages.append(
+        {
+            "role": "user",
+            "content": "[Wizard] Requested AI refinement",
+            "timestamp": utcnow().isoformat(),
+        }
+    )
+
+    onboarding.status = "refining"
+    onboarding.messages = messages
+    onboarding.updated_at = utcnow()
+    session.add(onboarding)
+    await session.commit()
+    await session.refresh(onboarding)
+    return onboarding
+
+
+@router.post("/agent/refine-result", response_model=BoardOnboardingRead)
+async def agent_refine_result(
+    payload: BoardOnboardingRefineResult,
+    board: Board = BOARD_OR_404_DEP,
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
+) -> BoardOnboardingSession:
+    """Store AI refinement result submitted by the gateway agent."""
+    if actor.actor_type != "agent" or actor.agent is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    agent = actor.agent
+    OpenClawAuthorizationPolicy.require_gateway_scoped_actor(actor_agent=agent)
+
+    gateway = await get_gateway_for_board(session, board)
+    if gateway is not None:
+        OpenClawAuthorizationPolicy.require_gateway_main_actor_binding(
+            actor_agent=agent,
+            gateway=gateway,
+        )
+
+    onboarding = (
+        await BoardOnboardingSession.objects.filter_by(board_id=board.id)
+        .order_by(col(BoardOnboardingSession.updated_at).desc())
+        .first(session)
+    )
+    if onboarding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if onboarding.status == "confirmed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT)
+
+    messages = list(onboarding.messages or [])
+    payload_text = payload.model_dump_json(exclude_none=True)
+    now = utcnow().isoformat()
+
+    if payload.status == "complete" and payload.draft is not None:
+        if onboarding.draft_goal is None:
+            onboarding.draft_goal = {}
+        existing = dict(onboarding.draft_goal)
+        updated = payload.draft.model_dump(exclude_none=True)
+        existing.update(updated)
+        onboarding.draft_goal = existing
+        onboarding.status = "completed"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": payload_text,
+                "timestamp": now,
+                "refine": "complete",
+            }
+        )
+    elif payload.status == "questions":
+        messages.append(
+            {
+                "role": "assistant",
+                "content": payload_text,
+                "timestamp": now,
+                "refine": "questions",
+            }
+        )
+        if onboarding.status == "refining":
+            onboarding.status = "active"
+    else:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": payload_text,
+                "timestamp": now,
+                "refine": "refining",
+            }
+        )
+
+    onboarding.messages = messages
+    onboarding.updated_at = utcnow()
+    session.add(onboarding)
+    await session.commit()
+    await session.refresh(onboarding)
     return onboarding
 
 

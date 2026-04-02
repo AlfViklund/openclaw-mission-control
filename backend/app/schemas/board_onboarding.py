@@ -401,6 +401,40 @@ class BoardBootstrapResult(SQLModel):
     automation_sync: BoardAutomationSyncResultData | None = None
 
 
+class BoardOnboardingRefineQuestion(SQLModel):
+    """Single clarification question from AI during refine step."""
+
+    id: str
+    question: str
+    options: list[BoardOnboardingQuestionOption] = Field(default_factory=list)
+
+
+class BoardOnboardingDraftUpdate(SQLModel):
+    """Partial structured draft update from wizard steps."""
+
+    board_type: str | None = None
+    objective: str | None = None
+    success_metrics: dict[str, object] | None = None
+    target_date: datetime | None = None
+    user_profile: BoardOnboardingUserProfile | None = None
+    project_info: BoardOnboardingProjectInfo | None = None
+    context: BoardOnboardingContext | None = None
+    lead_agent: BoardOnboardingLeadAgentDraft | None = None
+    team_plan: BoardOnboardingTeamPlan | None = None
+    planning_policy: BoardOnboardingPlanningPolicy | None = None
+    qa_policy: BoardOnboardingQaPolicy | None = None
+    automation_policy: BoardOnboardingAutomationPolicy | None = None
+
+
+class BoardOnboardingRefineResult(SQLModel):
+    """AI refine step result: either questions or updated draft."""
+
+    status: Literal["refining", "questions", "complete"]
+    draft: BoardOnboardingDraftUpdate | None = None
+    questions: list[BoardOnboardingRefineQuestion] = Field(default_factory=list)
+    summary: str | None = None
+
+
 class BoardOnboardingBootstrapResponse(SQLModel):
     """Full response returned after onboarding confirm, including board and bootstrap outcome."""
 

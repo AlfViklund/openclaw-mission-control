@@ -241,8 +241,11 @@ async def bootstrap_board_from_onboarding(
         team_plan is not None
         and team_plan.provision_mode in ("selected_roles", "full_team")
         and gateway is not None
+        and gateway_config is not None
     )
     if _should_provision:
+        assert team_plan is not None
+        assert gateway is not None
         roles = team_plan.roles or None
         provision_service = AgentProvisioningService(session)
         team_result: TeamProvisionResult = await provision_service.provision_full_team(
