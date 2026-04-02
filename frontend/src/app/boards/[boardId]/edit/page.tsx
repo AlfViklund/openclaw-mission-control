@@ -87,6 +87,40 @@ type WebhookCardProps = {
   ) => Promise<boolean>;
 };
 
+type BoardAutomationSyncStatus = {
+  status: "success" | "partial_failure" | "failed" | "not_run";
+  agents_updated: number;
+  gateway_syncs_succeeded: number;
+  gateway_syncs_failed: number;
+  failed_agent_ids: string[];
+};
+
+type BoardWithAutomationConfig = BoardRead & {
+  automation_config?: {
+    online_every_seconds?: number | null;
+    idle_every_seconds?: number | null;
+    dormant_every_seconds?: number | null;
+    wake_on_approvals?: boolean | null;
+    wake_on_review?: boolean | null;
+    allow_assist_mode?: boolean | null;
+  } | null;
+};
+
+type BoardUpdateResponse = BoardRead & {
+  automation_sync?: BoardAutomationSyncStatus;
+};
+
+type BoardUpdateWithAutomationConfig = BoardUpdate & {
+  automation_config: {
+    online_every_seconds: number;
+    idle_every_seconds: number;
+    dormant_every_seconds: number;
+    wake_on_approvals: boolean;
+    wake_on_review: boolean;
+    allow_assist_mode: boolean;
+  };
+};
+
 function WebhookCard({
   webhook,
   agents,
@@ -379,21 +413,6 @@ export default function EditBoardPage() {
     );
   }, [boardId, router, searchParamsString, shouldAutoOpenOnboarding]);
 
-  // Initialize automation cadence from board automation_config
-  useEffect(() => {
-    const cfg = baseBoard?.automation_config;
-    if (cfg && typeof cfg === "object") {
-      setAutomationCadence({
-        online: Number(cfg.online_every_seconds) || 300,
-        idle: Number(cfg.idle_every_seconds) || 1800,
-        dormant: Number(cfg.dormant_every_seconds) || 21600,
-        wakeOnApprovals: cfg.wake_on_approvals !== false,
-        wakeOnReview: cfg.wake_on_review !== false,
-        allowAssistMode: Boolean(cfg.allow_assist_mode),
-      });
-    }
-  }, [baseBoard?.automation_config]);
-
   const gatewaysQuery = useListGatewaysApiV1GatewaysGet<
     listGatewaysApiV1GatewaysGetResponse,
     ApiError
@@ -458,7 +477,18 @@ export default function EditBoardPage() {
     mutation: {
       onSuccess: (result) => {
         if (result.status === 200) {
-          router.push(`/boards/${result.data.id}`);
+          const response = result.data as unknown as BoardUpdateResponse;
+          const sync = response.automation_sync;
+          const params = new URLSearchParams();
+          if (sync) {
+            params.set("automationSync", sync.status);
+            params.set("automationSyncAgentsUpdated", String(sync.agents_updated));
+            params.set("automationSyncGatewaySucceeded", String(sync.gateway_syncs_succeeded));
+            params.set("automationSyncGatewayFailed", String(sync.gateway_syncs_failed));
+            params.set("automationSyncFailedAgentIds", String(sync.failed_agent_ids.length));
+          }
+          const suffix = params.toString();
+          router.push(suffix ? `/boards/${response.id}?${suffix}` : `/boards/${response.id}`);
         }
       },
       onError: (err) => {
@@ -526,7 +556,24 @@ export default function EditBoardPage() {
   }, [gatewaysQuery.data]);
   const loadedBoard: BoardRead | null =
     boardQuery.data?.status === 200 ? boardQuery.data.data : null;
-  const baseBoard = board ?? loadedBoard;
+  const baseBoard = (board ?? loadedBoard) as BoardWithAutomationConfig | null;
+
+  // Initialize automation cadence from board automation_config.
+  useEffect(() => {
+    const cfg = baseBoard?.automation_config;
+    if (cfg && typeof cfg === "object") {
+      // The board query loads asynchronously; sync the draft once data arrives.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAutomationCadence({
+        online: Number(cfg.online_every_seconds) || 300,
+        idle: Number(cfg.idle_every_seconds) || 1800,
+        dormant: Number(cfg.dormant_every_seconds) || 21600,
+        wakeOnApprovals: cfg.wake_on_approvals !== false,
+        wakeOnReview: cfg.wake_on_review !== false,
+        allowAssistMode: Boolean(cfg.allow_assist_mode),
+      });
+    }
+  }, [baseBoard?.automation_config]);
 
   const resolvedName = name ?? baseBoard?.name ?? "";
   const resolvedDescription = description ?? baseBoard?.description ?? "";
@@ -681,7 +728,7 @@ export default function EditBoardPage() {
       }
     }
 
-    const payload: BoardUpdate = {
+    const payload: BoardUpdateWithAutomationConfig = {
       name: trimmedName,
       slug: slugify(trimmedName),
       description: trimmedDescription,

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +14,7 @@ from app.models.agents import Agent
 from app.models.board_groups import BoardGroup
 from app.models.boards import Board
 from app.schemas.boards import BoardUpdate
+from app.services import board_automation
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
 
@@ -237,7 +238,7 @@ async def test_update_board_notifies_lead_when_fields_change(
         return target
 
     async def _fake_lead_notify(**kwargs: Any) -> None:
-        calls["count"] = int(calls["count"]) + 1
+        calls["count"] = cast(int, calls["count"]) + 1
         calls["changes"] = kwargs["changed_fields"]
 
     monkeypatch.setattr(boards, "_apply_board_update", _fake_apply_board_update)
@@ -269,7 +270,17 @@ async def test_update_board_skips_lead_notify_when_no_effective_change(
     async def _fake_lead_notify(**_kwargs: Any) -> None:
         calls["lead_notify"] += 1
 
+    async def _fake_sync_automation_policy(**_kwargs: Any) -> board_automation.BoardAutomationSyncResult:
+        return board_automation.BoardAutomationSyncResult(
+            status="not_run",
+            agents_updated=0,
+            gateway_syncs_succeeded=0,
+            gateway_syncs_failed=0,
+            failed_agent_ids=[],
+        )
+
     monkeypatch.setattr(boards, "_apply_board_update", _fake_apply_board_update)
+    monkeypatch.setattr(boards, "sync_board_automation_policy", _fake_sync_automation_policy)
     monkeypatch.setattr(boards, "_notify_lead_on_board_update", _fake_lead_notify)
 
     updated = await boards.update_board(
@@ -280,6 +291,57 @@ async def test_update_board_skips_lead_notify_when_no_effective_change(
 
     assert updated.name == "Platform"
     assert calls["lead_notify"] == 0
+    assert updated.automation_sync.status == "not_run"
+
+
+@pytest.mark.asyncio
+async def test_update_board_surfaces_partial_automation_sync_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = _board(board_group_id=None)
+    session = _FakeSession()
+    automation_config = {
+        "online_every_seconds": 150,
+        "wake_on_review": False,
+    }
+    payload = BoardUpdate(automation_config=automation_config)
+
+    async def _fake_apply_board_update(**kwargs: Any) -> Board:
+        target: Board = kwargs["board"]
+        target.automation_config = automation_config
+        return target
+
+    async def _fake_sync_automation_policy(
+        *,
+        session: Any,
+        board: Board,
+    ) -> board_automation.BoardAutomationSyncResult:
+        _ = session
+        assert board is not None
+        return board_automation.BoardAutomationSyncResult(
+            status="partial_failure",
+            agents_updated=2,
+            gateway_syncs_succeeded=0,
+            gateway_syncs_failed=1,
+            failed_agent_ids=[uuid4(), uuid4()],
+        )
+
+    async def _fake_lead_notify(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(boards, "_apply_board_update", _fake_apply_board_update)
+    monkeypatch.setattr(boards, "sync_board_automation_policy", _fake_sync_automation_policy)
+    monkeypatch.setattr(boards, "_notify_lead_on_board_update", _fake_lead_notify)
+
+    updated = await boards.update_board(
+        payload=payload,
+        session=session,  # type: ignore[arg-type]
+        board=board,
+    )
+
+    assert updated.automation_sync.status == "partial_failure"
+    assert updated.automation_sync.gateway_syncs_failed == 1
+    assert len(updated.automation_sync.failed_agent_ids) == 2
 
 
 @pytest.mark.asyncio
@@ -300,15 +362,27 @@ async def test_update_board_syncs_automation_config_changes(
         target.automation_config = automation_config
         return target
 
-    async def _fake_sync_automation_to_agents(**kwargs: Any) -> None:
-        calls["sync"] = int(calls["sync"]) + 1
-        calls["config"] = kwargs["board"].automation_config
+    async def _fake_sync_automation_policy(
+        *,
+        session: Any,
+        board: Board,
+    ) -> board_automation.BoardAutomationSyncResult:
+        _ = session
+        calls["sync"] = cast(int, calls["sync"]) + 1
+        calls["config"] = board.automation_config
+        return board_automation.BoardAutomationSyncResult(
+            status="success",
+            agents_updated=2,
+            gateway_syncs_succeeded=1,
+            gateway_syncs_failed=0,
+            failed_agent_ids=[],
+        )
 
     async def _fake_lead_notify(**_kwargs: Any) -> None:
         return None
 
     monkeypatch.setattr(boards, "_apply_board_update", _fake_apply_board_update)
-    monkeypatch.setattr(boards, "_sync_automation_to_agents", _fake_sync_automation_to_agents)
+    monkeypatch.setattr(boards, "sync_board_automation_policy", _fake_sync_automation_policy)
     monkeypatch.setattr(boards, "_notify_lead_on_board_update", _fake_lead_notify)
 
     updated = await boards.update_board(
@@ -317,7 +391,8 @@ async def test_update_board_syncs_automation_config_changes(
         board=board,
     )
 
-    assert updated.automation_config == automation_config
+    assert updated.automation_sync.status == "success"
+    assert updated.automation_sync.failed_agent_ids == []
     assert calls["sync"] == 1
     assert calls["config"] == automation_config
 
@@ -402,11 +477,14 @@ async def test_notify_agents_on_board_group_addition_fanout_and_records_results(
 
     async def _fake_try_send_agent_message(
         self: boards.GatewayDispatchService,
-        **kwargs: Any,
+        *,
+        agent: Agent,
+        message: str,
+        deliver: bool = False,
     ) -> OpenClawGatewayError | None:
         _ = self
-        sent.append(kwargs)
-        if kwargs["session_key"] == "agent:worker:session":
+        sent.append({"agent_name": agent.name, "message": message, "deliver": deliver})
+        if agent.name == "Worker":
             return OpenClawGatewayError("gateway down")
         return None
 
@@ -419,7 +497,7 @@ async def test_notify_agents_on_board_group_addition_fanout_and_records_results(
     )
     monkeypatch.setattr(
         boards.GatewayDispatchService,
-        "try_send_agent_message",
+        "try_send_to_agent",
         _fake_try_send_agent_message,
     )
 
@@ -510,10 +588,13 @@ async def test_notify_agents_on_board_group_removal_fanout_and_records_results(
 
     async def _fake_try_send_agent_message(
         self: boards.GatewayDispatchService,
-        **kwargs: Any,
+        *,
+        agent: Agent,
+        message: str,
+        deliver: bool = False,
     ) -> OpenClawGatewayError | None:
         _ = self
-        sent.append(kwargs)
+        sent.append({"agent_name": agent.name, "message": message, "deliver": deliver})
         return None
 
     monkeypatch.setattr(boards, "Agent", _FakeAgentModel)
@@ -525,7 +606,7 @@ async def test_notify_agents_on_board_group_removal_fanout_and_records_results(
     )
     monkeypatch.setattr(
         boards.GatewayDispatchService,
-        "try_send_agent_message",
+        "try_send_to_agent",
         _fake_try_send_agent_message,
     )
 

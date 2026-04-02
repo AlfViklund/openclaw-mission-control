@@ -137,6 +137,8 @@ async def test_sync_automation_to_agents_updates_db_and_gateway_runtime(
     assert sync_calls[0]["gateway_id"] == gateway_id
     assert sync_calls[0]["workspace_root"] == "/workspace"
     assert sync_calls[0]["heartbeat_configs"][0]["online_every_seconds"] == 120
+    assert result.status == "success"
+    assert result.failed_agent_ids == []
 
 
 @pytest.mark.asyncio
@@ -151,11 +153,12 @@ async def test_sync_board_automation_policy_reports_gateway_failure(
         gateway_id=uuid4(),
         automation_config={"online_every_seconds": 120},
     )
+    gateway_id = board.gateway_id or uuid4()
     session = _FakeSession()
     agent = Agent(
         id=uuid4(),
         board_id=board.id,
-        gateway_id=board.gateway_id,
+        gateway_id=gateway_id,
         name="Worker",
         heartbeat_config={"every": "10m"},
     )
@@ -172,7 +175,7 @@ async def test_sync_board_automation_policy_reports_gateway_failure(
     class _FakeGatewayQuery:
         async def first(self, _session: object) -> Gateway | None:
             return Gateway(
-                id=board.gateway_id,
+                id=gateway_id,
                 organization_id=board.organization_id,
                 name="Main Gateway",
                 url="wss://gateway.example/ws",
@@ -203,5 +206,7 @@ async def test_sync_board_automation_policy_reports_gateway_failure(
     result = await board_automation.sync_board_automation_policy(session, board)  # type: ignore[arg-type]
 
     assert result.agents_updated == 1
+    assert result.status == "partial_failure"
     assert result.gateway_syncs_succeeded == 0
     assert result.gateway_syncs_failed == 1
+    assert result.failed_agent_ids == [agent.id]

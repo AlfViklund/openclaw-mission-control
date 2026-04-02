@@ -9,7 +9,7 @@ import {
   RefreshCw,
   RotateCw,
   Power,
-  FileSync,
+  FileScan,
   CheckCircle,
   XCircle,
   Clock,
@@ -28,11 +28,44 @@ interface BoardOption {
   name: string;
 }
 
+type HealthCheckResult = {
+  heartbeats?: { count?: number };
+  retries?: { count?: number };
+  reassignments?: { count?: number };
+  escalations?: { count?: number };
+};
+
+type WatchdogEscalation = {
+  type: string;
+  severity?: string | null;
+  agent_name?: string | null;
+  task_id?: string | null;
+  run_id?: string | null;
+  duration_minutes?: number | null;
+};
+
+type EscalationsResponse = {
+  escalations?: WatchdogEscalation[];
+};
+
+type WatchdogAgent = {
+  id: string;
+  name: string;
+  board_id?: string | null;
+  status?: string | null;
+  identity_profile?: { role?: string | null } | null;
+  last_seen_at?: string | null;
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unexpected error";
+}
+
 function getAuthToken(): string {
   return localStorage.getItem("mc_auth_token") || "";
 }
 
-async function runHealthCheck(): Promise<any> {
+async function runHealthCheck(): Promise<HealthCheckResult> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/watchdog/health-check`, {
     method: "POST",
@@ -42,7 +75,7 @@ async function runHealthCheck(): Promise<any> {
   return res.json();
 }
 
-async function getEscalations(): Promise<any> {
+async function getEscalations(): Promise<EscalationsResponse> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/watchdog/escalations`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -51,7 +84,7 @@ async function getEscalations(): Promise<any> {
   return res.json();
 }
 
-async function opsCommand(agentId: string, command: string): Promise<any> {
+async function opsCommand(agentId: string, command: string): Promise<unknown> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/watchdog/agents/${agentId}/${command}`, {
     method: "POST",
@@ -64,7 +97,7 @@ async function opsCommand(agentId: string, command: string): Promise<any> {
   return res.json();
 }
 
-async function fetchAgents(): Promise<any[]> {
+async function fetchAgents(): Promise<WatchdogAgent[]> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/agents`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -88,11 +121,11 @@ export default function WatchdogPage() {
   const { isSignedIn } = useAuth();
   const [activeBoardId, setActiveBoardId] = useActiveBoard();
   const [boards, setBoards] = useState<BoardOption[]>([]);
-  const [agents, setAgents] = useState<any[]>([]);
-  const [escalations, setEscalations] = useState<any[]>([]);
+  const [agents, setAgents] = useState<WatchdogAgent[]>([]);
+  const [escalations, setEscalations] = useState<WatchdogEscalation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isChecking, setIsChecking] = useState(false);
-  const [lastCheck, setLastCheck] = useState<any>(null);
+  const [lastCheck, setLastCheck] = useState<HealthCheckResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runningCommand, setRunningCommand] = useState<string | null>(null);
 
@@ -111,8 +144,8 @@ export default function WatchdogPage() {
       }
       setAgents(boardId ? agentsData.filter((agent) => agent.board_id === boardId) : agentsData);
       setEscalations(escData.escalations || []);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
     } finally {
       setIsLoading(false);
     }
@@ -137,8 +170,8 @@ export default function WatchdogPage() {
       const result = await runHealthCheck();
       setLastCheck(result);
       await loadData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
     } finally {
       setIsChecking(false);
     }
@@ -149,8 +182,8 @@ export default function WatchdogPage() {
     try {
       await opsCommand(agentId, command);
       await loadData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
     } finally {
       setRunningCommand(null);
     }
@@ -383,7 +416,7 @@ export default function WatchdogPage() {
                   </span>
                   <div className="flex items-center gap-1">
                     {[
-                      { cmd: "template-sync", icon: FileSync, label: "Sync" },
+                      { cmd: "template-sync", icon: FileScan, label: "Sync" },
                       { cmd: "rotate-tokens", icon: RotateCw, label: "Rotate" },
                       { cmd: "reset-session", icon: RefreshCw, label: "Reset" },
                       { cmd: "wake", icon: Power, label: "Wake" },

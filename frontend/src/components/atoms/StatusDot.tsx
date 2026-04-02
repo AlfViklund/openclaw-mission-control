@@ -56,19 +56,21 @@ export const statusDotClass = (
 type StatusDotProps = {
   status?: string | null;
   variant?: StatusDotVariant;
+  size?: "sm" | "md";
   className?: string;
 };
 
 export function StatusDot({
   status,
   variant = "agent",
+  size = "md",
   className,
 }: StatusDotProps) {
   return (
     <span
       aria-hidden="true"
       className={cn(
-        "inline-block h-2.5 w-2.5 rounded-full",
+        size === "sm" ? "inline-block h-2 w-2 rounded-full" : "inline-block h-2.5 w-2.5 rounded-full",
         statusDotClass(status, variant),
         className,
       )}

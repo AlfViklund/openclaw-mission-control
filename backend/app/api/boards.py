@@ -28,7 +28,13 @@ from app.models.agents import Agent
 from app.models.board_groups import BoardGroup
 from app.models.boards import Board
 from app.models.gateways import Gateway
-from app.schemas.boards import BoardCreate, BoardRead, BoardUpdate
+from app.schemas.boards import (
+    BoardAutomationSyncStatus,
+    BoardCreate,
+    BoardRead,
+    BoardUpdate,
+    BoardUpdateResult,
+)
 from app.schemas.common import OkResponse
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.schemas.view_models import BoardGroupSnapshot, BoardSnapshot
@@ -530,12 +536,12 @@ async def get_board_group_snapshot(
     )
 
 
-@router.patch("/{board_id}", response_model=BoardRead)
+@router.patch("/{board_id}", response_model=BoardUpdateResult)
 async def update_board(
     payload: BoardUpdate,
     session: AsyncSession = SESSION_DEP,
     board: Board = BOARD_USER_WRITE_DEP,
-) -> Board:
+) -> BoardUpdateResult:
     """Update mutable board properties."""
     requested_updates = payload.model_dump(exclude_unset=True)
     previous_values = {
@@ -550,6 +556,7 @@ async def update_board(
         for field_name, previous_value in previous_values.items()
         if previous_value != getattr(updated, field_name)
     }
+    automation_sync = BoardAutomationSyncStatus()
     new_group_id = updated.board_group_id
     if previous_group_id is not None and previous_group_id != new_group_id:
         previous_group = await crud.get_by_id(session, BoardGroup, previous_group_id)
@@ -598,7 +605,8 @@ async def update_board(
     # Sync automation policy to agent heartbeat configs when changed
     if "automation_config" in changed_fields:
         try:
-            result = await sync_board_automation_policy(session, updated)
+            result = await sync_board_automation_policy(session=session, board=updated)
+            automation_sync = BoardAutomationSyncStatus.model_validate(result, from_attributes=True)
             if result.gateway_syncs_failed:
                 logger.warning(
                     "board.automation.sync_partial board_id=%s agents_updated=%s gateway_syncs_failed=%s",
@@ -607,12 +615,21 @@ async def update_board(
                     result.gateway_syncs_failed,
                 )
         except Exception:
+            failed_agents = await Agent.objects.filter(col(Agent.board_id) == updated.id).all(session)
+            automation_sync = BoardAutomationSyncStatus(
+                status="failed",
+                agents_updated=len(failed_agents),
+                gateway_syncs_succeeded=0,
+                gateway_syncs_failed=1,
+                failed_agent_ids=[agent.id for agent in failed_agents],
+            )
             logger.exception(
                 "board.automation.sync_failed board_id=%s",
                 updated.id,
             )
 
-    return updated
+    response = BoardUpdateResult.model_validate(updated, from_attributes=True)
+    return response.model_copy(update={"automation_sync": automation_sync})
 
 
 @router.post("/{board_id}/panic", response_model=BoardRead)

@@ -1492,6 +1492,7 @@ async def list_unblocked_transitions(
     result = []
     for event, task_title, task_status in events:
         result.append({
+            "event_id": str(event.id),
             "id": str(event.task_id),
             "task_id": str(event.task_id),
             "board_id": str(event.board_id),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import model_validator
@@ -109,3 +109,21 @@ class BoardRead(BoardBase):
     organization_id: UUID
     created_at: datetime
     updated_at: datetime
+
+
+class BoardAutomationSyncStatus(SQLModel):
+    """Result of syncing a board automation policy to live agents."""
+
+    status: Literal["success", "partial_failure", "failed", "not_run"] = "not_run"
+    agents_updated: int = 0
+    gateway_syncs_succeeded: int = 0
+    gateway_syncs_failed: int = 0
+    failed_agent_ids: list[UUID] = Field(default_factory=list)
+
+
+class BoardUpdateResult(BoardRead):
+    """Board update response including live automation sync status."""
+
+    automation_sync: BoardAutomationSyncStatus = Field(
+        default_factory=BoardAutomationSyncStatus,
+    )

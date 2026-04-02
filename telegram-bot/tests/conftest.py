@@ -19,27 +19,43 @@ def _install_aiogram_stub() -> None:
         async def send_message(self, *args, **kwargs):
             _ = (args, kwargs)
 
-    aiogram.Bot = _Bot
-    aiogram.Dispatcher = type("Dispatcher", (), {})
-    aiogram.Router = type("Router", (), {})
-    aiogram.BaseMiddleware = type("BaseMiddleware", (), {})
-    aiogram.F = object()
+        async def set_chat_menu_button(self, *args, **kwargs):
+            _ = (args, kwargs)
+
+    setattr(aiogram, "Bot", _Bot)
+    setattr(aiogram, "Dispatcher", type("Dispatcher", (), {}))
+    setattr(aiogram, "Router", type("Router", (), {}))
+    setattr(aiogram, "BaseMiddleware", type("BaseMiddleware", (), {}))
+    setattr(aiogram, "F", object())
 
     fsm = types.ModuleType("aiogram.fsm")
     fsm_context = types.ModuleType("aiogram.fsm.context")
-    fsm_context.FSMContext = type("FSMContext", (), {})
+    setattr(fsm_context, "FSMContext", type("FSMContext", (), {}))
     storage = types.ModuleType("aiogram.fsm.storage")
     storage_memory = types.ModuleType("aiogram.fsm.storage.memory")
-    storage_memory.MemoryStorage = type("MemoryStorage", (), {})
+    setattr(storage_memory, "MemoryStorage", type("MemoryStorage", (), {}))
     storage_redis = types.ModuleType("aiogram.fsm.storage.redis")
-    storage_redis.RedisStorage = type("RedisStorage", (), {})
+    setattr(storage_redis, "RedisStorage", type("RedisStorage", (), {}))
 
     types_mod = types.ModuleType("aiogram.types")
-    for attr in ["Message", "CallbackQuery", "InlineKeyboardButton", "InlineKeyboardMarkup"]:
+    for attr in [
+        "Message",
+        "CallbackQuery",
+        "InlineKeyboardButton",
+        "InlineKeyboardMarkup",
+        "MenuButtonCommands",
+    ]:
         setattr(types_mod, attr, type(attr, (), {}))
 
+    class _BotCommand:
+        def __init__(self, command: str, description: str) -> None:
+            self.command = command
+            self.description = description
+
+    setattr(types_mod, "BotCommand", _BotCommand)
+
     filters = types.ModuleType("aiogram.filters")
-    filters.Command = type("Command", (), {})
+    setattr(filters, "Command", type("Command", (), {}))
 
     sys.modules["aiogram"] = aiogram
     sys.modules["aiogram.fsm"] = fsm

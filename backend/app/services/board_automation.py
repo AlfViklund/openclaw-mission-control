@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlmodel import col
 
@@ -21,9 +23,11 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class BoardAutomationSyncResult:
+    status: Literal["success", "partial_failure", "failed", "not_run"]
     agents_updated: int
     gateway_syncs_succeeded: int
     gateway_syncs_failed: int
+    failed_agent_ids: list[UUID]
 
 
 def _heartbeat_update(automation: dict[str, Any]) -> dict[str, Any]:
@@ -48,15 +52,33 @@ async def sync_board_automation_policy(
     """Persist board automation policy into agent heartbeat config and gateway runtime."""
     automation = getattr(board, "automation_config", None) or {}
     if not isinstance(automation, dict):
-        return BoardAutomationSyncResult(agents_updated=0, gateway_syncs_succeeded=0, gateway_syncs_failed=0)
+        return BoardAutomationSyncResult(
+            status="not_run",
+            agents_updated=0,
+            gateway_syncs_succeeded=0,
+            gateway_syncs_failed=0,
+            failed_agent_ids=[],
+        )
 
     hb_update = _heartbeat_update(automation)
     if not hb_update:
-        return BoardAutomationSyncResult(agents_updated=0, gateway_syncs_succeeded=0, gateway_syncs_failed=0)
+        return BoardAutomationSyncResult(
+            status="not_run",
+            agents_updated=0,
+            gateway_syncs_succeeded=0,
+            gateway_syncs_failed=0,
+            failed_agent_ids=[],
+        )
 
     agents = await Agent.objects.filter(col(Agent.board_id) == board.id).all(session)
     if not agents:
-        return BoardAutomationSyncResult(agents_updated=0, gateway_syncs_succeeded=0, gateway_syncs_failed=0)
+        return BoardAutomationSyncResult(
+            status="success",
+            agents_updated=0,
+            gateway_syncs_succeeded=0,
+            gateway_syncs_failed=0,
+            failed_agent_ids=[],
+        )
 
     for agent in agents:
         current_hb = getattr(agent, "heartbeat_config", None) or {}
@@ -70,18 +92,22 @@ async def sync_board_automation_policy(
     if board.gateway_id is None:
         logger.warning("board.automation.sync_skipped board_id=%s reason=no_gateway", board.id)
         return BoardAutomationSyncResult(
+            status="partial_failure",
             agents_updated=len(agents),
             gateway_syncs_succeeded=0,
             gateway_syncs_failed=1,
+            failed_agent_ids=[agent.id for agent in agents],
         )
 
     gateway = await Gateway.objects.by_id(board.gateway_id).first(session)
     if gateway is None:
         logger.warning("board.automation.sync_skipped board_id=%s reason=gateway_missing", board.id)
         return BoardAutomationSyncResult(
+            status="partial_failure",
             agents_updated=len(agents),
             gateway_syncs_succeeded=0,
             gateway_syncs_failed=1,
+            failed_agent_ids=[agent.id for agent in agents],
         )
 
     try:
@@ -94,13 +120,17 @@ async def sync_board_automation_policy(
             exc,
         )
         return BoardAutomationSyncResult(
+            status="partial_failure",
             agents_updated=len(agents),
             gateway_syncs_succeeded=0,
             gateway_syncs_failed=1,
+            failed_agent_ids=[agent.id for agent in agents],
         )
 
     return BoardAutomationSyncResult(
+        status="success",
         agents_updated=len(agents),
         gateway_syncs_succeeded=1,
         gateway_syncs_failed=0,
+        failed_agent_ids=[],
     )

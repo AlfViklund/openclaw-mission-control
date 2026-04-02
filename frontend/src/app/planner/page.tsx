@@ -8,7 +8,6 @@ import {
   GitBranch,
   Play,
   Trash2,
-  Eye,
   AlertTriangle,
   CheckCircle,
   Clock,
@@ -20,6 +19,7 @@ import {
   ReactFlow,
   Controls,
   Background,
+  BackgroundVariant,
   MarkerType,
   Position,
   Handle,
@@ -164,15 +164,6 @@ async function fetchPlannerOutputs(boardId?: string): Promise<PlannerOutput[]> {
   return data.items || [];
 }
 
-async function fetchPlannerOutput(id: string): Promise<PlannerOutput> {
-  const token = getAuthToken();
-  const res = await fetch(`${BASE_URL}/api/v1/planner/${id}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error("Failed to fetch planner output");
-  return res.json();
-}
-
 async function applyPlannerOutput(id: string): Promise<PlannerOutput> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/planner/${id}/apply`, {
@@ -223,9 +214,26 @@ function TaskNode({ data }: { data: { task: PlannerTask; epicTitle?: string } })
 
 const nodeTypes = { taskNode: TaskNode };
 
+type FlowNode = {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: { task: PlannerTask; epicTitle?: string };
+};
+
+type FlowEdge = {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  animated?: boolean;
+  markerEnd?: { type: MarkerType; width?: number; height?: number; color?: string };
+  style?: { stroke?: string; strokeWidth?: number };
+};
+
 function buildFlowElements(tasks: PlannerTask[], epics: { id: string; title: string }[]) {
-  const nodes: any[] = [];
-  const edges: any[] = [];
+  const nodes: FlowNode[] = [];
+  const edges: FlowEdge[] = [];
 
   const epicMap = new Map(epics.map(e => [e.id, e.title]));
 
@@ -579,7 +587,7 @@ export default function PlannerPage() {
                     maxZoom={1.5}
                   >
                     <Controls showInteractive={false} />
-                    <Background variant="dots" gap={16} size={1} />
+                    <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
                   </ReactFlow>
                 </div>
               </div>
@@ -652,7 +660,7 @@ export default function PlannerPage() {
                     Cancel
                   </button>
                   <button
-                    onClick={handleGenerate}
+                    onClick={() => void handleGenerate()}
                     disabled={!selectedArtifact || isGenerating}
                     className={buttonVariants({ size: "md", variant: "primary" })}
                   >

@@ -132,7 +132,17 @@ import {
   type TaskCustomFieldValues,
 } from "./custom-field-utils";
 
-type Board = BoardRead;
+type Board = BoardRead & {
+  goal_confirmed?: boolean;
+  goal_source?: string | null;
+  require_review_before_done?: boolean;
+  comment_required_for_review?: boolean;
+  block_status_changes_with_pending_approval?: boolean;
+  only_lead_can_change_status?: boolean;
+  is_paused?: boolean;
+  paused_reason?: string | null;
+  automation_config?: Record<string, unknown> | null;
+};
 
 type TaskStatus = Exclude<TaskCardRead["status"], undefined>;
 
@@ -761,6 +771,45 @@ export default function BoardDetailPage() {
   const taskIdFromUrl = searchParams.get("taskId");
   const commentIdFromUrl = searchParams.get("commentId");
   const panelFromUrl = searchParams.get("panel");
+  const automationSyncStatus = searchParams.get("automationSync");
+  const automationSyncAgentsUpdated = Number.parseInt(
+    searchParams.get("automationSyncAgentsUpdated") ?? "0",
+    10,
+  );
+  const automationSyncGatewayFailed = Number.parseInt(
+    searchParams.get("automationSyncGatewayFailed") ?? "0",
+    10,
+  );
+  const automationSyncBanner =
+    automationSyncStatus === "success"
+      ? {
+          title: "Automation policy saved",
+          body: `Live sync applied to ${automationSyncAgentsUpdated} ${
+            automationSyncAgentsUpdated === 1 ? "agent" : "agents"
+          }.`,
+          tone: "success" as const,
+        }
+      : automationSyncStatus === "partial_failure"
+        ? {
+            title: "Automation policy saved with warnings",
+            body: `Live sync failed for ${automationSyncGatewayFailed} ${
+              automationSyncGatewayFailed === 1 ? "agent" : "agents"
+            }.`,
+            tone: "warning" as const,
+          }
+        : automationSyncStatus === "failed"
+          ? {
+              title: "Automation policy saved, live sync failed",
+              body: "The board settings were saved, but live gateway sync did not complete.",
+              tone: "error" as const,
+            }
+          : automationSyncStatus === "not_run"
+            ? {
+                title: "Automation policy unchanged",
+                body: "Live sync was skipped because automation policy did not change.",
+                tone: "info" as const,
+              }
+            : null;
   const buildUrlWithTaskAndComment = useCallback(
     (
       taskId: string | null,
@@ -3136,6 +3185,25 @@ export default function BoardDetailPage() {
                     <div className="mt-3 inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800">
                       <RefreshCcw className="h-3.5 w-3.5 animate-spin" />
                       <span>Provisioning board lead…</span>
+                    </div>
+                  ) : null}
+                  {automationSyncBanner ? (
+                    <div
+                      className={cn(
+                        "mt-3 rounded-lg border px-3 py-2 text-sm",
+                        automationSyncBanner.tone === "success"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                          : automationSyncBanner.tone === "warning"
+                            ? "border-amber-200 bg-amber-50 text-amber-900"
+                            : automationSyncBanner.tone === "error"
+                              ? "border-rose-200 bg-rose-50 text-rose-900"
+                              : "border-slate-200 bg-slate-50 text-slate-800",
+                      )}
+                    >
+                      <p className="font-medium">{automationSyncBanner.title}</p>
+                      <p className="mt-1 text-xs opacity-90">
+                        {automationSyncBanner.body}
+                      </p>
                     </div>
                   ) : null}
                 </div>

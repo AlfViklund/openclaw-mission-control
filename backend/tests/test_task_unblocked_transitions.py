@@ -58,6 +58,7 @@ async def test_unblocked_transitions_include_title_status_and_message() -> None:
 
     assert result == [
         {
+            "event_id": str(event.id),
             "id": str(event.task_id),
             "task_id": str(event.task_id),
             "board_id": str(board.id),
