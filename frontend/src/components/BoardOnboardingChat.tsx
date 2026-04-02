@@ -368,7 +368,18 @@ export function BoardOnboardingChat({
         );
       if (result.status !== 200)
         throw new Error("Unable to confirm board goal.");
-      onConfirmed(result.data);
+      const response = result.data as {
+        board?: BoardRead;
+        bootstrap?: {
+          lead_status?: string;
+          team_status?: string;
+          team_agents_created?: number;
+          planner_status?: string;
+          automation_sync?: { status?: string; agents_updated?: number };
+        };
+      };
+      const board = response.board ?? (result.data as BoardRead);
+      onConfirmed(board);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to confirm board goal.",
@@ -381,7 +392,7 @@ export function BoardOnboardingChat({
   return (
     <div className="space-y-4">
       <DialogHeader>
-        <DialogTitle>Board onboarding</DialogTitle>
+        <DialogTitle>Project Bootstrap</DialogTitle>
       </DialogHeader>
 
       {error ? (
@@ -393,7 +404,7 @@ export function BoardOnboardingChat({
       {draft ? (
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
-            Review the lead agent draft and confirm.
+            Review the project configuration and confirm.
           </p>
           {isAwaitingAgent ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
@@ -473,6 +484,171 @@ export function BoardOnboardingChat({
                 <p className="text-slate-700">
                   <span className="font-medium text-slate-900">Emoji:</span>{" "}
                   {draft.lead_agent.identity_profile?.emoji || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Autonomy:</span>{" "}
+                  {draft.lead_agent.autonomy_level || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Verbosity:</span>{" "}
+                  {draft.lead_agent.verbosity || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Output:</span>{" "}
+                  {draft.lead_agent.output_format || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Updates:
+                  </span>{" "}
+                  {draft.lead_agent.update_cadence || "—"}
+                </p>
+              </>
+            ) : null}
+            {(draft as unknown as Record<string, unknown>).team_plan ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  Team plan
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Full team:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).team_plan as Record<string, unknown>)?.provision_full_team
+                    ? "Yes"
+                    : "Lead only"}
+                </p>
+                {((draft as unknown as Record<string, unknown>).team_plan as Record<string, unknown>)?.roles ? (
+                  <p className="text-slate-700">
+                    <span className="font-medium text-slate-900">Roles:</span>{" "}
+                    {(
+                      ((draft as unknown as Record<string, unknown>).team_plan as Record<string, unknown>)
+                        .roles as string[]
+                    )?.join(", ") || "—"}
+                  </p>
+                ) : null}
+                {((draft as unknown as Record<string, unknown>).team_plan as Record<string, unknown>)?.notes ? (
+                  <p className="text-slate-700">
+                    <span className="font-medium text-slate-900">Notes:</span>{" "}
+                    {((draft as unknown as Record<string, unknown>).team_plan as Record<string, unknown>)
+                      .notes as string}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+            {(draft as unknown as Record<string, unknown>).planning_policy ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  Planning
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Initial backlog:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).planning_policy as Record<string, unknown>)
+                    ?.generate_initial_backlog
+                    ? "Yes"
+                    : "No"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Planner mode:</span>{" "}
+                  {String(
+                    ((draft as unknown as Record<string, unknown>).planning_policy as Record<string, unknown>)
+                      ?.planner_mode || "—",
+                  )}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Bootstrap after confirm:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).planning_policy as Record<string, unknown>)
+                    ?.bootstrap_after_confirm
+                    ? "Yes"
+                    : "No"}
+                </p>
+              </>
+            ) : null}
+            {(draft as unknown as Record<string, unknown>).qa_policy ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  QA &amp; pipeline
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">QA level:</span>{" "}
+                  {String(
+                    ((draft as unknown as Record<string, unknown>).qa_policy as Record<string, unknown>)
+                      ?.level || "—",
+                  )}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Smoke after build:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).qa_policy as Record<string, unknown>)
+                    ?.run_smoke_after_build
+                    ? "Yes"
+                    : "No"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Require approval for done:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).qa_policy as Record<string, unknown>)
+                    ?.require_approval_for_done !== undefined
+                    ? ((draft as unknown as Record<string, unknown>).qa_policy as Record<string, unknown>)
+                        ?.require_approval_for_done
+                      ? "Yes"
+                      : "No"
+                    : "—"}
+                </p>
+              </>
+            ) : null}
+            {(draft as unknown as Record<string, unknown>).automation_policy ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  Automation
+                </p>
+                {((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                  ?.online_every_seconds ? (
+                  <p className="text-slate-700">
+                    <span className="font-medium text-slate-900">
+                      Heartbeat online:
+                    </span>{" "}
+                    {String(
+                      ((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                        .online_every_seconds,
+                    )}s
+                  </p>
+                ) : null}
+                {((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                  ?.idle_every_seconds ? (
+                  <p className="text-slate-700">
+                    <span className="font-medium text-slate-900">
+                      Heartbeat idle:
+                    </span>{" "}
+                    {String(
+                      ((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                        .idle_every_seconds,
+                    )}s
+                  </p>
+                ) : null}
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Wake on approvals:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                    ?.wake_on_approvals
+                    ? "Yes"
+                    : "No"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Wake on review queue:
+                  </span>{" "}
+                  {((draft as unknown as Record<string, unknown>).automation_policy as Record<string, unknown>)
+                    ?.wake_on_review_queue
+                    ? "Yes"
+                    : "No"}
                 </p>
               </>
             ) : null}

@@ -30,17 +30,20 @@ from app.schemas.board_onboarding import (
     BoardOnboardingRead,
     BoardOnboardingStart,
     BoardOnboardingUserProfile,
+    BoardOnboardingBootstrapResponse,
+    BoardOnboardingTeamPlan,
+    BoardOnboardingPlanningPolicy,
+    BoardOnboardingQaPolicy,
+    BoardOnboardingAutomationPolicy,
 )
 from app.schemas.boards import BoardRead
-from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_resolver import get_gateway_for_board
 from app.services.openclaw.onboarding_service import BoardOnboardingMessagingService
 from app.services.openclaw.policies import OpenClawAuthorizationPolicy
 from app.services.openclaw.provisioning_db import (
     LeadAgentOptions,
-    LeadAgentRequest,
-    OpenClawProvisioningService,
 )
+from app.services.board_bootstrap import bootstrap_board_from_onboarding
 
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -82,6 +85,58 @@ def _parse_draft_lead_agent(
         return None
     try:
         return BoardOnboardingLeadAgentDraft.model_validate(raw_lead)
+    except ValidationError:
+        return None
+
+
+def _parse_draft_team_plan(draft_goal: object) -> BoardOnboardingTeamPlan | None:
+    if not isinstance(draft_goal, dict):
+        return None
+    raw = draft_goal.get("team_plan")
+    if raw is None:
+        return None
+    try:
+        return BoardOnboardingTeamPlan.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _parse_draft_planning_policy(
+    draft_goal: object,
+) -> BoardOnboardingPlanningPolicy | None:
+    if not isinstance(draft_goal, dict):
+        return None
+    raw = draft_goal.get("planning_policy")
+    if raw is None:
+        return None
+    try:
+        return BoardOnboardingPlanningPolicy.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _parse_draft_qa_policy(draft_goal: object) -> BoardOnboardingQaPolicy | None:
+    if not isinstance(draft_goal, dict):
+        return None
+    raw = draft_goal.get("qa_policy")
+    if raw is None:
+        return None
+    try:
+        return BoardOnboardingQaPolicy.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _parse_draft_automation_policy(
+    draft_goal: object,
+) -> BoardOnboardingAutomationPolicy | None:
+    if not isinstance(draft_goal, dict):
+        return None
+    raw = draft_goal.get("automation_policy")
+    if raw is None:
+        return None
+    try:
+        return BoardOnboardingAutomationPolicy.model_validate(raw)
     except ValidationError:
         return None
 
@@ -231,28 +286,30 @@ async def start_onboarding(
     dispatcher = BoardOnboardingMessagingService(session)
     base_url = settings.base_url
     prompt = (
-        "BOARD ONBOARDING REQUEST\n\n"
+        "PROJECT BOOTSTRAP ONBOARDING\n\n"
         f"Board Name: {board.name}\n"
         f"Board Description: {board.description or '(not provided)'}\n"
-        "You are the gateway agent. Ask the user 6-10 focused questions total:\n"
-        "- 3-6 questions to clarify the board goal.\n"
-        "- 1 question to choose a unique name for the board lead agent "
-        "(first-name style).\n"
-        "- 2-4 questions to capture the user's preferences for how the board "
-        "lead should work\n"
-        "  (communication style, autonomy, update cadence, and output formatting).\n"
-        '- Always include a final question (and only once): "Anything else we '
-        'should know?"\n'
-        "  (constraints, context, preferences). This MUST be the last question.\n"
-        '  Provide an option like "Yes (I\'ll type it)" so they can enter free-text.\n'
-        "  Do NOT ask for additional context on earlier questions.\n"
-        "  Only include a free-text option on earlier questions if a typed "
-        "answer is necessary;\n"
+        "You are the gateway agent helping bootstrap a new project. "
+        "Ask the user 8-10 focused questions total to gather everything needed "
+        "for a full project setup (board goal, lead agent, team shape, "
+        "planning, QA, and automation).\n"
+        "QUESTION FLOW:\n"
+        "1. Board goal (1-3 questions): what are we building, what does success look like, when?\n"
+        "2. Lead agent (1-2 questions): unique name for the board lead, preferred working style.\n"
+        "3. Team shape (1 question): lead-only vs. full team now.\n"
+        "4. Planning (1 question): generate initial backlog or start with empty board.\n"
+        "5. QA & pipeline (1 question): strict validation or flexible/more autonomous.\n"
+        "6. Automation (1 question): how active should agents be (heartbeat frequency).\n"
+        "7. Final: anything else?\n"
+        "- ALWAYS include a final question (and only once): 'Anything else we should know?'\n"
+        "  This MUST be the last question.\n"
+        "  Provide an option like 'Yes (I\\'ll type it)' so they can enter free-text.\n"
+        "- Do NOT ask for additional context on earlier questions.\n"
+        "- Only include a free-text option on earlier questions if a typed answer is necessary;\n"
         '  when you do, make the option label include "I\'ll type it" '
-        '(e.g., "Other (I\'ll type it)").\n'
+        "(e.g., 'Other (I\\'ll type it)').\n"
         '- If the user sends an "Additional context" message later, incorporate '
-        "it and resend status=complete\n"
-        "  to update the draft (until the user confirms).\n"
+        "it and resend status=complete to update the draft (until the user confirms).\n"
         "Do NOT respond in OpenClaw chat.\n"
         "All onboarding responses MUST be sent to Mission Control via API.\n"
         f"Mission Control base URL: {base_url}\n"
@@ -275,16 +332,37 @@ async def start_onboarding(
         '"user_profile":{"preferred_name":"...","pronouns":"...",'
         '"timezone":"...","notes":"...","context":"..."},'
         '"lead_agent":{"name":"Ava","identity_profile":{"role":"Board Lead",'
-        '"communication_style":"direct, concise, practical","emoji":":gear:"},'
+        '"communication_style":"structured, decisive, prioritizes quality","emoji":"🎯",'
+        '"purpose":"Orchestrate project development, manage backlog, enforce pipeline."},'
         '"autonomy_level":"balanced","verbosity":"concise",'
         '"output_format":"bullets","update_cadence":"daily",'
-        '"custom_instructions":"..."}}\'\n'
+        '"custom_instructions":"..."},'
+        '"team_plan":{"roles":["board_lead","developer","qa_engineer"],'
+        '"provision_full_team":true,"optional_roles":["technical_writer","ops_guardian"],'
+        '"notes":"..."},'
+        '"planning_policy":{"generate_initial_backlog":true,'
+        '"planner_mode":"spec_to_backlog","bootstrap_after_confirm":true},'
+        '"qa_policy":{"level":"standard","run_smoke_after_build":true,'
+        '"require_approval_for_done":true},'
+        '"automation_policy":{"online_every_seconds":300,"idle_every_seconds":1800,'
+        '"dormant_every_seconds":21600,"wake_on_approvals":true,'
+        '"wake_on_review_queue":true,"allow_assist_mode_when_no_tasks":false}}\'\n'
         "ENUMS:\n"
         "- board_type: goal | general\n"
         "- lead_agent.autonomy_level: ask_first | balanced | autonomous\n"
         "- lead_agent.verbosity: concise | balanced | detailed\n"
         "- lead_agent.output_format: bullets | mixed | narrative\n"
         "- lead_agent.update_cadence: asap | hourly | daily | weekly\n"
+        "- team_plan.roles: board_lead | developer | qa_engineer | technical_writer | ops_guardian\n"
+        "- team_plan.provision_full_team: true | false\n"
+        "- planning_policy.generate_initial_backlog: true | false\n"
+        "- planning_policy.planner_mode: spec_to_backlog | empty_board\n"
+        "- planning_policy.bootstrap_after_confirm: true | false\n"
+        "- qa_policy.level: smoke | standard | strict\n"
+        "- qa_policy.require_approval_for_done: true | false\n"
+        "- automation_policy.online_every_seconds: 60 | 120 | 300 | 600\n"
+        "- automation_policy.idle_every_seconds: 600 | 1800 | 3600\n"
+        "- automation_policy.dormant_every_seconds: 3600 | 10800 | 21600\n"
         "QUESTION FORMAT (one question per response, no arrays, no markdown, "
         "no extra text):\n"
         '{"question":"...","options":[{"id":"1","label":"..."},{"id":"2","label":"..."}]}\n'
@@ -292,8 +370,10 @@ async def start_onboarding(
         "When you have enough info, send one final response with status=complete.\n"
         "The completion payload must include board_type. If board_type=goal, "
         "include objective + success_metrics.\n"
-        "Also include user_profile + lead_agent to configure the board lead's "
-        "working style.\n"
+        "Include user_profile + lead_agent to configure the board lead's working style.\n"
+        "Include team_plan, planning_policy, qa_policy, and automation_policy "
+        "to configure the project operating model.\n"
+        "All policy sections are optional; defaults will be used if omitted.\n"
     )
 
     session_key = await dispatcher.dispatch_start_prompt(
@@ -421,14 +501,14 @@ async def agent_onboarding_update(
     return onboarding
 
 
-@router.post("/confirm", response_model=BoardRead)
+@router.post("/confirm", response_model=BoardOnboardingBootstrapResponse)
 async def confirm_onboarding(
     payload: BoardOnboardingConfirm,
     board: Board = BOARD_USER_WRITE_DEP,
     session: AsyncSession = SESSION_DEP,
     auth: AuthContext = USER_AUTH_DEP,
-) -> Board:
-    """Confirm onboarding results and provision the board lead agent."""
+) -> BoardOnboardingBootstrapResponse:
+    """Confirm onboarding and bootstrap the board (lead + optional team + planner + automation)."""
     onboarding = (
         await BoardOnboardingSession.objects.filter_by(board_id=board.id)
         .order_by(col(BoardOnboardingSession.updated_at).desc())
@@ -443,9 +523,6 @@ async def confirm_onboarding(
     board.target_date = payload.target_date
     board.goal_confirmed = True
     board.goal_source = "lead_agent_onboarding"
-    board.require_approval_for_done = _require_approval_for_done_from_draft(
-        onboarding.draft_goal,
-    )
 
     onboarding.status = "confirmed"
     onboarding.updated_at = utcnow()
@@ -454,21 +531,26 @@ async def confirm_onboarding(
     if _apply_user_profile(auth, user_profile) and auth.user is not None:
         session.add(auth.user)
 
-    lead_agent = _parse_draft_lead_agent(onboarding.draft_goal)
-    lead_options = _lead_agent_options(lead_agent)
+    draft: BoardOnboardingAgentComplete | None = None
+    if onboarding.draft_goal is not None:
+        try:
+            draft = BoardOnboardingAgentComplete.model_validate(onboarding.draft_goal)
+        except ValidationError:
+            pass
 
-    gateway, config = await GatewayDispatchService(session).require_gateway_config_for_board(board)
+    bootstrap_result = await bootstrap_board_from_onboarding(
+        session=session,
+        board=board,
+        draft=draft,
+        user=auth.user,
+    )
+
     session.add(board)
     session.add(onboarding)
     await session.commit()
     await session.refresh(board)
-    await OpenClawProvisioningService(session).ensure_board_lead_agent(
-        request=LeadAgentRequest(
-            board=board,
-            gateway=gateway,
-            config=config,
-            user=auth.user,
-            options=lead_options,
-        ),
+
+    return BoardOnboardingBootstrapResponse(
+        board=BoardRead.model_validate(board, from_attributes=True),
+        bootstrap=bootstrap_result,
     )
-    return board

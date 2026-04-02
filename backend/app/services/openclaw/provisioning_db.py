@@ -69,7 +69,6 @@ from app.services.openclaw.gateway_rpc import (
 from app.services.openclaw.internal.agent_key import agent_key as _agent_key
 from app.services.openclaw.internal.retry import GatewayBackoff
 from app.services.openclaw.internal.session_keys import (
-    board_agent_session_key,
     board_lead_session_key,
     resolve_canonical_agent_session,
 )
@@ -80,6 +79,7 @@ from app.services.openclaw.provisioning import (
     OpenClawGatewayProvisioner,
 )
 from app.services.openclaw.shared import GatewayAgentIdentity
+from app.services.agent_presets import AGENT_ROLE_PRESETS
 from app.services.organizations import (
     OrganizationContext,
     get_active_membership,
@@ -161,6 +161,7 @@ class LeadAgentOptions:
 
     agent_name: str | None = None
     identity_profile: dict[str, str] | None = None
+    heartbeat_config: dict[str, Any] | None = None
     action: str = "provision"
 
 
@@ -205,6 +206,9 @@ class OpenClawProvisioningService(OpenClawDBService):
                 .where(col(Agent.is_board_lead).is_(True)),
             )
         ).first()
+
+        board_lead_preset = AGENT_ROLE_PRESETS.get("board_lead", {})
+
         if existing:
             desired_name = config_options.agent_name or self.lead_agent_name(board)
             changed = False
@@ -218,6 +222,17 @@ class OpenClawProvisioningService(OpenClawDBService):
             if existing.openclaw_session_id != desired_session_key:
                 existing.openclaw_session_id = desired_session_key
                 changed = True
+            if config_options.identity_profile:
+                current_identity = dict(existing.identity_profile or {})
+                for key, value in config_options.identity_profile.items():
+                    stripped = value.strip() if isinstance(value, str) else value
+                    if stripped:
+                        current_identity[key] = stripped
+                existing.identity_profile = current_identity
+                changed = True
+            if config_options.heartbeat_config:
+                existing.heartbeat_config = dict(config_options.heartbeat_config)
+                changed = True
             if changed:
                 existing.updated_at = utcnow()
                 self.session.add(existing)
@@ -225,11 +240,10 @@ class OpenClawProvisioningService(OpenClawDBService):
                 await self.session.refresh(existing)
             return existing, False
 
-        merged_identity_profile: dict[str, Any] = {
-            "role": "Board Lead",
-            "communication_style": "direct, concise, practical",
-            "emoji": ":gear:",
-        }
+        merged_identity_profile: dict[str, Any] = {}
+        preset_identity = board_lead_preset.get("identity_profile", {})
+        if isinstance(preset_identity, dict):
+            merged_identity_profile.update(preset_identity)
         if config_options.identity_profile:
             merged_identity_profile.update(
                 {
@@ -239,12 +253,19 @@ class OpenClawProvisioningService(OpenClawDBService):
                 },
             )
 
+        heartbeat_config: dict[str, Any] = DEFAULT_HEARTBEAT_CONFIG.copy()
+        preset_hb = board_lead_preset.get("heartbeat_config")
+        if isinstance(preset_hb, dict):
+            heartbeat_config = dict(preset_hb)
+        if config_options.heartbeat_config:
+            heartbeat_config = dict(config_options.heartbeat_config)
+
         agent = Agent(
             name=config_options.agent_name or self.lead_agent_name(board),
             board_id=board.id,
             gateway_id=request.gateway.id,
             is_board_lead=True,
-            heartbeat_config=DEFAULT_HEARTBEAT_CONFIG.copy(),
+            heartbeat_config=heartbeat_config,
             identity_profile=merged_identity_profile,
             openclaw_session_id=self.lead_session_key(board),
         )
@@ -346,9 +367,13 @@ class OpenClawProvisioningService(OpenClawDBService):
                 message="Board does not belong to this gateway.",
             )
             return result
-        paused_board_ids = await _paused_board_ids(self.session, list(boards_by_id.keys()))
+        paused_board_ids = await _paused_board_ids(
+            self.session, list(boards_by_id.keys())
+        )
         if boards_by_id:
-            query = Agent.objects.by_field_in("board_id", list(boards_by_id.keys())).order_by(
+            query = Agent.objects.by_field_in(
+                "board_id", list(boards_by_id.keys())
+            ).order_by(
                 col(Agent.created_at).asc(),
             )
             if options.lead_only:
@@ -359,7 +384,9 @@ class OpenClawProvisioningService(OpenClawDBService):
 
         stop_sync = False
         for agent in agents:
-            board = boards_by_id.get(agent.board_id) if agent.board_id is not None else None
+            board = (
+                boards_by_id.get(agent.board_id) if agent.board_id is not None else None
+            )
             if board is None:
                 result.agents_skipped += 1
                 _append_sync_error(
@@ -412,7 +439,9 @@ async def _get_agent_file(
     try:
 
         async def _do_get() -> object:
-            return await control_plane.get_agent_file_payload(agent_id=agent_gateway_id, name=name)
+            return await control_plane.get_agent_file_payload(
+                agent_id=agent_gateway_id, name=name
+            )
 
         payload = await (backoff.run(_do_get) if backoff else _do_get())
     except OpenClawGatewayError:
@@ -857,7 +886,9 @@ class AgentLifecycleService(OpenClawDBService):
                 detail="Board not found",
             )
         if user is not None:
-            await require_board_access(self.session, user=user, board=board, write=write)
+            await require_board_access(
+                self.session, user=user, board=board, write=write
+            )
         return board
 
     async def require_gateway(
@@ -876,10 +907,15 @@ class AgentLifecycleService(OpenClawDBService):
         return agent.board_id is None
 
     @classmethod
-    def to_agent_read(cls, agent: Agent, *, wake_reason: str | None = None) -> AgentRead:
+    def to_agent_read(
+        cls, agent: Agent, *, wake_reason: str | None = None
+    ) -> AgentRead:
         model = AgentRead.model_validate(agent, from_attributes=True)
         return model.model_copy(
-            update={"is_gateway_main": cls.is_gateway_main(agent), "wake_reason": wake_reason},
+            update={
+                "is_gateway_main": cls.is_gateway_main(agent),
+                "wake_reason": wake_reason,
+            },
         )
 
     @staticmethod
@@ -911,7 +947,9 @@ class AgentLifecycleService(OpenClawDBService):
         return agent
 
     @classmethod
-    def serialize_agent(cls, agent: Agent, *, wake_reason: str | None = None) -> dict[str, object]:
+    def serialize_agent(
+        cls, agent: Agent, *, wake_reason: str | None = None
+    ) -> dict[str, object]:
         return cls.to_agent_read(
             cls.with_computed_status(agent),
             wake_reason=wake_reason,
@@ -939,7 +977,9 @@ class AgentLifecycleService(OpenClawDBService):
         member = await get_active_membership(self.session, user)
         if member is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        organization = await Organization.objects.by_id(member.organization_id).first(self.session)
+        organization = await Organization.objects.by_id(member.organization_id).first(
+            self.session
+        )
         if organization is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         return OrganizationContext(organization=organization, member=member)
@@ -952,7 +992,9 @@ class AgentLifecycleService(OpenClawDBService):
         write: bool,
     ) -> None:
         if agent.board_id is None:
-            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
+            OpenClawAuthorizationPolicy.require_org_admin(
+                is_admin=is_org_admin(ctx.member)
+            )
             gateway = await self.get_main_agent_gateway(agent)
             OpenClawAuthorizationPolicy.require_gateway_in_org(
                 gateway=gateway,
@@ -1006,7 +1048,9 @@ class AgentLifecycleService(OpenClawDBService):
     ) -> AgentCreate:
         if actor.actor_type == "user":
             ctx = await self.require_user_context(actor.user)
-            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
+            OpenClawAuthorizationPolicy.require_org_admin(
+                is_admin=is_org_admin(ctx.member)
+            )
             return payload
 
         if actor.actor_type == "agent":
@@ -1206,7 +1250,9 @@ class AgentLifecycleService(OpenClawDBService):
     ) -> None:
         await self._apply_gateway_provisioning(
             agent=agent,
-            target=AgentUpdateProvisionTarget(is_main_agent=False, board=board, gateway=gateway),
+            target=AgentUpdateProvisionTarget(
+                is_main_agent=False, board=board, gateway=gateway
+            ),
             auth_token=auth_token,
             user=user,
             action="provision",
@@ -1223,7 +1269,9 @@ class AgentLifecycleService(OpenClawDBService):
         make_main: bool | None,
     ) -> None:
         if make_main:
-            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
+            OpenClawAuthorizationPolicy.require_org_admin(
+                is_admin=is_org_admin(ctx.member)
+            )
         if "status" in updates:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1260,7 +1308,9 @@ class AgentLifecycleService(OpenClawDBService):
             updates["board_id"] = None
             updates["gateway_id"] = gateway_for_main.id
             agent.is_board_lead = False
-            agent.openclaw_session_id = GatewayAgentIdentity.session_key(gateway_for_main)
+            agent.openclaw_session_id = GatewayAgentIdentity.session_key(
+                gateway_for_main
+            )
             main_gateway = gateway_for_main
         elif make_main is not None:
             if "board_id" not in updates or updates["board_id"] is None:
@@ -1374,7 +1424,9 @@ class AgentLifecycleService(OpenClawDBService):
         )
 
     @staticmethod
-    def heartbeat_lookup_statement(payload: AgentHeartbeatCreate) -> SelectOfScalar[Agent]:
+    def heartbeat_lookup_statement(
+        payload: AgentHeartbeatCreate,
+    ) -> SelectOfScalar[Agent]:
         statement = Agent.objects.filter_by(name=payload.name).statement
         if payload.board_id is not None:
             statement = statement.where(Agent.board_id == payload.board_id)
@@ -1390,7 +1442,9 @@ class AgentLifecycleService(OpenClawDBService):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
         if actor.actor_type == "user":
             ctx = await self.require_user_context(actor.user)
-            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
+            OpenClawAuthorizationPolicy.require_org_admin(
+                is_admin=is_org_admin(ctx.member)
+            )
 
         board = await self.require_board(
             payload.board_id,
@@ -1491,7 +1545,9 @@ class AgentLifecycleService(OpenClawDBService):
         gateway_id: UUID | None,
         ctx: OrganizationContext,
     ) -> LimitOffsetPage[AgentRead]:
-        board_ids = await list_accessible_board_ids(self.session, member=ctx.member, write=False)
+        board_ids = await list_accessible_board_ids(
+            self.session, member=ctx.member, write=False
+        )
         if board_id is not None:
             OpenClawAuthorizationPolicy.require_board_write_access(
                 allowed=board_id in set(board_ids),
@@ -1506,7 +1562,8 @@ class AgentLifecycleService(OpenClawDBService):
             gateway_ids = [gateway.id for gateway in gateways]
             if gateway_ids:
                 base_filters.append(
-                    (col(Agent.gateway_id).in_(gateway_ids)) & (col(Agent.board_id).is_(None)),
+                    (col(Agent.gateway_id).in_(gateway_ids))
+                    & (col(Agent.board_id).is_(None)),
                 )
         if base_filters:
             if len(base_filters) == 1:
@@ -1521,18 +1578,23 @@ class AgentLifecycleService(OpenClawDBService):
             gateway = await Gateway.objects.by_id(gateway_id).first(self.session)
             if gateway is None or gateway.organization_id != ctx.organization.id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-            gateway_board_ids = select(Board.id).where(col(Board.gateway_id) == gateway_id)
+            gateway_board_ids = select(Board.id).where(
+                col(Board.gateway_id) == gateway_id
+            )
             statement = statement.where(
                 or_(
                     col(Agent.board_id).in_(gateway_board_ids),
-                    (col(Agent.gateway_id) == gateway_id) & (col(Agent.board_id).is_(None)),
+                    (col(Agent.gateway_id) == gateway_id)
+                    & (col(Agent.board_id).is_(None)),
                 ),
             )
         statement = statement.order_by(col(Agent.created_at).desc())
 
         def _transform(items: Sequence[Any]) -> Sequence[Any]:
             agents = self.coerce_agent_items(items)
-            return [self.to_agent_read(self.with_computed_status(agent)) for agent in agents]
+            return [
+                self.to_agent_read(self.with_computed_status(agent)) for agent in agents
+            ]
 
         return await paginate(self.session, statement, transformer=_transform)
 
@@ -1546,10 +1608,14 @@ class AgentLifecycleService(OpenClawDBService):
     ) -> EventSourceResponse:
         since_dt = self.parse_since(since) or utcnow()
         last_seen = since_dt
-        board_ids = await list_accessible_board_ids(self.session, member=ctx.member, write=False)
+        board_ids = await list_accessible_board_ids(
+            self.session, member=ctx.member, write=False
+        )
         allowed_ids = set(board_ids)
         if board_id is not None:
-            OpenClawAuthorizationPolicy.require_board_write_access(allowed=board_id in allowed_ids)
+            OpenClawAuthorizationPolicy.require_board_write_access(
+                allowed=board_id in allowed_ids
+            )
         from app.services.agent_work import get_work_snapshot
 
         async def event_generator() -> AsyncIterator[dict[str, str]]:
@@ -1566,8 +1632,12 @@ class AgentLifecycleService(OpenClawDBService):
                             last_seen,
                         )
                     elif allowed_ids:
-                        agents = await stream_service.fetch_agent_events(None, last_seen)
-                        agents = [agent for agent in agents if agent.board_id in allowed_ids]
+                        agents = await stream_service.fetch_agent_events(
+                            None, last_seen
+                        )
+                        agents = [
+                            agent for agent in agents if agent.board_id in allowed_ids
+                        ]
                     else:
                         agents = []
                 for agent in agents:
@@ -1576,12 +1646,14 @@ class AgentLifecycleService(OpenClawDBService):
                     wake_reason = None
                     if agent.board_id is not None:
                         try:
-                            wake_reason = (await get_work_snapshot(stream_session, agent.id)).get(
-                                "wake_reason"
-                            )
+                            wake_reason = (
+                                await get_work_snapshot(stream_session, agent.id)
+                            ).get("wake_reason")
                         except ValueError:
                             wake_reason = None
-                    payload = {"agent": self.serialize_agent(agent, wake_reason=wake_reason)}
+                    payload = {
+                        "agent": self.serialize_agent(agent, wake_reason=wake_reason)
+                    }
                     yield {"event": "agent", "data": json.dumps(payload)}
                 await asyncio.sleep(2)
 
@@ -1625,7 +1697,9 @@ class AgentLifecycleService(OpenClawDBService):
             user=actor.user if actor.actor_type == "user" else None,
             force_bootstrap=False,
         )
-        self.logger.info("agent.create.success agent_id=%s board_id=%s", agent.id, board.id)
+        self.logger.info(
+            "agent.create.success agent_id=%s board_id=%s", agent.id, board.id
+        )
         return self.to_agent_read(self.with_computed_status(agent))
 
     async def get_agent(
@@ -1717,7 +1791,9 @@ class AgentLifecycleService(OpenClawDBService):
             )
         if actor.actor_type == "user":
             ctx = await self.require_user_context(actor.user)
-            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
+            OpenClawAuthorizationPolicy.require_org_admin(
+                is_admin=is_org_admin(ctx.member)
+            )
             await self.require_agent_access(agent=agent, ctx=ctx, write=True)
         return await self.commit_heartbeat(
             agent=agent,
@@ -1744,7 +1820,9 @@ class AgentLifecycleService(OpenClawDBService):
                 actor=actor,
             )
 
-        agent = (await self.session.exec(self.heartbeat_lookup_statement(payload))).first()
+        agent = (
+            await self.session.exec(self.heartbeat_lookup_statement(payload))
+        ).first()
         if agent is None:
             agent = await self.create_agent_from_heartbeat(
                 payload=payload,
@@ -1804,7 +1882,9 @@ class AgentLifecycleService(OpenClawDBService):
                 detail="Board leads cannot delete gateway main agents",
             )
         board = await self.require_board(lead.board_id)
-        OpenClawAuthorizationPolicy.require_board_agent_target(target=agent, board=board)
+        OpenClawAuthorizationPolicy.require_board_agent_target(
+            target=agent, board=board
+        )
         if agent.is_board_lead:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1823,19 +1903,25 @@ class AgentLifecycleService(OpenClawDBService):
             client_config = optional_gateway_client_config(gateway)
             if gateway is not None and client_config is not None:
                 try:
-                    workspace_path = await OpenClawGatewayProvisioner().delete_agent_lifecycle(
-                        agent=agent,
-                        gateway=gateway,
+                    workspace_path = (
+                        await OpenClawGatewayProvisioner().delete_agent_lifecycle(
+                            agent=agent,
+                            gateway=gateway,
+                        )
                     )
                 except OpenClawGatewayError as exc:
-                    self.record_instruction_failure(self.session, agent, str(exc), "delete")
+                    self.record_instruction_failure(
+                        self.session, agent, str(exc), "delete"
+                    )
                     await self.session.commit()
                     raise HTTPException(
                         status_code=status.HTTP_502_BAD_GATEWAY,
                         detail=f"Gateway cleanup failed: {exc}",
                     ) from exc
                 except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover
-                    self.record_instruction_failure(self.session, agent, str(exc), "delete")
+                    self.record_instruction_failure(
+                        self.session, agent, str(exc), "delete"
+                    )
                     await self.session.commit()
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1845,9 +1931,11 @@ class AgentLifecycleService(OpenClawDBService):
             board = await self.require_board(str(agent.board_id))
             gateway, client_config = await self.require_gateway(board)
             try:
-                workspace_path = await OpenClawGatewayProvisioner().delete_agent_lifecycle(
-                    agent=agent,
-                    gateway=gateway,
+                workspace_path = (
+                    await OpenClawGatewayProvisioner().delete_agent_lifecycle(
+                        agent=agent,
+                        gateway=gateway,
+                    )
                 )
             except OpenClawGatewayError as exc:
                 self.record_instruction_failure(self.session, agent, str(exc), "delete")
@@ -1933,7 +2021,9 @@ class AgentLifecycleService(OpenClawDBService):
                     "1) Remove the workspace directory.\n"
                     "2) Reply NO_REPLY.\n"
                 )
-                await ensure_session(main_session, config=client_config, label="Gateway Agent")
+                await ensure_session(
+                    main_session, config=client_config, label="Gateway Agent"
+                )
                 await send_message(
                     cleanup_message,
                     session_key=main_session,

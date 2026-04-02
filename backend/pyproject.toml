@@ -45,6 +45,14 @@ dev = [
     "ruff==0.15.0",
 ]
 
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.0",
+]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
