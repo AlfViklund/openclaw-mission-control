@@ -10,6 +10,8 @@ from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.planner_outputs import PlannerOutput
 from app.schemas.board_onboarding import (
+    AUTOMATION_PROFILE_DEFAULTS,
+    QA_STRICTNESS_DEFAULTS,
     BoardAutomationSyncResultData,
     BoardBootstrapResult,
     BoardOnboardingAgentComplete,
@@ -45,6 +47,11 @@ def _automation_config_from_policy(
     if policy is None:
         return None
     result: dict[str, Any] = {}
+    if (
+        policy.automation_profile
+        and policy.automation_profile in AUTOMATION_PROFILE_DEFAULTS
+    ):
+        result.update(AUTOMATION_PROFILE_DEFAULTS[policy.automation_profile])
     if policy.online_every_seconds is not None:
         result["online_every_seconds"] = policy.online_every_seconds
     if policy.idle_every_seconds is not None:
@@ -58,6 +65,25 @@ def _automation_config_from_policy(
     if policy.allow_assist_mode_when_no_tasks is not None:
         result["allow_assist_mode"] = policy.allow_assist_mode_when_no_tasks
     return result or None
+
+
+def _apply_qa_strictness(
+    qa_policy: BoardOnboardingQaPolicy | None,
+) -> BoardOnboardingQaPolicy:
+    if qa_policy is None:
+        return BoardOnboardingQaPolicy()
+    if qa_policy.strictness and qa_policy.strictness in QA_STRICTNESS_DEFAULTS:
+        defaults = QA_STRICTNESS_DEFAULTS[qa_policy.strictness]
+        result = BoardOnboardingQaPolicy(
+            strictness=qa_policy.strictness,
+            level=qa_policy.level or str(defaults.get("level", "standard")),
+            run_smoke_after_build=qa_policy.run_smoke_after_build,
+            require_approval_for_done=qa_policy.require_approval_for_done
+            if qa_policy.require_approval_for_done is not None
+            else bool(defaults.get("require_approval_for_done", True)),
+        )
+        return result
+    return qa_policy
 
 
 def _lead_options_from_draft(
@@ -113,22 +139,25 @@ async def _start_planner_bootstrap(
     session: AsyncSession,
     board: Board,
     planning_policy: BoardOnboardingPlanningPolicy | None,
-) -> None:
+) -> PlannerOutput | None:
     if planning_policy is None:
-        return
+        return None
     if (
         not planning_policy.generate_initial_backlog
         and not planning_policy.bootstrap_after_confirm
     ):
-        return
+        return None
     output = PlannerOutput(
         board_id=board.id,
-        spec_artifacts=[],
-        status="pending",
-        title="Initial backlog draft",
+        artifact_id=None,
+        status="draft",
+        epics=[],
+        tasks=[],
+        parallelism_groups=[],
     )
     session.add(output)
     await session.flush()
+    return output
 
 
 def _sync_result_to_data(
@@ -159,7 +188,8 @@ async def bootstrap_board_from_onboarding(
     automation_policy = getattr(draft, "automation_policy", None) if draft else None
     team_plan = getattr(draft, "team_plan", None) if draft else None
     planning_policy = getattr(draft, "planning_policy", None) if draft else None
-    qa_policy = getattr(draft, "qa_policy", None) if draft else None
+    raw_qa_policy = getattr(draft, "qa_policy", None) if draft else None
+    qa_policy = _apply_qa_strictness(raw_qa_policy)
 
     if board.automation_config is None and automation_policy is not None:
         config = _automation_config_from_policy(automation_policy)
@@ -205,8 +235,14 @@ async def bootstrap_board_from_onboarding(
             )
             agent, _created = await provisioning.ensure_board_lead_agent(request=req)
             result.lead_agent_id = agent.id
+            result.lead_name = agent.name
 
-    if team_plan is not None and team_plan.provision_full_team and gateway is not None:
+    _should_provision = (
+        team_plan is not None
+        and team_plan.provision_mode in ("selected_roles", "full_team")
+        and gateway is not None
+    )
+    if _should_provision:
         roles = team_plan.roles or None
         provision_service = AgentProvisioningService(session)
         team_result: TeamProvisionResult = await provision_service.provision_full_team(
@@ -214,13 +250,25 @@ async def bootstrap_board_from_onboarding(
             gateway_id=gateway.id,
             roles=roles,
         )
-        result.team_status = "provisioned" if team_result.created else "failed"
-        if team_result.errors:
-            result.team_status = "partial_failure" if team_result.created else "failed"
-            result.team_failed_roles = [
-                str(e.get("role", "")) for e in team_result.errors
-            ]
         result.team_agents_created = team_result.created
+        result.team_created_roles = list(team_result.created_roles)
+        result.team_skipped_roles = list(team_result.skipped_roles)
+        result.team_failed_roles = [str(e.get("role", "")) for e in team_result.errors]
+
+        if team_result.created > 0 and not team_result.errors:
+            result.team_status = "provisioned"
+        elif (
+            team_result.created == 0
+            and not team_result.errors
+            and team_result.skipped_roles
+        ):
+            result.team_status = "already_provisioned"
+        elif team_result.created > 0 and team_result.errors:
+            result.team_status = "partial_failure"
+        else:
+            result.team_status = "failed"
+    elif team_plan is not None and team_plan.provision_mode == "lead_only":
+        result.team_status = "not_requested"
     else:
         result.team_status = "not_requested"
 
@@ -228,8 +276,10 @@ async def bootstrap_board_from_onboarding(
         planning_policy.generate_initial_backlog
         or planning_policy.bootstrap_after_confirm
     ):
-        await _start_planner_bootstrap(session, board, planning_policy)
-        result.planner_status = "started"
+        output = await _start_planner_bootstrap(session, board, planning_policy)
+        result.planner_status = "queued"
+        if output is not None:
+            result.planner_output_id = output.id
     else:
         result.planner_status = "not_requested"
 

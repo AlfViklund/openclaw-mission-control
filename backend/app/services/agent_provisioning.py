@@ -26,6 +26,8 @@ class TeamProvisionResult:
     created: int = 0
     errors: list[dict] = field(default_factory=list)
     agents: list[Agent] = field(default_factory=list)
+    created_roles: list[str] = field(default_factory=list)
+    skipped_roles: list[str] = field(default_factory=list)
 
 
 class AgentProvisioningService:
@@ -49,7 +51,9 @@ class AgentProvisioningService:
         return board
 
     async def _resolve_template_user(self, gateway: Gateway) -> User | None:
-        return await get_org_owner_user(self._session, organization_id=gateway.organization_id)
+        return await get_org_owner_user(
+            self._session, organization_id=gateway.organization_id
+        )
 
     # -- Single agent --
 
@@ -157,6 +161,7 @@ class AgentProvisioningService:
                 (a.identity_profile or {}).get("role") == label for a in existing
             )
             if role_exists:
+                result.skipped_roles.append(role)
                 continue
 
             try:
@@ -193,11 +198,14 @@ class AgentProvisioningService:
                 )
                 result.agents.append(agent)
                 result.created += 1
+                result.created_roles.append(role)
             except Exception as exc:
-                result.errors.append({
-                    "role": role,
-                    "agent_name": agent_name,
-                    "error": str(exc),
-                })
+                result.errors.append(
+                    {
+                        "role": role,
+                        "agent_name": agent_name,
+                        "error": str(exc),
+                    }
+                )
 
         return result

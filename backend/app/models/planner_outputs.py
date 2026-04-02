@@ -21,7 +21,9 @@ class PlannerOutput(QueryModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     board_id: UUID = Field(foreign_key="boards.id", index=True)
-    artifact_id: UUID = Field(foreign_key="artifacts.id", index=True)
+    artifact_id: UUID | None = Field(
+        default=None, foreign_key="artifacts.id", index=True
+    )
 
     status: str = Field(default="draft", index=True)
     json_schema_version: int = Field(default=1)

@@ -149,6 +149,7 @@ class BoardOnboardingLeadAgentDraft(SQLModel):
 class BoardOnboardingTeamPlan(SQLModel):
     """Team shape and provisioning preferences gathered during onboarding."""
 
+    provision_mode: Literal["lead_only", "selected_roles", "full_team"] | None = None
     roles: list[str] | None = None
     provision_full_team: bool = False
     optional_roles: list[str] = Field(default_factory=list)
@@ -172,8 +173,11 @@ class BoardOnboardingTeamPlan(SQLModel):
 class BoardOnboardingPlanningPolicy(SQLModel):
     """Planner and backlog bootstrap preferences gathered during onboarding."""
 
-    generate_initial_backlog: bool = False
+    bootstrap_mode: (
+        Literal["generate_backlog", "empty_board", "lead_only", "draft_only"] | None
+    ) = None
     planner_mode: str | None = None
+    generate_initial_backlog: bool = False
     bootstrap_after_confirm: bool = False
     notes: str | None = None
 
@@ -186,6 +190,7 @@ class BoardOnboardingPlanningPolicy(SQLModel):
 class BoardOnboardingQaPolicy(SQLModel):
     """QA and pipeline enforcement preferences gathered during onboarding."""
 
+    strictness: Literal["flexible", "balanced", "strict"] | None = None
     level: str | None = None
     run_smoke_after_build: bool = True
     require_approval_for_done: bool | None = None
@@ -199,6 +204,9 @@ class BoardOnboardingQaPolicy(SQLModel):
 class BoardOnboardingAutomationPolicy(SQLModel):
     """Automation and agent heartbeat preferences gathered during onboarding."""
 
+    automation_profile: Literal["economy", "normal", "active", "aggressive"] | None = (
+        None
+    )
     online_every_seconds: int | None = None
     idle_every_seconds: int | None = None
     dormant_every_seconds: int | None = None
@@ -222,11 +230,120 @@ class BoardOnboardingAutomationPolicy(SQLModel):
             return None
 
 
+AUTOMATION_PROFILE_DEFAULTS: dict[str, dict[str, int]] = {
+    "economy": {
+        "online_every_seconds": 600,
+        "idle_every_seconds": 3600,
+        "dormant_every_seconds": 21600,
+    },
+    "normal": {
+        "online_every_seconds": 300,
+        "idle_every_seconds": 1800,
+        "dormant_every_seconds": 21600,
+    },
+    "active": {
+        "online_every_seconds": 120,
+        "idle_every_seconds": 900,
+        "dormant_every_seconds": 10800,
+    },
+    "aggressive": {
+        "online_every_seconds": 60,
+        "idle_every_seconds": 600,
+        "dormant_every_seconds": 3600,
+    },
+}
+
+QA_STRICTNESS_DEFAULTS: dict[str, dict[str, object]] = {
+    "flexible": {"level": "smoke", "require_approval_for_done": False},
+    "balanced": {"level": "standard", "require_approval_for_done": True},
+    "strict": {"level": "strict", "require_approval_for_done": True},
+}
+
+
+class BoardOnboardingProjectInfo(SQLModel):
+    """Project type, stage, and milestone preferences for wizard onboarding."""
+
+    project_mode: (
+        Literal[
+            "new_product",
+            "existing_product_evolution",
+            "new_feature",
+            "stabilization",
+            "research_prototype",
+        ]
+        | None
+    ) = None
+    project_stage: (
+        Literal[
+            "idea_only",
+            "spec_exists",
+            "codebase_exists",
+            "active_development",
+            "shipped_product",
+        ]
+        | None
+    ) = None
+    first_milestone_type: (
+        Literal[
+            "mvp",
+            "architecture_plan",
+            "key_feature",
+            "stabilization",
+            "research_prototype",
+            "other",
+        ]
+        | None
+    ) = None
+    first_milestone_text: str | None = None
+    delivery_mode: (
+        Literal["quality_first", "balanced", "fast_first_milestone", "aggressive_push"]
+        | None
+    ) = None
+    deadline_mode: (
+        Literal["none", "few_days", "one_two_weeks", "one_month", "custom"] | None
+    ) = None
+    deadline_text: str | None = None
+    target_date: datetime | None = None
+
+    @field_validator(
+        "first_milestone_text",
+        "deadline_text",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value: object) -> object | None:
+        return _normalize_optional_text(value)
+
+
+class BoardOnboardingContext(SQLModel):
+    """Free-form project context: description, constraints, existing artifacts."""
+
+    description: str | None = None
+    existing_artifacts: str | None = None
+    constraints: str | None = None
+    special_instructions: str | None = None
+    extra_context: str | None = None
+
+    @field_validator(
+        "description",
+        "existing_artifacts",
+        "constraints",
+        "special_instructions",
+        "extra_context",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value: object) -> object | None:
+        return _normalize_optional_text(value)
+
+
 class BoardOnboardingAgentComplete(BoardOnboardingConfirm):
     """Complete onboarding draft produced by the onboarding assistant."""
 
     status: Literal["complete"]
     user_profile: BoardOnboardingUserProfile | None = None
+    project_info: BoardOnboardingProjectInfo | None = None
+    context: BoardOnboardingContext | None = None
     lead_agent: BoardOnboardingLeadAgentDraft | None = None
     team_plan: BoardOnboardingTeamPlan | None = None
     planning_policy: BoardOnboardingPlanningPolicy | None = None
@@ -265,12 +382,22 @@ class BoardBootstrapResult(SQLModel):
 
     lead_status: Literal["created", "updated", "unchanged"] = "unchanged"
     lead_agent_id: UUID | None = None
+    lead_name: str | None = None
     team_status: Literal[
-        "not_requested", "provisioned", "partial_failure", "failed"
+        "not_requested",
+        "provisioned",
+        "already_provisioned",
+        "partial_failure",
+        "failed",
     ] = "not_requested"
     team_agents_created: int = 0
+    team_created_roles: list[str] = Field(default_factory=list)
+    team_skipped_roles: list[str] = Field(default_factory=list)
     team_failed_roles: list[str] = Field(default_factory=list)
-    planner_status: Literal["not_requested", "started", "failed"] = "not_requested"
+    planner_status: Literal["not_requested", "queued", "started", "failed"] = (
+        "not_requested"
+    )
+    planner_output_id: UUID | None = None
     automation_sync: BoardAutomationSyncResultData | None = None
 
 
