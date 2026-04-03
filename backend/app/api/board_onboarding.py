@@ -833,35 +833,30 @@ def _extract_current_refine_questions(messages: list) -> list[dict]:
 
 
 def _extract_refine_answers(messages: list) -> dict[str, dict[str, str]]:
-    """Collect all refine answers from messages into {question_id: {answer, other_text}}."""
+    """Collect all refine answers from structured message fields."""
     answers: dict[str, dict[str, str]] = {}
     for msg in messages:
         if isinstance(msg, dict) and msg.get("refine_answer"):
             qid = msg["refine_answer"]
-            content = msg.get("content", "")
-            answer_text = ""
-            other_text = ""
-            if isinstance(content, str):
-                prefix = f"[Wizard] Refine answer to {qid}: "
-                if content.startswith(prefix):
-                    rest = content[len(prefix):]
-                    other_marker = " (other: "
-                    if other_marker in rest:
-                        idx = rest.index(other_marker)
-                        answer_text = rest[:idx]
-                        other_text = rest[idx + len(other_marker):-1] if rest.endswith(")") else rest[idx + len(other_marker):]
-                    else:
-                        answer_text = rest
-            answers[qid] = {"answer": answer_text, "other_text": other_text}
+            answers[qid] = {
+                "answer": msg.get("refine_answer_value", ""),
+                "other_text": msg.get("refine_answer_other_text", ""),
+            }
     return answers
+
+
+def _is_other_option(option_id: str) -> bool:
+    """Check if an option id represents an 'other/custom/free_text' choice."""
+    return option_id in ("other", "custom", "free_text")
 
 
 def _validate_refine_answer(
     questions: list[dict],
     question_id: str,
     answer: str,
+    other_text: str | None = None,
 ) -> None:
-    """Validate that question_id exists and answer matches an option (if options exist)."""
+    """Validate that question_id exists, answer matches an option, and other_text is present when required."""
     target = None
     for q in questions:
         if isinstance(q, dict) and q.get("id") == question_id:
@@ -886,6 +881,16 @@ def _validate_refine_answer(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Answer '{answer}' is not a valid option for question {question_id}",
             )
+        if _is_other_option(answer) and not (other_text or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Question '{question_id}' requires additional text when '{answer}' is selected",
+            )
+    elif not answer.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Question '{question_id}' requires a non-empty answer",
+        )
 
 
 @router.post("/refine-answer", response_model=BoardOnboardingReadWithRefine)
@@ -907,18 +912,17 @@ async def answer_refine_question(
 
     messages = list(onboarding.messages or [])
     current_questions = _extract_current_refine_questions(messages)
-    _validate_refine_answer(current_questions, payload.question_id, payload.answer)
-
-    answer_detail = payload.answer
-    if payload.other_text:
-        answer_detail = f"{payload.answer} (other: {payload.other_text})"
+    _validate_refine_answer(current_questions, payload.question_id, payload.answer, payload.other_text)
 
     messages.append(
         {
             "role": "user",
-            "content": f"[Wizard] Refine answer to {payload.question_id}: {answer_detail}",
+            "content": f"[Wizard] Refine answer to {payload.question_id}: {payload.answer}"
+                       + (f" (other: {payload.other_text})" if payload.other_text else ""),
             "timestamp": utcnow().isoformat(),
             "refine_answer": payload.question_id,
+            "refine_answer_value": payload.answer,
+            "refine_answer_other_text": payload.other_text or "",
         }
     )
 

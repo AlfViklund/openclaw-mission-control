@@ -555,7 +555,7 @@ export function BoardOnboardingWizard({
   const [refineStatus, setRefineStatus] = useState<"idle" | "pending" | "questions" | "complete" | "failed">("idle");
   const [refineQuestions, setRefineQuestions] = useState<{ id: string; question: string; options: { id: string; label: string }[] }[]>([]);
   const [refineSummary, setRefineSummary] = useState<string | null>(null);
-  const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
+  const [refineAnswers, setRefineAnswers] = useState<Record<string, { answer: string; otherText?: string }>>({});
   const [refineTimeout, setRefineTimeout] = useState(false);
   const [refinePollingActive, setRefinePollingActive] = useState(false);
   const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -884,12 +884,14 @@ export function BoardOnboardingWizard({
 
   const allRefineQuestionsAnswered = useMemo(() => {
     return refineQuestions.every((q) => {
-      const answer = refineAnswers[q.id];
-      if (!answer) return false;
+      const entry = refineAnswers[q.id];
+      if (!entry || !entry.answer) return false;
       if (q.options && q.options.length > 0) {
-        return q.options.some((opt) => opt.id === answer);
+        const isOther = entry.answer === "other" || entry.answer === "custom" || entry.answer === "free_text";
+        if (isOther) return (entry.otherText ?? "").trim().length > 0;
+        return q.options.some((opt) => opt.id === entry.answer);
       }
-      return answer.trim().length > 0;
+      return entry.answer.trim().length > 0;
     });
   }, [refineQuestions, refineAnswers]);
 
@@ -903,15 +905,16 @@ export function BoardOnboardingWizard({
     setRefineTimeout(false);
     try {
       for (const q of refineQuestions) {
-        const answer = refineAnswers[q.id];
-        if (!answer) continue;
-        const isOtherAnswer = q.options && q.options.length > 0 && !q.options.some((opt) => opt.id === answer);
+        const entry = refineAnswers[q.id];
+        if (!entry) continue;
+        const isOther = q.options && q.options.length > 0 &&
+          (entry.answer === "other" || entry.answer === "custom" || entry.answer === "free_text");
         await customFetch(`/boards/${boardId}/onboarding/refine-answer`, {
           method: "POST",
           body: JSON.stringify({
             question_id: q.id,
-            answer,
-            other_text: isOtherAnswer ? answer : undefined,
+            answer: entry.answer,
+            other_text: isOther ? (entry.otherText ?? "") : undefined,
           }),
         });
       }
@@ -1397,31 +1400,48 @@ export function BoardOnboardingWizard({
 
             {refineStatus === "questions" && refineQuestions.length > 0 && (
               <div className="space-y-4">
-                {refineQuestions.map((q) => (
-                  <div key={q.id} className="rounded-lg border border-[var(--border)] p-3">
-                    <p className="text-sm font-medium text-strong">{q.question}</p>
-                    {q.options && q.options.length > 0 ? (
-                      <div className="mt-2 space-y-1">
-                        {q.options.map((opt) => (
-                          <RadioOption
-                            key={opt.id}
-                            value={opt.id}
-                            label={opt.label}
-                            selected={refineAnswers[q.id] === opt.id}
-                            onSelect={() => setRefineAnswers(prev => ({ ...prev, [q.id]: opt.id }))}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <Input
-                        className="mt-2"
-                        placeholder="Your answer"
-                        value={refineAnswers[q.id] ?? ""}
-                        onChange={(e) => setRefineAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
-                      />
-                    )}
-                  </div>
-                ))}
+                {refineQuestions.map((q) => {
+                  const current = refineAnswers[q.id];
+                  const isOtherSelected = current?.answer === "other" || current?.answer === "custom" || current?.answer === "free_text";
+                  return (
+                    <div key={q.id} className="rounded-lg border border-[var(--border)] p-3">
+                      <p className="text-sm font-medium text-strong">{q.question}</p>
+                      {q.options && q.options.length > 0 ? (
+                        <div className="mt-2 space-y-1">
+                          {q.options.map((opt) => {
+                            const optIsOther = opt.id === "other" || opt.id === "custom" || opt.id === "free_text" ||
+                              opt.label.toLowerCase().includes("other") || opt.label.toLowerCase().includes("i'll type it");
+                            return (
+                              <div key={opt.id}>
+                                <RadioOption
+                                  value={opt.id}
+                                  label={opt.label}
+                                  selected={current?.answer === opt.id}
+                                  onSelect={() => setRefineAnswers(prev => ({ ...prev, [q.id]: { answer: opt.id, otherText: prev[q.id]?.otherText ?? "" } }))}
+                                />
+                                {optIsOther && current?.answer === opt.id && (
+                                  <Input
+                                    className="mt-1 ml-8"
+                                    placeholder="Please specify"
+                                    value={current?.otherText ?? ""}
+                                    onChange={(e) => setRefineAnswers(prev => ({ ...prev, [q.id]: { answer: opt.id, otherText: e.target.value } }))}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <Input
+                          className="mt-2"
+                          placeholder="Your answer"
+                          value={current?.answer ?? ""}
+                          onChange={(e) => setRefineAnswers(prev => ({ ...prev, [q.id]: { answer: e.target.value } }))}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
                 <Button onClick={handleSubmitRefineAnswers} disabled={!allRefineQuestionsAnswered || refining} className="w-full">
                   Submit answers
                 </Button>

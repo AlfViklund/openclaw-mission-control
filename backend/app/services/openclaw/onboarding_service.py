@@ -215,7 +215,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
                     line += f" (details: {data['other_text']})"
                 answers_lines.append(line)
             answers_section = (
-                "\n\nUSER ANSWERS TO CLARIFYING QUESTIONS:\n"
+                "\n\nREFINE_QUESTIONS_AND_USER_ANSWERS:\n"
                 + "\n".join(answers_lines)
                 + "\n\nUse these answers to refine the draft. The user has provided "
                 "clarifications that should be incorporated into the configuration."
@@ -224,7 +224,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
             "PROJECT BOOTSTRAP REFINE\n\n"
             f"Board Name: {board.name}\n"
             f"Board Description: {board.description or '(not provided)'}\n\n"
-            "STRUCTURED DRAFT (already collected via wizard):\n"
+            "CURRENT_DRAFT:\n"
             f"{draft_json}{answers_section}\n\n"
             "YOUR TASK:\n"
             "You are the AI refinement assistant for project bootstrap. The user has already "

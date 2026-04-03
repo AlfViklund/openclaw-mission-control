@@ -1334,13 +1334,13 @@ class TestRefineAnswerValidation:
 
 
 class TestRefineAnswersExtraction:
-    """Tests for _extract_refine_answers helper — ensures user answers are collected from messages."""
+    """Tests for _extract_refine_answers helper — reads structured fields from messages."""
 
     def test_extracts_single_answer_without_other_text(self) -> None:
         from app.api.board_onboarding import _extract_refine_answers
 
         messages = [
-            {"role": "user", "content": "[Wizard] Refine answer to q1: web", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
+            {"role": "user", "refine_answer": "q1", "refine_answer_value": "web", "refine_answer_other_text": ""},
         ]
         answers = _extract_refine_answers(messages)
         assert answers == {"q1": {"answer": "web", "other_text": ""}}
@@ -1349,7 +1349,7 @@ class TestRefineAnswersExtraction:
         from app.api.board_onboarding import _extract_refine_answers
 
         messages = [
-            {"role": "user", "content": "[Wizard] Refine answer to q1: other (other: custom platform)", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
+            {"role": "user", "refine_answer": "q1", "refine_answer_value": "other", "refine_answer_other_text": "custom platform"},
         ]
         answers = _extract_refine_answers(messages)
         assert answers == {"q1": {"answer": "other", "other_text": "custom platform"}}
@@ -1358,8 +1358,8 @@ class TestRefineAnswersExtraction:
         from app.api.board_onboarding import _extract_refine_answers
 
         messages = [
-            {"role": "user", "content": "[Wizard] Refine answer to q1: web", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
-            {"role": "user", "content": "[Wizard] Refine answer to q2: yes", "timestamp": "2026-04-03T12:01:00Z", "refine_answer": "q2"},
+            {"role": "user", "refine_answer": "q1", "refine_answer_value": "web", "refine_answer_other_text": ""},
+            {"role": "user", "refine_answer": "q2", "refine_answer_value": "yes", "refine_answer_other_text": ""},
         ]
         answers = _extract_refine_answers(messages)
         assert len(answers) == 2
@@ -1374,6 +1374,72 @@ class TestRefineAnswersExtraction:
         ]
         answers = _extract_refine_answers(messages)
         assert answers == {}
+
+    def test_ignores_messages_without_refine_answer_field(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {"role": "user", "content": "[Wizard] Refine answer to q1: web", "refine_answer_value": "web"},
+        ]
+        answers = _extract_refine_answers(messages)
+        assert answers == {}
+
+
+class TestRefineAnswerOtherTextValidation:
+    """Tests that other_text is required when 'other' option is selected."""
+
+    def test_rejects_other_option_without_other_text(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Platform?",
+                "options": [{"id": "web", "label": "Web"}, {"id": "other", "label": "Other"}],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q1", "other", "")
+        assert exc_info.value.status_code == 400
+        assert "requires additional text" in str(exc_info.value.detail)
+
+    def test_rejects_other_option_with_whitespace_only_other_text(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Platform?",
+                "options": [{"id": "web", "label": "Web"}, {"id": "custom", "label": "Custom"}],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q1", "custom", "   ")
+        assert exc_info.value.status_code == 400
+
+    def test_accepts_other_option_with_valid_other_text(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Platform?",
+                "options": [{"id": "web", "label": "Web"}, {"id": "other", "label": "Other"}],
+            }
+        ]
+        _validate_refine_answer(questions, "q1", "other", "custom platform")
+
+    def test_rejects_empty_free_text_answer(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [{"id": "q1", "question": "Describe", "options": []}]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q1", "")
+        assert exc_info.value.status_code == 400
+        assert "non-empty" in str(exc_info.value.detail)
 
 
 class TestRefinePromptIncludesAnswers:
@@ -1400,7 +1466,7 @@ class TestRefinePromptIncludesAnswers:
 
         prompt = service._build_refine_prompt(board, draft, "http://localhost:8000", refine_answers)
 
-        assert "USER ANSWERS TO CLARIFYING QUESTIONS" in prompt
+        assert "REFINE_QUESTIONS_AND_USER_ANSWERS" in prompt
         assert "Question q1: web" in prompt
         assert "Question q2: other (details: custom platform)" in prompt
         assert "Use these answers to refine the draft" in prompt
