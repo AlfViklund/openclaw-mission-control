@@ -228,23 +228,49 @@ describe("BoardOnboardingWizard", () => {
       expect(computeCurrentStep({})).toBe(1);
     });
 
-    it("returns 2 when draft has only project_mode", () => {
-      expect(computeCurrentStep({ project_info: { project_mode: "new_product" } })).toBe(2);
+    it("returns 2 when only project_mode and project_stage are set", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists" } })).toBe(2);
     });
 
-    it("returns 3 when draft has project_mode and project_stage but no milestone", () => {
-      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists" } })).toBe(3);
+    it("returns 4 when step 2 is complete, skipping optional step 3", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" } })).toBe(4);
     });
 
-    it("returns 5 when draft has milestone (skips to team step)", () => {
-      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" } })).toBe(5);
+    it("returns 5 when lead_agent name is set", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+      })).toBe(5);
     });
 
-    it("returns 6 when lead_agent name is set", () => {
-      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" }, lead_agent: { name: "Ava" } })).toBe(6);
+    it("returns 6 when team_plan provision_mode is set", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+      })).toBe(6);
     });
 
-    it("returns 10 when all fields are filled", () => {
+    it("returns 7 when planning_policy bootstrap_mode is set", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+      })).toBe(7);
+    });
+
+    it("returns 8 when qa_policy strictness is set", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+      })).toBe(8);
+    });
+
+    it("returns 10 when all steps 1–8 are complete and no refine state", () => {
       expect(computeCurrentStep({
         project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
         lead_agent: { name: "Ava" },
@@ -254,20 +280,120 @@ describe("BoardOnboardingWizard", () => {
         automation_policy: { automation_profile: "normal" },
       })).toBe(10);
     });
+
+    it("returns 9 when refine is pending", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+        automation_policy: { automation_profile: "normal" },
+      }, "pending")).toBe(9);
+    });
+
+    it("returns 9 when refine has questions", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+        automation_policy: { automation_profile: "normal" },
+      }, "questions")).toBe(9);
+    });
+
+    it("returns 10 when refine is complete", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+        automation_policy: { automation_profile: "normal" },
+      }, "complete")).toBe(10);
+    });
+
+    it("returns 10 when refine is idle", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+        automation_policy: { automation_profile: "normal" },
+      }, "idle")).toBe(10);
+    });
   });
 
   describe("confirm payload — objective is human-readable, not enum", () => {
-    it("confirm button not present at step 1 (confirm only appears at step 11)", () => {
-      customFetchMock.mockImplementation(() =>
-        Promise.resolve({ status: 200, data: {} }),
-      );
+    it("sends objective from context description without board_type", async () => {
+      let capturedBody: unknown;
+      customFetchMock.mockImplementation((url: string, opts?: { body?: string }) => {
+        if (url.includes("/confirm")) {
+          capturedBody = opts?.body ? JSON.parse(opts.body) : undefined;
+          return Promise.resolve({
+            status: 200,
+            data: {
+              board: { id: "board-1", name: "Test", slug: "test", description: "", organization_id: "o1", created_at: "", updated_at: "" },
+              bootstrap: { lead_status: "created", team_status: "not_requested", team_agents_created: 0, team_created_roles: [], team_skipped_roles: [], team_failed_roles: [], planner_status: "not_requested" },
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
 
       render(
         <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
       );
 
-      expect(screen.getByTestId("dialog-title")).toHaveTextContent("What are we building?");
-      expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
+      // Advance through steps by filling required fields
+      fireEvent.click(screen.getByText("New product"));
+      fireEvent.click(screen.getByText("Idea only"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
+      fireEvent.click(screen.getByText("MVP"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Project context"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Lead agent preferences"));
+      const leadInput = screen.getByPlaceholderText(/ava/i);
+      fireEvent.change(leadInput, { target: { value: "Ava" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Team on startup"));
+      fireEvent.click(screen.getByText(/only lead/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("How do we start work?"));
+      fireEvent.click(screen.getByText(/generate initial backlog/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Process strictness"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Agent activity level"));
+      fireEvent.click(screen.getByRole("button", { name: /review/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Review configuration"));
+      const confirmBtn = screen.getByRole("button", { name: /confirm.*bootstrap/i });
+      await waitFor(() => expect(confirmBtn).toBeEnabled());
+      fireEvent.click(confirmBtn);
+
+      await waitFor(() => {
+        expect(capturedBody).toBeDefined();
+        const body = capturedBody as Record<string, unknown>;
+        expect(body).not.toHaveProperty("board_type");
+        expect(body.objective).toBeUndefined();
+      });
     });
   });
 

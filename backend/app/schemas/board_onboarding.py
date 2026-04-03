@@ -29,7 +29,7 @@ class BoardOnboardingAnswer(SQLModel):
 class BoardOnboardingConfirm(SQLModel):
     """Payload used to confirm generated onboarding draft fields."""
 
-    board_type: str
+    board_type: str | None = None
     objective: str | None = None
     success_metrics: dict[str, object] | None = None
     target_date: datetime | None = None
@@ -354,6 +354,14 @@ class BoardOnboardingAgentComplete(BoardOnboardingConfirm):
 BoardOnboardingAgentUpdate = BoardOnboardingAgentComplete | BoardOnboardingAgentQuestion
 
 
+class BoardOnboardingRefineQuestion(SQLModel):
+    """Single clarification question from AI during refine step."""
+
+    id: str
+    question: str
+    options: list[BoardOnboardingQuestionOption] = Field(default_factory=list)
+
+
 class BoardOnboardingRead(SQLModel):
     """Stored onboarding session state returned by API endpoints."""
 
@@ -365,6 +373,15 @@ class BoardOnboardingRead(SQLModel):
     draft_goal: BoardOnboardingAgentComplete | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class BoardOnboardingReadWithRefine(BoardOnboardingRead):
+    """Extended onboarding read with normalised refine state."""
+
+    refine_status: Literal["idle", "pending", "questions", "complete", "failed"] = "idle"
+    refine_questions: list[BoardOnboardingRefineQuestion] = Field(default_factory=list)
+    refine_summary: str | None = None
+    refine_updated_at: datetime | None = None
 
 
 class BoardAutomationSyncResultData(SQLModel):
@@ -400,14 +417,6 @@ class BoardBootstrapResult(SQLModel):
     planner_output_id: UUID | None = None
     automation_sync: BoardAutomationSyncResultData | None = None
     bootstrap_summary: str | None = None
-
-
-class BoardOnboardingRefineQuestion(SQLModel):
-    """Single clarification question from AI during refine step."""
-
-    id: str
-    question: str
-    options: list[BoardOnboardingQuestionOption] = Field(default_factory=list)
 
 
 class BoardOnboardingDraftUpdate(SQLModel):

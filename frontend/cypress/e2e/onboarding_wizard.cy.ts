@@ -463,10 +463,10 @@ describe("BoardOnboardingWizard E2E", () => {
       // Should be on step 2 since step 1 fields are pre-filled
       cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
       // Project mode and stage should be pre-selected from draft
-      cy.contains("button", /new product/i).should("have.attr", "aria-selected", "true");
-      cy.contains("button", /codebase exists/i).should("have.attr", "aria-selected", "true");
+      cy.contains("button", /new product/i).should("have.attr", "aria-pressed", "true");
+      cy.contains("button", /codebase exists/i).should("have.attr", "aria-pressed", "true");
       // MVP should be pre-selected
-      cy.contains("button", /mvp/i).should("have.attr", "aria-selected", "true");
+      cy.contains("button", /mvp/i).should("have.attr", "aria-pressed", "true");
     });
   });
 
@@ -639,6 +639,101 @@ describe("BoardOnboardingWizard E2E", () => {
       cy.contains(/success/i).should("be.visible");
       // Open project board button should be present
       cy.contains("button", /open project board/i).should("be.visible");
+    });
+  });
+
+  describe("confirm payload contract", () => {
+    it("does not send board_type or enum in objective", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+      let confirmBody: Record<string, unknown> = {};
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/confirm`, (req) => {
+        confirmBody = req.body;
+        req.reply({
+          statusCode: 200,
+          body: {
+            data: {
+              board: {
+                id: boardId,
+                name: "Test",
+                slug: "test",
+                description: "",
+                gateway_id: "g1",
+                board_group_id: null,
+                board_type: "general",
+                objective: "A collaborative tool for teams",
+                success_metrics: null,
+                target_date: null,
+                goal_confirmed: true,
+                goal_source: "lead_agent_onboarding",
+                organization_id: "o1",
+                created_at: "2026-02-11T00:00:00Z",
+                updated_at: "2026-02-11T00:00:00Z",
+              },
+              bootstrap: {
+                lead_status: "created",
+                lead_name: "Ava",
+                team_status: "provisioned",
+                team_agents_created: 3,
+                team_created_roles: ["developer", "qa_engineer"],
+                team_skipped_roles: [],
+                planner_status: "draft_created",
+                automation_sync: { status: "success", agents_updated: 1 },
+              },
+            },
+          },
+        });
+      }).as("confirmPost");
+
+      openOnboardingWizard();
+
+      // Quick path through wizard
+      cy.contains("h2", /what are we building/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /new product/i).click();
+      cy.contains("button", /idea only/i).click();
+      clickNext();
+
+      cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /mvp/i).click();
+      clickNext();
+
+      cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");
+      cy.get("textarea").first().type("A collaborative tool for teams");
+      clickNext();
+
+      cy.contains("h2", /lead agent preferences/i, { timeout: 10_000 }).should("be.visible");
+      cy.get('input[placeholder*="ava"]').type("Ava");
+      clickNext();
+
+      cy.contains("h2", /team on startup/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /only lead/i).click();
+      clickNext();
+
+      cy.contains("h2", /how do we start/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /empty board/i).click();
+      clickNext();
+
+      cy.contains("h2", /process strictness/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      cy.contains("h2", /agent activity level/i, { timeout: 10_000 }).should("be.visible");
+      clickNext();
+
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+      clickReview();
+
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /confirm.*bootstrap/i).should("not.be.disabled").click();
+      cy.wait("@confirmPost", { timeout: 10_000 });
+
+      cy.then(() => {
+        expect(confirmBody).to.be.an("object");
+        expect(confirmBody).to.not.have.property("board_type");
+        expect(confirmBody.objective).to.eq("A collaborative tool for teams");
+      });
+
+      cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
     });
   });
 });

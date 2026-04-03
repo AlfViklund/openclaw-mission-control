@@ -1,8 +1,9 @@
 # ruff: noqa: INP001, S101
-"""Service-level integration tests for the onboarding bootstrap flow.
+"""Schema and contract tests for onboarding data structures.
 
-These tests exercise bootstrap_board_from_onboarding() with mocked
-database sessions and gateway services to validate end-to-end orchestration.
+These tests validate Pydantic/SQLModel shapes, field acceptance, and
+enum literals. They do not exercise service orchestration — see
+test_board_onboarding_bootstrap.py for flow-level tests.
 """
 
 from __future__ import annotations

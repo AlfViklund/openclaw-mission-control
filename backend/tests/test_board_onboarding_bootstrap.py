@@ -1121,3 +1121,92 @@ class TestOnboardingProvisionOrder:
         id_b = options_b.identity_profile
         assert id_a is not None and id_b is not None
         assert id_a.get("verbosity") == id_b.get("verbosity")
+
+
+class TestConfirmContract:
+    """Tests for the confirm endpoint contract: board_type optional, objective human-readable."""
+
+    def test_confirm_without_board_type(self) -> None:
+        """BoardOnboardingConfirm should accept an empty board_type."""
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm()
+        assert confirm.board_type is None
+        assert confirm.objective is None
+
+    def test_confirm_with_only_objective(self) -> None:
+        """Confirm should accept when only objective is provided."""
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+
+        confirm = BoardOnboardingConfirm(objective="Build a collaborative tool")
+        assert confirm.board_type is None
+        assert confirm.objective == "Build a collaborative tool"
+
+    def test_confirm_goal_still_requires_objective(self) -> None:
+        """When board_type is explicitly 'goal', objective and success_metrics are required."""
+        from app.schemas.board_onboarding import BoardOnboardingConfirm
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            BoardOnboardingConfirm(board_type="goal")
+
+
+class TestRefineStateComputation:
+    """Tests for _compute_refine_state helper in the onboarding API."""
+
+    def _make_onboarding(self, status: str, messages: list | None = None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            status=status,
+            messages=messages or [],
+        )
+
+    def test_idle_when_no_refine_messages(self) -> None:
+        from app.api.board_onboarding import _compute_refine_state
+
+        onboarding = self._make_onboarding("active", [])
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "idle"
+
+    def test_pending_when_refining_and_no_result(self) -> None:
+        from app.api.board_onboarding import _compute_refine_state
+
+        onboarding = self._make_onboarding("refining", [])
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "pending"
+
+    def test_complete_from_messages(self) -> None:
+        from app.api.board_onboarding import _compute_refine_state
+
+        messages = [
+            {"role": "user", "content": "refine", "refine": "refining"},
+            {"role": "assistant", "content": '{"summary": "looks good"}', "refine": "complete", "timestamp": "2026-04-03T12:00:00Z"},
+        ]
+        onboarding = self._make_onboarding("completed", messages)
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "complete"
+        assert state["refine_summary"] == "looks good"
+
+    def test_questions_from_messages(self) -> None:
+        from app.api.board_onboarding import _compute_refine_state
+
+        messages = [
+            {"role": "user", "content": "refine", "refine": "refining"},
+            {"role": "assistant", "content": '{"questions": [{"id": "q1", "question": "Why?", "options": []}], "summary": "need info"}', "refine": "questions", "timestamp": "2026-04-03T12:00:00Z"},
+        ]
+        onboarding = self._make_onboarding("active", messages)
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "questions"
+        assert len(state["refine_questions"]) == 1
+        assert state["refine_questions"][0]["id"] == "q1"
+
+    def test_failed_from_messages(self) -> None:
+        from app.api.board_onboarding import _compute_refine_state
+
+        messages = [
+            {"role": "user", "content": "refine", "refine": "refining"},
+            {"role": "assistant", "content": "{}", "refine": "failed", "timestamp": "2026-04-03T12:00:00Z"},
+        ]
+        onboarding = self._make_onboarding("active", messages)
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "failed"

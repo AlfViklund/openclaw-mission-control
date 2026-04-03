@@ -67,6 +67,7 @@ type LeadUpdateCadence = "asap" | "hourly" | "daily" | "weekly";
 interface BoardOnboardingDraftUpdate {
   board_type?: string;
   objective?: string;
+  refine_status?: "idle" | "pending" | "questions" | "complete";
   project_info?: {
     project_mode?: ProjectMode;
     project_stage?: ProjectStage;
@@ -109,8 +110,9 @@ interface BoardOnboardingDraftUpdate {
 }
 
 interface BoardOnboardingConfirm {
-  board_type: string;
+  board_type?: string;
   objective?: string;
+  success_metrics?: Record<string, unknown>;
 }
 
 interface BoardBootstrapResult {
@@ -130,32 +132,23 @@ interface BoardBootstrapResult {
   bootstrap_summary?: string;
 }
 
-export function computeCurrentStep(d: BoardOnboardingDraftUpdate): number {
-  if (d.project_info?.project_mode && d.project_info?.project_stage && d.project_info?.first_milestone_type) {
-    if (d.lead_agent?.name) {
-      if (d.team_plan?.provision_mode) {
-        if (d.planning_policy?.bootstrap_mode) {
-          if (d.qa_policy?.strictness) {
-            if (d.automation_policy?.automation_profile) {
-              return 10;
-            }
-            return 9;
-          }
-          return 8;
-        }
-        return 7;
-      }
-      return 6;
-    }
-    return 5;
-  }
-  if (d.project_info?.project_mode && d.project_info?.project_stage) {
-    return 3;
-  }
-  if (d.project_info?.project_mode) {
-    return 2;
-  }
-  return 1;
+export function computeCurrentStep(
+  d: BoardOnboardingDraftUpdate,
+  refineStatus?: "idle" | "pending" | "questions" | "complete",
+): number {
+  if (!d.project_info?.project_mode || !d.project_info?.project_stage) return 1;
+  if (!d.project_info?.first_milestone_type) return 2;
+  // Step 3 (context) is optional — skip it.
+  if (!d.lead_agent?.name) return 4;
+  if (!d.team_plan?.provision_mode) return 5;
+  if (!d.planning_policy?.bootstrap_mode) return 6;
+  if (!d.qa_policy?.strictness) return 7;
+  if (!d.automation_policy?.automation_profile) return 8;
+
+  // Steps 1–8 are complete. Determine refine vs review.
+  const status = refineStatus ?? d.refine_status;
+  if (status === "pending" || status === "questions") return 9;
+  return 10;
 }
 
 interface _BoardOnboardingRead {
@@ -436,6 +429,7 @@ function RadioOption({ value: _value, label, description, selected, onSelect, di
       type="button"
       onClick={onSelect}
       disabled={disabled}
+      aria-pressed={selected}
       className={cn(
         "w-full rounded-xl border-2 px-4 py-3 text-left transition-all",
         selected
@@ -538,6 +532,11 @@ export function BoardOnboardingWizard({
   const [error, setError] = useState<string | null>(null);
   const [refined, setRefined] = useState(false);
   const [refining, setRefining] = useState(false);
+  const [refineStatus, setRefineStatus] = useState<"idle" | "pending" | "questions" | "complete" | "failed">("idle");
+  const [refineQuestions, setRefineQuestions] = useState<{ id: string; question: string; options: { id: string; label: string }[] }[]>([]);
+  const [refineSummary, setRefineSummary] = useState<string | null>(null);
+  const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
+  const [refineTimeout, setRefineTimeout] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BoardBootstrapResult | null>(null);
   const [confirmedBoard, setConfirmedBoard] = useState<BoardRead | null>(null);
 
@@ -555,25 +554,38 @@ export function BoardOnboardingWizard({
     const loadDraft = async () => {
       try {
         const result = await customFetch<{
-          data: { draft_goal?: Record<string, unknown> | null; status?: string };
+          data: { draft_goal?: Record<string, unknown> | null; status?: string; refine_status?: string; refine_questions?: unknown[]; refine_summary?: string | null };
           status: number;
         }>(`/boards/${boardId}/onboarding`, { method: "GET" });
 
-        if (result.status === 200 && result.data.draft_goal) {
-          const goal = result.data.draft_goal as Partial<BoardOnboardingDraftUpdate>;
-          if (goal && typeof goal === "object") {
-            const restoredDraft: BoardOnboardingDraftUpdate = {
-              project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
-              context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
-              lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
-              team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
-              planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
-              qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
-              automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
-            };
-            setDraft(restoredDraft);
-            const restoredStep = computeCurrentStep(restoredDraft);
-            setCurrentStep(restoredStep);
+        if (result.status === 200) {
+          const { draft_goal, refine_status, refine_questions, refine_summary } = result.data;
+          if (refine_status) {
+            setRefineStatus(refine_status as typeof refineStatus);
+          }
+          if (refine_questions) {
+            setRefineQuestions(refine_questions as typeof refineQuestions);
+          }
+          if (refine_summary) {
+            setRefineSummary(refine_summary);
+          }
+          if (draft_goal) {
+            const goal = draft_goal as Partial<BoardOnboardingDraftUpdate>;
+            if (goal && typeof goal === "object") {
+              const restoredDraft: BoardOnboardingDraftUpdate = {
+                project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
+                context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
+                lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
+                team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
+                planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
+                qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
+                automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
+              };
+              setDraft(restoredDraft);
+              const apiRefineStatus = refine_status as typeof refineStatus | undefined;
+              const restoredStep = computeCurrentStep(restoredDraft, apiRefineStatus);
+              setCurrentStep(restoredStep);
+            }
           }
         }
       } catch {
@@ -727,22 +739,34 @@ export function BoardOnboardingWizard({
   const loadRefinedDraft = useCallback(async () => {
     try {
       const result = await customFetch<{
-        data: { draft_goal?: Record<string, unknown> | null; status?: string };
+        data: { draft_goal?: Record<string, unknown> | null; status?: string; refine_status?: string; refine_questions?: unknown[]; refine_summary?: string | null };
         status: number;
       }>(`/boards/${boardId}/onboarding`, { method: "GET" });
 
-      if (result.status === 200 && result.data.draft_goal) {
-        const goal = result.data.draft_goal as Partial<BoardOnboardingDraftUpdate>;
-        if (goal && typeof goal === "object") {
-          setDraft({
-            project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
-            context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
-            lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
-            team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
-            planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
-            qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
-            automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
-          });
+      if (result.status === 200) {
+        const { draft_goal, refine_status, refine_questions, refine_summary } = result.data;
+        if (refine_status) {
+          setRefineStatus(refine_status as typeof refineStatus);
+        }
+        if (refine_questions) {
+          setRefineQuestions(refine_questions as typeof refineQuestions);
+        }
+        if (refine_summary) {
+          setRefineSummary(refine_summary);
+        }
+        if (draft_goal) {
+          const goal = draft_goal as Partial<BoardOnboardingDraftUpdate>;
+          if (goal && typeof goal === "object") {
+            setDraft({
+              project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
+              context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
+              lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
+              team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
+              planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
+              qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
+              automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
+            });
+          }
         }
       }
     } catch {
@@ -750,9 +774,55 @@ export function BoardOnboardingWizard({
     }
   }, [boardId]);
 
+  const startRefinePolling = useCallback((startTime: number) => {
+    const poll = async () => {
+      if (Date.now() - startTime > 60000) {
+        setRefineTimeout(true);
+        setRefining(false);
+        setRefineStatus("failed");
+        return;
+      }
+      try {
+        const resp = await customFetch<{
+          data: { refine_status?: string; refine_questions?: unknown[]; refine_summary?: string | null };
+          status: number;
+        }>(`/boards/${boardId}/onboarding`, { method: "GET" });
+        if (resp.status === 200) {
+          const data = resp.data;
+          const status = data.refine_status;
+          if (status === "complete") {
+            setRefineStatus("complete");
+            setRefineSummary(data.refine_summary ?? null);
+            await loadRefinedDraft();
+            setRefining(false);
+            setRefined(true);
+          } else if (status === "questions") {
+            setRefineStatus("questions");
+            setRefineQuestions((data.refine_questions ?? []) as typeof refineQuestions);
+            setRefineSummary(data.refine_summary ?? null);
+            setRefining(false);
+          } else if (status === "failed") {
+            setRefineStatus("failed");
+            setError("AI refinement failed. Please try again.");
+            setRefining(false);
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } else {
+          setTimeout(poll, 2000);
+        }
+      } catch {
+        setTimeout(poll, 2000);
+      }
+    };
+    setTimeout(poll, 2000);
+  }, [boardId, loadRefinedDraft]);
+
   const handleRefine = useCallback(async () => {
     setRefining(true);
+    setRefineTimeout(false);
     setError(null);
+    setRefineAnswers({});
     try {
       const result = await customFetch<{ data: unknown; status: number }>(
         `/boards/${boardId}/onboarding/refine`,
@@ -760,14 +830,38 @@ export function BoardOnboardingWizard({
       );
       if (result.status >= 400) throw new Error("Failed to refine");
 
-      await loadRefinedDraft();
-      setRefined(true);
+      setRefineStatus("pending");
+      startRefinePolling(Date.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to refine");
-    } finally {
+      setRefining(false);
+      setRefineStatus("failed");
+    }
+  }, [boardId, startRefinePolling]);
+
+  const handleSubmitRefineAnswers = useCallback(async () => {
+    setError(null);
+    setRefining(true);
+    setRefineTimeout(false);
+    try {
+      for (const q of refineQuestions) {
+        const answer = refineAnswers[q.id];
+        if (answer) {
+          await customFetch(`/boards/${boardId}/onboarding/refine-answer`, {
+            method: "POST",
+            body: JSON.stringify({ question_id: q.id, answer }),
+          });
+        }
+      }
+      setRefineStatus("pending");
+      setRefineAnswers({});
+      setRefineQuestions([]);
+      startRefinePolling(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to submit answers");
       setRefining(false);
     }
-  }, [boardId, loadRefinedDraft]);
+  }, [boardId, refineQuestions, refineAnswers, startRefinePolling]);
 
   const handleConfirm = useCallback(async () => {
     setLoading(true);
@@ -778,7 +872,6 @@ export function BoardOnboardingWizard({
         {
           method: "POST",
           body: JSON.stringify({
-            board_type: "goal",
             objective: draft.context?.description || undefined,
           } as BoardOnboardingConfirm),
         },
@@ -1192,33 +1285,87 @@ export function BoardOnboardingWizard({
                 Let AI review and refine your configuration for better results.
               </p>
             </div>
-            {!refined ? (
-              <Button
-                onClick={handleRefine}
-                disabled={refining}
-                className="w-full"
-              >
-                {refining ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    AI is reviewing your configuration...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    Let AI refine this setup
-                  </>
-                )}
+
+            {refineStatus === "idle" && !refining && (
+              <Button onClick={handleRefine} className="w-full">
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Let AI refine this setup
               </Button>
-            ) : (
+            )}
+
+            {refining && refineStatus === "pending" && (
+              <Button disabled className="w-full">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                AI is reviewing your configuration...
+              </Button>
+            )}
+
+            {refineTimeout && (
+              <div className="space-y-3">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                  <p className="text-sm text-red-700">
+                    Refinement timed out after 60 seconds.
+                  </p>
+                </div>
+                <Button onClick={handleRefine} className="w-full">
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Retry refinement
+                </Button>
+              </div>
+            )}
+
+            {refineStatus === "failed" && !refineTimeout && (
+              <div className="space-y-3">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                  <p className="text-sm text-red-700">AI refinement failed.</p>
+                </div>
+                <Button onClick={handleRefine} className="w-full">
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Retry refinement
+                </Button>
+              </div>
+            )}
+
+            {refineStatus === "questions" && refineQuestions.length > 0 && (
+              <div className="space-y-4">
+                {refineQuestions.map((q) => (
+                  <div key={q.id} className="rounded-lg border border-[var(--border)] p-3">
+                    <p className="text-sm font-medium text-strong">{q.question}</p>
+                    {q.options && q.options.length > 0 ? (
+                      <div className="mt-2 space-y-1">
+                        {q.options.map((opt) => (
+                          <RadioOption
+                            key={opt.id}
+                            value={opt.id}
+                            label={opt.label}
+                            selected={refineAnswers[q.id] === opt.id}
+                            onSelect={() => setRefineAnswers(prev => ({ ...prev, [q.id]: opt.id }))}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <Input
+                        className="mt-2"
+                        placeholder="Your answer"
+                        value={refineAnswers[q.id] ?? ""}
+                        onChange={(e) => setRefineAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
+                      />
+                    )}
+                  </div>
+                ))}
+                <Button onClick={handleSubmitRefineAnswers} className="w-full">
+                  Submit answers
+                </Button>
+              </div>
+            )}
+
+            {refineStatus === "complete" && (
               <div className="rounded-xl border border-green-200 bg-green-50 p-4">
                 <div className="flex items-center gap-2 text-green-700">
                   <Check className="h-4 w-4" />
-                  <span className="font-medium">Configuration refined. Review updated.</span>
+                  <span className="font-medium">Configuration refined</span>
                 </div>
-                <p className="mt-1 text-sm text-green-600">
-                  Your configuration has been improved. Review the updated settings below.
-                </p>
+                {refineSummary && <p className="mt-1 text-sm text-green-600">{refineSummary}</p>}
               </div>
             )}
           </div>
@@ -1293,10 +1440,11 @@ export function BoardOnboardingWizard({
                   )}
                 </div>
               )}
-              {refined && (
+              {(refined || refineStatus === "complete") && (
                 <div className="rounded-lg border border-green-200 bg-green-50 p-3">
                   <p className="text-xs uppercase tracking-wide text-green-600">AI Refinement</p>
                   <p className="mt-1 text-sm text-green-700">Configuration has been refined by AI.</p>
+                  {refineSummary && <p className="mt-1 text-xs text-green-600">{refineSummary}</p>}
                 </div>
               )}
             </div>

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
-from sqlmodel import col
+from sqlmodel import SQLModel, col
 
 from app.api.deps import (
     ActorContext,
@@ -29,7 +30,9 @@ from app.schemas.board_onboarding import (
     BoardOnboardingDraftUpdate,
     BoardOnboardingLeadAgentDraft,
     BoardOnboardingRead,
+    BoardOnboardingReadWithRefine,
     BoardOnboardingRefineResult,
+    BoardOnboardingRefineQuestion,
     BoardOnboardingStart,
     BoardOnboardingUserProfile,
     BoardOnboardingBootstrapResponse,
@@ -143,6 +146,71 @@ def _parse_draft_automation_policy(
         return None
 
 
+def _compute_refine_state(onboarding) -> dict:
+    """Derive normalised refine state from onboarding.status + messages."""
+    status = onboarding.status
+    messages = onboarding.messages or []
+
+    last_refine = None
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and "refine" in msg:
+            last_refine = msg
+            break
+
+    if status == "refining" and not last_refine:
+        return {
+            "refine_status": "pending",
+            "refine_questions": [],
+            "refine_summary": None,
+            "refine_updated_at": None,
+        }
+
+    if last_refine:
+        refine_type = last_refine.get("refine")
+        ts = last_refine.get("timestamp")
+        content = last_refine.get("content", "{}")
+        try:
+            payload = json.loads(content) if isinstance(content, str) else content
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+
+        if refine_type == "questions":
+            return {
+                "refine_status": "questions",
+                "refine_questions": payload.get("questions", []),
+                "refine_summary": payload.get("summary"),
+                "refine_updated_at": ts,
+            }
+        if refine_type == "complete":
+            return {
+                "refine_status": "complete",
+                "refine_questions": [],
+                "refine_summary": payload.get("summary"),
+                "refine_updated_at": ts,
+            }
+        if refine_type == "failed":
+            return {
+                "refine_status": "failed",
+                "refine_questions": [],
+                "refine_summary": None,
+                "refine_updated_at": ts,
+            }
+        if refine_type == "refining":
+            return {
+                "refine_status": "pending",
+                "refine_questions": [],
+                "refine_summary": None,
+                "refine_updated_at": ts,
+            }
+
+    return {
+        "refine_status": "idle",
+        "refine_questions": [],
+        "refine_summary": None,
+        "refine_updated_at": None,
+    }
+
+
 def _normalize_autonomy_token(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -231,11 +299,11 @@ def _lead_agent_options(
     )
 
 
-@router.get("", response_model=BoardOnboardingRead)
+@router.get("", response_model=BoardOnboardingReadWithRefine)
 async def get_onboarding(
     board: Board = BOARD_USER_READ_DEP,
     session: AsyncSession = SESSION_DEP,
-) -> BoardOnboardingSession:
+) -> BoardOnboardingReadWithRefine:
     """Get the latest onboarding session for a board."""
     onboarding = (
         await BoardOnboardingSession.objects.filter_by(board_id=board.id)
@@ -244,7 +312,17 @@ async def get_onboarding(
     )
     if onboarding is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    return onboarding
+
+    refine_state = _compute_refine_state(onboarding)
+    result = BoardOnboardingReadWithRefine.model_validate(onboarding, from_attributes=True)
+    result.refine_status = refine_state["refine_status"]
+    result.refine_questions = [
+        BoardOnboardingRefineQuestion.model_validate(q)
+        for q in refine_state["refine_questions"]
+    ]
+    result.refine_summary = refine_state["refine_summary"]
+    result.refine_updated_at = refine_state["refine_updated_at"]
+    return result
 
 
 @router.post("/start", response_model=BoardOnboardingRead)
@@ -581,11 +659,11 @@ async def update_draft(
     return onboarding
 
 
-@router.post("/refine", response_model=BoardOnboardingRead)
+@router.post("/refine", response_model=BoardOnboardingReadWithRefine)
 async def refine_onboarding(
     board: Board = BOARD_USER_WRITE_DEP,
     session: AsyncSession = SESSION_DEP,
-) -> BoardOnboardingSession:
+) -> BoardOnboardingReadWithRefine:
     """Trigger AI refinement of the current structured draft."""
     onboarding = (
         await BoardOnboardingSession.objects.filter_by(board_id=board.id)
@@ -629,16 +707,26 @@ async def refine_onboarding(
     session.add(onboarding)
     await session.commit()
     await session.refresh(onboarding)
-    return onboarding
+
+    refine_state = _compute_refine_state(onboarding)
+    result = BoardOnboardingReadWithRefine.model_validate(onboarding, from_attributes=True)
+    result.refine_status = refine_state["refine_status"]
+    result.refine_questions = [
+        BoardOnboardingRefineQuestion.model_validate(q)
+        for q in refine_state["refine_questions"]
+    ]
+    result.refine_summary = refine_state["refine_summary"]
+    result.refine_updated_at = refine_state["refine_updated_at"]
+    return result
 
 
-@router.post("/agent/refine-result", response_model=BoardOnboardingRead)
+@router.post("/agent/refine-result", response_model=BoardOnboardingReadWithRefine)
 async def agent_refine_result(
     payload: BoardOnboardingRefineResult,
     board: Board = BOARD_OR_404_DEP,
     session: AsyncSession = SESSION_DEP,
     actor: ActorContext = ACTOR_DEP,
-) -> BoardOnboardingSession:
+) -> BoardOnboardingReadWithRefine:
     """Store AI refinement result submitted by the gateway agent."""
     if actor.actor_type != "agent" or actor.agent is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -699,16 +787,95 @@ async def agent_refine_result(
                 "role": "assistant",
                 "content": payload_text,
                 "timestamp": now,
-                "refine": "refining",
+                "refine": "failed",
             }
         )
+        if onboarding.status == "refining":
+            onboarding.status = "active"
 
     onboarding.messages = messages
     onboarding.updated_at = utcnow()
     session.add(onboarding)
     await session.commit()
     await session.refresh(onboarding)
-    return onboarding
+
+    refine_state = _compute_refine_state(onboarding)
+    result = BoardOnboardingReadWithRefine.model_validate(onboarding, from_attributes=True)
+    result.refine_status = refine_state["refine_status"]
+    result.refine_questions = [
+        BoardOnboardingRefineQuestion.model_validate(q)
+        for q in refine_state["refine_questions"]
+    ]
+    result.refine_summary = refine_state["refine_summary"]
+    result.refine_updated_at = refine_state["refine_updated_at"]
+    return result
+
+
+class BoardOnboardingRefineAnswer(SQLModel):
+    """User answer to a single refine clarification question."""
+
+    question_id: str
+    answer: str
+    other_text: str | None = None
+
+
+@router.post("/refine-answer", response_model=BoardOnboardingReadWithRefine)
+async def answer_refine_question(
+    payload: BoardOnboardingRefineAnswer,
+    board: Board = BOARD_USER_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+) -> BoardOnboardingReadWithRefine:
+    """Submit an answer to a refine clarification question and resume AI refinement."""
+    onboarding = (
+        await BoardOnboardingSession.objects.filter_by(board_id=board.id)
+        .order_by(col(BoardOnboardingSession.updated_at).desc())
+        .first(session)
+    )
+    if onboarding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if onboarding.status == "confirmed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT)
+
+    messages = list(onboarding.messages or [])
+    messages.append(
+        {
+            "role": "user",
+            "content": f"[Wizard] Refine answer to {payload.question_id}: {payload.answer}",
+            "timestamp": utcnow().isoformat(),
+            "refine_answer": payload.question_id,
+        }
+    )
+
+    onboarding.messages = messages
+    onboarding.status = "refining"
+    onboarding.updated_at = utcnow()
+    session.add(onboarding)
+    await session.commit()
+    await session.refresh(onboarding)
+
+    if not onboarding.draft_goal:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No draft to refine. Complete wizard steps first.",
+        )
+
+    dispatcher = BoardOnboardingMessagingService(session)
+    await dispatcher.dispatch_refine_prompt(
+        board=board,
+        draft=onboarding.draft_goal,
+        correlation_id=f"onboarding.refine-answer:{board.id}:{onboarding.id}",
+    )
+
+    refine_state = _compute_refine_state(onboarding)
+    result = BoardOnboardingReadWithRefine.model_validate(onboarding, from_attributes=True)
+    result.refine_status = refine_state["refine_status"]
+    result.refine_questions = [
+        BoardOnboardingRefineQuestion.model_validate(q)
+        for q in refine_state["refine_questions"]
+    ]
+    result.refine_summary = refine_state["refine_summary"]
+    result.refine_updated_at = refine_state["refine_updated_at"]
+    return result
 
 
 @router.post("/confirm", response_model=BoardOnboardingBootstrapResponse)
@@ -757,8 +924,10 @@ async def confirm_onboarding(
         board.target_date = payload.target_date
     elif payload.target_date:
         board.target_date = payload.target_date
-    board.board_type = payload.board_type
-    board.success_metrics = payload.success_metrics
+    if payload.board_type is not None:
+        board.board_type = payload.board_type
+    if payload.success_metrics is not None:
+        board.success_metrics = payload.success_metrics
     board.goal_confirmed = True
     board.goal_source = "lead_agent_onboarding"
 
