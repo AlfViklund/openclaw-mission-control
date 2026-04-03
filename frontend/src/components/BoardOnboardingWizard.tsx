@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronRight, Loader2, RefreshCw, ArrowLeft } from "lucide-react";
 
 import {
@@ -154,7 +154,7 @@ interface BoardBootstrapResult {
  */
 export function computeCurrentStep(
   d: BoardOnboardingDraftUpdate,
-  refineStatus?: "idle" | "pending" | "questions" | "complete",
+  refineStatus?: "idle" | "pending" | "questions" | "complete" | "failed",
 ): number {
   if (!d.project_info?.project_mode || !d.project_info?.project_stage) return 1;
   if (!d.project_info?.first_milestone_type || !d.project_info?.delivery_mode || !d.project_info?.deadline_mode) return 2;
@@ -557,6 +557,8 @@ export function BoardOnboardingWizard({
   const [refineSummary, setRefineSummary] = useState<string | null>(null);
   const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
   const [refineTimeout, setRefineTimeout] = useState(false);
+  const [refinePollingActive, setRefinePollingActive] = useState(false);
+  const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [bootstrapResult, setBootstrapResult] = useState<BoardBootstrapResult | null>(null);
   const [confirmedBoard, setConfirmedBoard] = useState<BoardRead | null>(null);
 
@@ -798,12 +800,24 @@ export function BoardOnboardingWizard({
     }
   }, [boardId]);
 
+  const cancelPolling = useCallback(() => {
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+    setRefinePollingActive(false);
+  }, []);
+
   const startRefinePolling = useCallback((startTime: number) => {
+    cancelPolling();
+    setRefinePollingActive(true);
+
     const poll = async () => {
       if (Date.now() - startTime > 60000) {
         setRefineTimeout(true);
         setRefining(false);
         setRefineStatus("failed");
+        setRefinePollingActive(false);
         return;
       }
       try {
@@ -815,34 +829,38 @@ export function BoardOnboardingWizard({
           const data = resp.data;
           const status = data.refine_status;
           if (status === "complete") {
+            cancelPolling();
             setRefineStatus("complete");
             setRefineSummary(data.refine_summary ?? null);
             await loadRefinedDraft();
             setRefining(false);
             setRefined(true);
           } else if (status === "questions") {
+            cancelPolling();
             setRefineStatus("questions");
             setRefineQuestions((data.refine_questions ?? []) as typeof refineQuestions);
             setRefineSummary(data.refine_summary ?? null);
             setRefining(false);
           } else if (status === "failed") {
+            cancelPolling();
             setRefineStatus("failed");
             setError("AI refinement failed. Please try again.");
             setRefining(false);
           } else {
-            setTimeout(poll, 2000);
+            pollingTimerRef.current = setTimeout(poll, 2000);
           }
         } else {
-          setTimeout(poll, 2000);
+          pollingTimerRef.current = setTimeout(poll, 2000);
         }
       } catch {
-        setTimeout(poll, 2000);
+        pollingTimerRef.current = setTimeout(poll, 2000);
       }
     };
-    setTimeout(poll, 2000);
-  }, [boardId, loadRefinedDraft]);
+    pollingTimerRef.current = setTimeout(poll, 2000);
+  }, [boardId, loadRefinedDraft, cancelPolling]);
 
   const handleRefine = useCallback(async () => {
+    cancelPolling();
     setRefining(true);
     setRefineTimeout(false);
     setError(null);
@@ -857,35 +875,62 @@ export function BoardOnboardingWizard({
       setRefineStatus("pending");
       startRefinePolling(Date.now());
     } catch (err) {
+      cancelPolling();
       setError(err instanceof Error ? err.message : "Failed to refine");
       setRefining(false);
       setRefineStatus("failed");
     }
-  }, [boardId, startRefinePolling]);
+  }, [boardId, startRefinePolling, cancelPolling]);
+
+  const allRefineQuestionsAnswered = useMemo(() => {
+    return refineQuestions.every((q) => {
+      const answer = refineAnswers[q.id];
+      if (!answer) return false;
+      if (q.options && q.options.length > 0) {
+        return q.options.some((opt) => opt.id === answer);
+      }
+      return answer.trim().length > 0;
+    });
+  }, [refineQuestions, refineAnswers]);
 
   const handleSubmitRefineAnswers = useCallback(async () => {
+    if (!allRefineQuestionsAnswered) {
+      setError("Please answer all questions before submitting.");
+      return;
+    }
     setError(null);
     setRefining(true);
     setRefineTimeout(false);
     try {
       for (const q of refineQuestions) {
         const answer = refineAnswers[q.id];
-        if (answer) {
-          await customFetch(`/boards/${boardId}/onboarding/refine-answer`, {
-            method: "POST",
-            body: JSON.stringify({ question_id: q.id, answer }),
-          });
-        }
+        if (!answer) continue;
+        const isOtherAnswer = q.options && q.options.length > 0 && !q.options.some((opt) => opt.id === answer);
+        await customFetch(`/boards/${boardId}/onboarding/refine-answer`, {
+          method: "POST",
+          body: JSON.stringify({
+            question_id: q.id,
+            answer,
+            other_text: isOtherAnswer ? answer : undefined,
+          }),
+        });
       }
       setRefineStatus("pending");
       setRefineAnswers({});
       setRefineQuestions([]);
       startRefinePolling(Date.now());
     } catch (err) {
+      cancelPolling();
       setError(err instanceof Error ? err.message : "Failed to submit answers");
       setRefining(false);
     }
-  }, [boardId, refineQuestions, refineAnswers, startRefinePolling]);
+  }, [boardId, refineQuestions, refineAnswers, startRefinePolling, cancelPolling, allRefineQuestionsAnswered]);
+
+  useEffect(() => {
+    return () => {
+      cancelPolling();
+    };
+  }, [cancelPolling]);
 
   const handleConfirm = useCallback(async () => {
     setLoading(true);
@@ -1377,7 +1422,7 @@ export function BoardOnboardingWizard({
                     )}
                   </div>
                 ))}
-                <Button onClick={handleSubmitRefineAnswers} className="w-full">
+                <Button onClick={handleSubmitRefineAnswers} disabled={!allRefineQuestionsAnswered || refining} className="w-full">
                   Submit answers
                 </Button>
               </div>
