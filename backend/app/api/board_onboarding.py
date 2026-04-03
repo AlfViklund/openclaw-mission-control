@@ -833,21 +833,54 @@ def _extract_current_refine_questions(messages: list) -> list[dict]:
 
 
 def _extract_refine_answers(messages: list) -> dict[str, dict[str, str]]:
-    """Collect all refine answers from structured message fields."""
+    """Collect all refine answers from structured message fields, with legacy string fallback."""
     answers: dict[str, dict[str, str]] = {}
     for msg in messages:
-        if isinstance(msg, dict) and msg.get("refine_answer"):
-            qid = msg["refine_answer"]
-            answers[qid] = {
-                "answer": msg.get("refine_answer_value", ""),
-                "other_text": msg.get("refine_answer_other_text", ""),
+        if not isinstance(msg, dict):
+            continue
+        raw = msg.get("refine_answer")
+        if isinstance(raw, dict):
+            qid = str(raw.get("question_id", "")).strip()
+            if qid:
+                answers[qid] = {
+                    "answer": str(raw.get("answer", "")).strip(),
+                    "other_text": str(raw.get("other_text", "")).strip(),
+                }
+            continue
+        # Legacy fallback: flat fields from earlier implementation
+        if isinstance(raw, str) and raw:
+            answers[raw] = {
+                "answer": str(msg.get("refine_answer_value", "")).strip(),
+                "other_text": str(msg.get("refine_answer_other_text", "")).strip(),
             }
+            continue
+        # Legacy fallback: parse from content string
+        if isinstance(raw, str) and raw:
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.startswith(f"[Wizard] Refine answer to {raw}: "):
+                rest = content[len(f"[Wizard] Refine answer to {raw}: "):]
+                answer_text = rest
+                other_text = ""
+                other_marker = " (other: "
+                if other_marker in rest:
+                    idx = rest.index(other_marker)
+                    answer_text = rest[:idx]
+                    other_text = rest[idx + len(other_marker):-1] if rest.endswith(")") else rest[idx + len(other_marker):]
+                answers[raw] = {"answer": answer_text, "other_text": other_text}
     return answers
 
 
-def _is_other_option(option_id: str) -> bool:
-    """Check if an option id represents an 'other/custom/free_text' choice."""
-    return option_id in ("other", "custom", "free_text")
+def _is_other_like_option(option: dict[str, object]) -> bool:
+    """Check if an option represents an 'other/custom/free_text' choice by id or label."""
+    opt_id = str(option.get("id", "")).strip().lower()
+    label = str(option.get("label", "")).strip().lower()
+    return (
+        opt_id in {"other", "custom", "free_text"}
+        or "other" in label
+        or "i'll type it" in label
+        or "free text" in label
+        or "custom" in label
+    )
 
 
 def _validate_refine_answer(
@@ -856,7 +889,7 @@ def _validate_refine_answer(
     answer: str,
     other_text: str | None = None,
 ) -> None:
-    """Validate that question_id exists, answer matches an option, and other_text is present when required."""
+    """Validate refine answer: question exists, option valid, other_text required when needed."""
     target = None
     for q in questions:
         if isinstance(q, dict) and q.get("id") == question_id:
@@ -881,11 +914,16 @@ def _validate_refine_answer(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Answer '{answer}' is not a valid option for question {question_id}",
             )
-        if _is_other_option(answer) and not (other_text or "").strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Question '{question_id}' requires additional text when '{answer}' is selected",
-            )
+        selected_option = next(
+            (opt for opt in options if str(opt.get("id")) == answer),
+            None,
+        )
+        if selected_option is not None and _is_other_like_option(selected_option):
+            if not (other_text or "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Question '{question_id}' requires additional text when '{answer}' is selected",
+                )
     elif not answer.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -920,9 +958,11 @@ async def answer_refine_question(
             "content": f"[Wizard] Refine answer to {payload.question_id}: {payload.answer}"
                        + (f" (other: {payload.other_text})" if payload.other_text else ""),
             "timestamp": utcnow().isoformat(),
-            "refine_answer": payload.question_id,
-            "refine_answer_value": payload.answer,
-            "refine_answer_other_text": payload.other_text or "",
+            "refine_answer": {
+                "question_id": payload.question_id,
+                "answer": payload.answer,
+                "other_text": payload.other_text or "",
+            },
         }
     )
 
@@ -946,6 +986,7 @@ async def answer_refine_question(
         draft=cast(dict[str, Any], onboarding.draft_goal),
         correlation_id=f"onboarding.refine-answer:{board.id}:{onboarding.id}",
         refine_answers=refine_answers if refine_answers else None,
+        refine_questions=current_questions if current_questions else None,
     )
 
     refine_state = _compute_refine_state(onboarding)

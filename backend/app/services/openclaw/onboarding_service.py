@@ -145,6 +145,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         draft: dict[str, Any],
         correlation_id: str | None = None,
         refine_answers: dict[str, dict[str, str]] | None = None,
+        refine_questions: list[dict[str, Any]] | None = None,
     ) -> str:
         trace_id = GatewayDispatchService.resolve_trace_id(
             correlation_id, prefix="onboarding.refine"
@@ -160,7 +161,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         ).require_gateway_config_for_board(board)
         session_key = GatewayAgentIdentity.session_key(gateway)
         base_url = settings.base_url
-        prompt = self._build_refine_prompt(board, draft, base_url, refine_answers)
+        prompt = self._build_refine_prompt(board, draft, base_url, refine_answers, refine_questions)
         try:
             await self._dispatch_gateway_message(
                 session_key=session_key,
@@ -204,28 +205,40 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         draft: dict[str, Any],
         base_url: str,
         refine_answers: dict[str, dict[str, str]] | None = None,
+        refine_questions: list[dict[str, Any]] | None = None,
     ) -> str:
         draft_json = __import__("json").dumps(draft, indent=2, default=str)
-        answers_section = ""
-        if refine_answers:
-            answers_lines = []
-            for qid, data in refine_answers.items():
-                line = f"- Question {qid}: {data.get('answer', '')}"
-                if data.get('other_text'):
-                    line += f" (details: {data['other_text']})"
-                answers_lines.append(line)
-            answers_section = (
-                "\n\nREFINE_QUESTIONS_AND_USER_ANSWERS:\n"
-                + "\n".join(answers_lines)
-                + "\n\nUse these answers to refine the draft. The user has provided "
-                "clarifications that should be incorporated into the configuration."
-            )
+
+        context_section = ""
+        if refine_questions or refine_answers:
+            lines: list[str] = ["\n\nREFINE QUESTIONS ASKED BY AI:"]
+            if refine_questions:
+                for q in refine_questions:
+                    qid = q.get("id", "?")
+                    qtext = q.get("question", "")
+                    lines.append(f"- {qid}: {qtext}")
+                    opts = q.get("options", [])
+                    if opts:
+                        lines.append("  Options:")
+                        for opt in opts:
+                            oid = opt.get("id", "?")
+                            olabel = opt.get("label", "")
+                            lines.append(f"  - {oid}: {olabel}")
+            if refine_answers:
+                lines.append("\nUSER ANSWERS:")
+                for qid, data in refine_answers.items():
+                    lines.append(f"- {qid}:")
+                    lines.append(f"  selected_option: {data.get('answer', '')}")
+                    if data.get("other_text"):
+                        lines.append(f"  other_text: {data['other_text']}")
+            context_section = "\n".join(lines) + "\n\nUse these answers to refine the draft. The user has provided clarifications that should be incorporated into the configuration."
+
         return (
             "PROJECT BOOTSTRAP REFINE\n\n"
             f"Board Name: {board.name}\n"
             f"Board Description: {board.description or '(not provided)'}\n\n"
             "CURRENT_DRAFT:\n"
-            f"{draft_json}{answers_section}\n\n"
+            f"{draft_json}{context_section}\n\n"
             "YOUR TASK:\n"
             "You are the AI refinement assistant for project bootstrap. The user has already "
             "completed a structured wizard. Your role is NOT to redo the onboarding — "

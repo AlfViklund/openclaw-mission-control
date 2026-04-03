@@ -132,6 +132,20 @@ interface BoardBootstrapResult {
   bootstrap_summary?: string;
 }
 
+function isOtherLikeOption(option: { id: string; label: string }): boolean {
+  const id = option.id.toLowerCase();
+  const label = option.label.toLowerCase();
+  return (
+    id === "other" ||
+    id === "custom" ||
+    id === "free_text" ||
+    label.includes("other") ||
+    label.includes("i'll type it") ||
+    label.includes("free text") ||
+    label.includes("custom")
+  );
+}
+
 /**
  * Returns the first incomplete wizard step for restore-progress logic.
  *
@@ -887,8 +901,9 @@ export function BoardOnboardingWizard({
       const entry = refineAnswers[q.id];
       if (!entry || !entry.answer) return false;
       if (q.options && q.options.length > 0) {
-        const isOther = entry.answer === "other" || entry.answer === "custom" || entry.answer === "free_text";
-        if (isOther) return (entry.otherText ?? "").trim().length > 0;
+        const selectedOption = q.options.find((opt) => opt.id === entry.answer);
+        const requiresOtherText = selectedOption ? isOtherLikeOption(selectedOption) : false;
+        if (requiresOtherText) return (entry.otherText ?? "").trim().length > 0;
         return q.options.some((opt) => opt.id === entry.answer);
       }
       return entry.answer.trim().length > 0;
@@ -903,19 +918,23 @@ export function BoardOnboardingWizard({
     setError(null);
     setRefining(true);
     setRefineTimeout(false);
+
+    const normalizedAnswers = refineQuestions.map((q) => {
+      const entry = refineAnswers[q.id];
+      const selectedOption = q.options?.find((opt) => opt.id === entry?.answer);
+      const requiresOtherText = selectedOption ? isOtherLikeOption(selectedOption) : false;
+      return {
+        question_id: q.id,
+        answer: entry?.answer ?? "",
+        other_text: requiresOtherText ? (entry?.otherText ?? "").trim() : undefined,
+      };
+    });
+
     try {
-      for (const q of refineQuestions) {
-        const entry = refineAnswers[q.id];
-        if (!entry) continue;
-        const isOther = q.options && q.options.length > 0 &&
-          (entry.answer === "other" || entry.answer === "custom" || entry.answer === "free_text");
+      for (const na of normalizedAnswers) {
         await customFetch(`/boards/${boardId}/onboarding/refine-answer`, {
           method: "POST",
-          body: JSON.stringify({
-            question_id: q.id,
-            answer: entry.answer,
-            other_text: isOther ? (entry.otherText ?? "") : undefined,
-          }),
+          body: JSON.stringify(na),
         });
       }
       setRefineStatus("pending");
@@ -1402,15 +1421,15 @@ export function BoardOnboardingWizard({
               <div className="space-y-4">
                 {refineQuestions.map((q) => {
                   const current = refineAnswers[q.id];
-                  const isOtherSelected = current?.answer === "other" || current?.answer === "custom" || current?.answer === "free_text";
+                  const selectedOption = q.options?.find((opt) => opt.id === current?.answer);
+                  const isOtherSelected = selectedOption ? isOtherLikeOption(selectedOption) : false;
                   return (
                     <div key={q.id} className="rounded-lg border border-[var(--border)] p-3">
                       <p className="text-sm font-medium text-strong">{q.question}</p>
                       {q.options && q.options.length > 0 ? (
                         <div className="mt-2 space-y-1">
                           {q.options.map((opt) => {
-                            const optIsOther = opt.id === "other" || opt.id === "custom" || opt.id === "free_text" ||
-                              opt.label.toLowerCase().includes("other") || opt.label.toLowerCase().includes("i'll type it");
+                            const optIsOther = isOtherLikeOption(opt);
                             return (
                               <div key={opt.id}>
                                 <RadioOption

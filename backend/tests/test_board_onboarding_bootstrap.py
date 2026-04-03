@@ -1466,9 +1466,11 @@ class TestRefinePromptIncludesAnswers:
 
         prompt = service._build_refine_prompt(board, draft, "http://localhost:8000", refine_answers)
 
-        assert "REFINE_QUESTIONS_AND_USER_ANSWERS" in prompt
-        assert "Question q1: web" in prompt
-        assert "Question q2: other (details: custom platform)" in prompt
+        assert "REFINE QUESTIONS ASKED BY AI" in prompt
+        assert "USER ANSWERS" in prompt
+        assert "selected_option: web" in prompt
+        assert "selected_option: other" in prompt
+        assert "other_text: custom platform" in prompt
         assert "Use these answers to refine the draft" in prompt
 
     def test_prompt_without_answers_has_no_answers_section(self) -> None:
