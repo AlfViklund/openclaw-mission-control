@@ -7,6 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+
+def _fake_onboarding(status: str, messages: list | None = None):
+    return SimpleNamespace(status=status, messages=messages or [])
+
+import json
 import pytest
 
 from app.schemas.board_onboarding import (
@@ -1154,24 +1159,17 @@ class TestConfirmContract:
 class TestRefineStateComputation:
     """Tests for _compute_refine_state helper in the onboarding API."""
 
-    def _make_onboarding(self, status: str, messages: list | None = None):
-        from types import SimpleNamespace
-        return SimpleNamespace(
-            status=status,
-            messages=messages or [],
-        )
-
     def test_idle_when_no_refine_messages(self) -> None:
         from app.api.board_onboarding import _compute_refine_state
 
-        onboarding = self._make_onboarding("active", [])
+        onboarding = _fake_onboarding("active", [])
         state = _compute_refine_state(onboarding)
         assert state["refine_status"] == "idle"
 
     def test_pending_when_refining_and_no_result(self) -> None:
         from app.api.board_onboarding import _compute_refine_state
 
-        onboarding = self._make_onboarding("refining", [])
+        onboarding = _fake_onboarding("refining", [])
         state = _compute_refine_state(onboarding)
         assert state["refine_status"] == "pending"
 
@@ -1182,7 +1180,7 @@ class TestRefineStateComputation:
             {"role": "user", "content": "refine", "refine": "refining"},
             {"role": "assistant", "content": '{"summary": "looks good"}', "refine": "complete", "timestamp": "2026-04-03T12:00:00Z"},
         ]
-        onboarding = self._make_onboarding("completed", messages)
+        onboarding = _fake_onboarding("completed", messages)
         state = _compute_refine_state(onboarding)
         assert state["refine_status"] == "complete"
         assert state["refine_summary"] == "looks good"
@@ -1194,7 +1192,7 @@ class TestRefineStateComputation:
             {"role": "user", "content": "refine", "refine": "refining"},
             {"role": "assistant", "content": '{"questions": [{"id": "q1", "question": "Why?", "options": []}], "summary": "need info"}', "refine": "questions", "timestamp": "2026-04-03T12:00:00Z"},
         ]
-        onboarding = self._make_onboarding("active", messages)
+        onboarding = _fake_onboarding("active", messages)
         state = _compute_refine_state(onboarding)
         assert state["refine_status"] == "questions"
         assert len(state["refine_questions"]) == 1
@@ -1207,6 +1205,129 @@ class TestRefineStateComputation:
             {"role": "user", "content": "refine", "refine": "refining"},
             {"role": "assistant", "content": "{}", "refine": "failed", "timestamp": "2026-04-03T12:00:00Z"},
         ]
-        onboarding = self._make_onboarding("active", messages)
+        onboarding = _fake_onboarding("active", messages)
         state = _compute_refine_state(onboarding)
         assert state["refine_status"] == "failed"
+
+
+class TestRefineAnswerValidation:
+    """Tests for refine-answer endpoint validation logic."""
+
+    def _make_questions_payload(self, questions: list) -> list:
+        return [
+            {
+                "role": "assistant",
+                "content": json.dumps({"questions": questions}),
+                "refine": "questions",
+                "timestamp": "2026-04-03T12:00:00Z",
+            }
+        ]
+
+    def test_extract_current_refine_questions_finds_last_questions(self) -> None:
+        from app.api.board_onboarding import _extract_current_refine_questions
+
+        messages = [
+            {"role": "user", "content": "refine", "refine": "refining"},
+            {
+                "role": "assistant",
+                "content": json.dumps({"questions": [{"id": "q1", "question": "Why?", "options": []}]}),
+                "refine": "questions",
+                "timestamp": "2026-04-03T12:00:00Z",
+            },
+        ]
+        questions = _extract_current_refine_questions(messages)
+        assert len(questions) == 1
+        assert questions[0]["id"] == "q1"
+
+    def test_extract_current_refine_questions_returns_empty_when_no_questions(self) -> None:
+        from app.api.board_onboarding import _extract_current_refine_questions
+
+        messages = [{"role": "user", "content": "refine", "refine": "refining"}]
+        questions = _extract_current_refine_questions(messages)
+        assert questions == []
+
+    def test_validate_refine_answer_rejects_unknown_question_id(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [{"id": "q1", "question": "Why?", "options": []}]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q99", "some answer")
+        assert exc_info.value.status_code == 400
+        assert "Unknown refine question" in str(exc_info.value.detail)
+
+    def test_validate_refine_answer_rejects_invalid_option(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Platform?",
+                "options": [{"id": "web", "label": "Web"}, {"id": "mobile", "label": "Mobile"}],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q1", "desktop")
+        assert exc_info.value.status_code == 400
+        assert "not a valid option" in str(exc_info.value.detail)
+
+    def test_validate_refine_answer_accepts_valid_option(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Platform?",
+                "options": [{"id": "web", "label": "Web"}, {"id": "mobile", "label": "Mobile"}],
+            }
+        ]
+        # Should not raise
+        _validate_refine_answer(questions, "q1", "web")
+
+    def test_validate_refine_answer_accepts_free_text_when_no_options(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+
+        questions = [{"id": "q1", "question": "Describe your setup", "options": []}]
+        # Should not raise — free text answer
+        _validate_refine_answer(questions, "q1", "my custom setup description")
+
+    def test_refine_result_questions_updates_messages(self) -> None:
+        """When refine-result has status=questions, messages should contain refine:questions."""
+        from app.api.board_onboarding import _compute_refine_state
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": json.dumps({"questions": [{"id": "q1", "question": "Why?", "options": []}]}),
+                "refine": "questions",
+                "timestamp": "2026-04-03T12:00:00Z",
+            }
+        ]
+        onboarding = _fake_onboarding("active", messages)
+        state = _compute_refine_state(onboarding)
+        assert state["refine_status"] == "questions"
+        assert len(state["refine_questions"]) == 1
+
+    def test_refine_result_complete_updates_draft_goal(self) -> None:
+        """When refine-result has status=complete, draft_goal should be updated."""
+        from app.schemas.board_onboarding import (
+            BoardOnboardingDraftUpdate,
+            BoardOnboardingProjectInfo,
+            BoardOnboardingRefineResult,
+        )
+
+        result = BoardOnboardingRefineResult(
+            status="complete",
+            draft=BoardOnboardingDraftUpdate(
+                project_info=BoardOnboardingProjectInfo(
+                    project_mode="new_feature",
+                    project_stage="spec_exists",
+                ),
+            ),
+            summary="Updated project mode.",
+        )
+        assert result.status == "complete"
+        assert result.draft is not None
+        assert result.draft.project_info is not None
+        assert result.draft.project_info.project_mode == "new_feature"

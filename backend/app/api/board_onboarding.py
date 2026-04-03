@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
@@ -819,6 +819,51 @@ class BoardOnboardingRefineAnswer(SQLModel):
     other_text: str | None = None
 
 
+def _extract_current_refine_questions(messages: list) -> list[dict]:
+    """Return the list of refine questions from the last refine:questions message."""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("refine") == "questions":
+            content = msg.get("content", "{}")
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            return payload.get("questions", [])
+    return []
+
+
+def _validate_refine_answer(
+    questions: list[dict],
+    question_id: str,
+    answer: str,
+) -> None:
+    """Validate that question_id exists and answer matches an option (if options exist)."""
+    target = None
+    for q in questions:
+        if isinstance(q, dict) and q.get("id") == question_id:
+            target = q
+            break
+
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown refine question: {question_id}",
+        )
+
+    options = target.get("options", [])
+    if isinstance(options, list) and len(options) > 0:
+        valid_ids = {
+            str(opt.get("id"))
+            for opt in options
+            if isinstance(opt, dict) and "id" in opt
+        }
+        if answer not in valid_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Answer '{answer}' is not a valid option for question {question_id}",
+            )
+
+
 @router.post("/refine-answer", response_model=BoardOnboardingReadWithRefine)
 async def answer_refine_question(
     payload: BoardOnboardingRefineAnswer,
@@ -837,10 +882,17 @@ async def answer_refine_question(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 
     messages = list(onboarding.messages or [])
+    current_questions = _extract_current_refine_questions(messages)
+    _validate_refine_answer(current_questions, payload.question_id, payload.answer)
+
+    answer_detail = payload.answer
+    if payload.other_text:
+        answer_detail = f"{payload.answer} (other: {payload.other_text})"
+
     messages.append(
         {
             "role": "user",
-            "content": f"[Wizard] Refine answer to {payload.question_id}: {payload.answer}",
+            "content": f"[Wizard] Refine answer to {payload.question_id}: {answer_detail}",
             "timestamp": utcnow().isoformat(),
             "refine_answer": payload.question_id,
         }
@@ -862,7 +914,7 @@ async def answer_refine_question(
     dispatcher = BoardOnboardingMessagingService(session)
     await dispatcher.dispatch_refine_prompt(
         board=board,
-        draft=onboarding.draft_goal,
+        draft=cast(dict[str, Any], onboarding.draft_goal),
         correlation_id=f"onboarding.refine-answer:{board.id}:{onboarding.id}",
     )
 

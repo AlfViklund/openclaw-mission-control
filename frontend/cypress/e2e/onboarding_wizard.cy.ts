@@ -736,4 +736,196 @@ describe("BoardOnboardingWizard E2E", () => {
       cy.contains("h2", /bootstrap complete/i, { timeout: 15_000 }).should("be.visible");
     });
   });
+
+  describe("refine complete updates review", () => {
+    it("shows refined summary in review after refine completes", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/refine`, {
+        statusCode: 200,
+        body: { data: {} },
+      }).as("refinePost");
+
+      let pollCount = 0;
+      cy.intercept("GET", `${apiBase}/boards/${boardId}/onboarding*`, (req) => {
+        if (pollCount === 0) {
+          pollCount++;
+          req.reply({
+            statusCode: 200,
+            body: {
+              data: {
+                id: "sess-1",
+                board_id: boardId,
+                status: "active",
+                draft_goal: {
+                  project_info: {
+                    project_mode: "new_product",
+                    project_stage: "codebase_exists",
+                    first_milestone_type: "mvp",
+                    delivery_mode: "balanced",
+                    deadline_mode: "none",
+                  },
+                  lead_agent: { name: "Ava" },
+                  team_plan: { provision_mode: "full_team" },
+                  planning_policy: { bootstrap_mode: "generate_backlog" },
+                  qa_policy: { strictness: "balanced" },
+                  automation_policy: { automation_profile: "normal" },
+                },
+                refine_status: "idle",
+              },
+            },
+          });
+        } else {
+          req.reply({
+            statusCode: 200,
+            body: {
+              data: {
+                id: "sess-1",
+                board_id: boardId,
+                status: "completed",
+                draft_goal: {
+                  project_info: {
+                    project_mode: "new_product",
+                    project_stage: "codebase_exists",
+                    first_milestone_type: "mvp",
+                    delivery_mode: "balanced",
+                    deadline_mode: "none",
+                  },
+                  lead_agent: { name: "Ava" },
+                  team_plan: { provision_mode: "full_team" },
+                  planning_policy: { bootstrap_mode: "generate_backlog" },
+                  qa_policy: { strictness: "balanced" },
+                  automation_policy: { automation_profile: "normal" },
+                },
+                refine_status: "complete",
+                refine_summary: "Configuration looks solid.",
+              },
+            },
+          });
+        }
+      }).as("onboardingGet");
+
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+      cy.wait("@onboardingGet", { timeout: 10_000 });
+
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /^back$/i).click();
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+
+      cy.contains("button", /let ai refine/i).click();
+      cy.wait("@refinePost", { timeout: 10_000 });
+
+      cy.contains(/configuration refined/i, { timeout: 15_000 }).should("be.visible");
+
+      cy.contains("button", /^review$/i).click();
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("Configuration has been refined by AI.").should("be.visible");
+      cy.contains("Configuration looks solid.").should("be.visible");
+    });
+  });
+
+  describe("refine questions path", () => {
+    it("shows questions, submits answers, and validates request", () => {
+      stubBoard();
+      stubEmptySse();
+      interceptDraft();
+
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/refine`, {
+        statusCode: 200,
+        body: { data: {} },
+      }).as("refinePost");
+
+      let refineAnswerBody: Record<string, unknown> = {};
+      cy.intercept("POST", `${apiBase}/boards/${boardId}/onboarding/refine-answer`, (req) => {
+        refineAnswerBody = req.body;
+        req.reply({
+          statusCode: 200,
+          body: {
+            data: {
+              id: "sess-1",
+              board_id: boardId,
+              status: "refining",
+              draft_goal: {},
+              refine_status: "pending",
+              refine_questions: [],
+            },
+          },
+        });
+      }).as("refineAnswerPost");
+
+      let pollCount = 0;
+      cy.intercept("GET", `${apiBase}/boards/${boardId}/onboarding*`, (req) => {
+        if (pollCount === 0) {
+          pollCount++;
+          req.reply({
+            statusCode: 200,
+            body: {
+              data: {
+                id: "sess-1",
+                board_id: boardId,
+                status: "active",
+                draft_goal: {
+                  project_info: {
+                    project_mode: "new_product",
+                    project_stage: "codebase_exists",
+                    first_milestone_type: "mvp",
+                  },
+                  lead_agent: { name: "Ava" },
+                  team_plan: { provision_mode: "full_team" },
+                  planning_policy: { bootstrap_mode: "generate_backlog" },
+                  qa_policy: { strictness: "balanced" },
+                  automation_policy: { automation_profile: "normal" },
+                },
+                refine_status: "idle",
+              },
+            },
+          });
+        } else {
+          req.reply({
+            statusCode: 200,
+            body: {
+              data: {
+                id: "sess-1",
+                board_id: boardId,
+                status: "active",
+                draft_goal: {},
+                refine_status: "questions",
+                refine_questions: [
+                  { id: "q1", question: "What is the primary platform?", options: [{ id: "web", label: "Web" }, { id: "mobile", label: "Mobile" }] },
+                ],
+                refine_summary: "Need clarification.",
+              },
+            },
+          });
+        }
+      }).as("onboardingGet");
+
+      interceptConfirmWithBootstrap();
+
+      openOnboardingWizard();
+      cy.wait("@onboardingGet", { timeout: 10_000 });
+
+      cy.contains("h2", /review configuration/i, { timeout: 10_000 }).should("be.visible");
+      cy.contains("button", /^back$/i).click();
+      cy.contains("h2", /ai refinement/i, { timeout: 10_000 }).should("be.visible");
+
+      cy.contains("button", /let ai refine/i).click();
+      cy.wait("@refinePost", { timeout: 10_000 });
+
+      cy.contains("What is the primary platform?", { timeout: 15_000 }).should("be.visible");
+      cy.contains("button", /web/i).click();
+
+      cy.contains("button", /submit answers/i).click();
+      cy.wait("@refineAnswerPost", { timeout: 10_000 });
+
+      cy.then(() => {
+        expect(refineAnswerBody).to.have.property("question_id", "q1");
+        expect(refineAnswerBody).to.have.property("answer", "web");
+      });
+    });
+  });
 });

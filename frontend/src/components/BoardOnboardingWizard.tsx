@@ -132,6 +132,26 @@ interface BoardBootstrapResult {
   bootstrap_summary?: string;
 }
 
+/**
+ * Returns the first incomplete wizard step for restore-progress logic.
+ *
+ * Product policy (do not change without explicit agreement):
+ *
+ * Step 1 — project_mode + project_stage (required)
+ * Step 2 — first_milestone_type + delivery + deadline (required)
+ * Step 3 — context (optional, always skipped in restore)
+ * Step 4 — lead_agent.name (required)
+ * Step 5 — team_plan.provision_mode (required)
+ * Step 6 — planning_policy.bootstrap_mode (required)
+ * Step 7 — qa_policy.strictness (required)
+ * Step 8 — automation_policy.automation_profile (required)
+ * Step 9 — AI refine (shown only when refine is pending or has questions)
+ * Step 10 — Review (shown when steps 1–8 are complete and refine is idle/complete)
+ * Step 11 — Outcome (never returned by this function; set explicitly after confirm)
+ *
+ * Important: this function only returns 1–10. Step 11 (outcome) is set
+ * explicitly in handleConfirm after a successful bootstrap, never restored.
+ */
 export function computeCurrentStep(
   d: BoardOnboardingDraftUpdate,
   refineStatus?: "idle" | "pending" | "questions" | "complete",

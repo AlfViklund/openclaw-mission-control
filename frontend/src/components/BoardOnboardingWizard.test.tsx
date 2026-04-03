@@ -5,7 +5,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { BoardOnboardingWizard, computeCurrentStep } from "./BoardOnboardingWizard";
 
@@ -424,6 +424,270 @@ describe("BoardOnboardingWizard", () => {
       );
 
       expect(screen.queryByText("Bootstrap complete")).toBeNull();
+    });
+  });
+
+  describe("refine flow — polling and state transitions", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("shows refine button on step 9 when status is idle", async () => {
+      customFetchMock.mockImplementation((url: string) => {
+        if (url.includes("/onboarding") && !url.includes("/draft") && !url.includes("/refine")) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              draft_goal: {
+                project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+                lead_agent: { name: "Ava" },
+                team_plan: { provision_mode: "full_team" },
+                planning_policy: { bootstrap_mode: "generate_backlog" },
+                qa_policy: { strictness: "balanced" },
+                automation_policy: { automation_profile: "normal" },
+              },
+              refine_status: "idle",
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("Review configuration");
+      });
+
+      // Navigate back to step 9
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("AI refinement");
+      });
+      expect(screen.getByRole("button", { name: /let ai refine/i })).toBeTruthy();
+    });
+
+    it("shows questions UI when refine_status is questions on restore", async () => {
+      customFetchMock.mockImplementation((url: string) => {
+        if (url.includes("/onboarding") && !url.includes("/draft") && !url.includes("/refine")) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              draft_goal: {
+                project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+                lead_agent: { name: "Ava" },
+                team_plan: { provision_mode: "full_team" },
+                planning_policy: { bootstrap_mode: "generate_backlog" },
+                qa_policy: { strictness: "balanced" },
+                automation_policy: { automation_profile: "normal" },
+              },
+              refine_status: "questions",
+              refine_questions: [
+                { id: "q1", question: "What is the target audience?", options: [] },
+              ],
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("AI refinement");
+      });
+      expect(screen.getByText("What is the target audience?")).toBeTruthy();
+    });
+
+    it("shows refined indicator when refine_status is complete on restore", async () => {
+      customFetchMock.mockImplementation((url: string) => {
+        if (url.includes("/onboarding") && !url.includes("/draft") && !url.includes("/refine")) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              draft_goal: {
+                project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+                lead_agent: { name: "Ava" },
+                team_plan: { provision_mode: "full_team" },
+                planning_policy: { bootstrap_mode: "generate_backlog" },
+                qa_policy: { strictness: "balanced" },
+                automation_policy: { automation_profile: "normal" },
+              },
+              refine_status: "complete",
+              refine_summary: "Configuration looks solid.",
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("Review configuration");
+      });
+      expect(screen.getByText("Configuration has been refined by AI.")).toBeTruthy();
+      expect(screen.getByText("Configuration looks solid.")).toBeTruthy();
+    });
+  });
+
+  describe("outcome — onConfirmed handoff", () => {
+    it("does not call onConfirmed until confirm completes", async () => {
+      const onConfirmedSpy = vi.fn();
+      let confirmResolve: ((value: unknown) => void) | null = null;
+      customFetchMock.mockImplementation((url: string) => {
+        if (url.includes("/confirm")) {
+          return new Promise((resolve) => {
+            confirmResolve = resolve;
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={onConfirmedSpy} />,
+      );
+
+      // Advance through all steps quickly
+      fireEvent.click(screen.getByText("New product"));
+      fireEvent.click(screen.getByText("Idea only"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
+      fireEvent.click(screen.getByText("MVP"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Project context"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Lead agent preferences"));
+      fireEvent.change(screen.getByPlaceholderText(/ava/i), { target: { value: "Ava" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Team on startup"));
+      fireEvent.click(screen.getByText(/only lead/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("How do we start work?"));
+      fireEvent.click(screen.getByText(/generate initial backlog/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Process strictness"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Agent activity level"));
+      fireEvent.click(screen.getByRole("button", { name: /review/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Review configuration"));
+
+      // Click confirm — should be pending
+      fireEvent.click(screen.getByRole("button", { name: /confirm.*bootstrap/i }));
+
+      // onConfirmed should NOT have been called yet
+      expect(onConfirmedSpy).not.toHaveBeenCalled();
+
+      // Resolve the confirm
+      if (confirmResolve) {
+        confirmResolve({
+          status: 200,
+          data: {
+            board: { id: "board-1", name: "Test", slug: "test", description: "", organization_id: "o1", created_at: "", updated_at: "" },
+            bootstrap: { lead_status: "created", team_status: "not_requested", team_agents_created: 0, team_created_roles: [], team_skipped_roles: [], team_failed_roles: [], planner_status: "not_requested" },
+          },
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("Bootstrap complete");
+        expect(onConfirmedSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    it("calls onConfirmed with board when Open project board is clicked", async () => {
+      const onConfirmedSpy = vi.fn();
+      customFetchMock.mockImplementation((url: string) => {
+        if (url.includes("/confirm")) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              board: { id: "board-1", name: "Test Board", slug: "test", description: "", organization_id: "o1", created_at: "", updated_at: "" },
+              bootstrap: { lead_status: "created", team_status: "not_requested", team_agents_created: 0, team_created_roles: [], team_skipped_roles: [], team_failed_roles: [], planner_status: "not_requested" },
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={onConfirmedSpy} />,
+      );
+
+      // Advance through all steps
+      fireEvent.click(screen.getByText("New product"));
+      fireEvent.click(screen.getByText("Idea only"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
+      fireEvent.click(screen.getByText("MVP"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Project context"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Lead agent preferences"));
+      fireEvent.change(screen.getByPlaceholderText(/ava/i), { target: { value: "Ava" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Team on startup"));
+      fireEvent.click(screen.getByText(/only lead/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("How do we start work?"));
+      fireEvent.click(screen.getByText(/generate initial backlog/i));
+      await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Process strictness"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Agent activity level"));
+      fireEvent.click(screen.getByRole("button", { name: /review/i }));
+
+      await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("Review configuration"));
+      fireEvent.click(screen.getByRole("button", { name: /confirm.*bootstrap/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("Bootstrap complete");
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /open project board/i }));
+
+      await waitFor(() => {
+        expect(onConfirmedSpy).toHaveBeenCalledTimes(1);
+        expect(onConfirmedSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "board-1", name: "Test Board" }),
+        );
+      });
     });
   });
 });
