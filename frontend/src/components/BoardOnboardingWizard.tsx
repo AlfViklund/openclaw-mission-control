@@ -571,7 +571,6 @@ export function BoardOnboardingWizard({
   const [refineSummary, setRefineSummary] = useState<string | null>(null);
   const [refineAnswers, setRefineAnswers] = useState<Record<string, { answer: string; otherText?: string }>>({});
   const [refineTimeout, setRefineTimeout] = useState(false);
-  const [refinePollingActive, setRefinePollingActive] = useState(false);
   const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [bootstrapResult, setBootstrapResult] = useState<BoardBootstrapResult | null>(null);
   const [confirmedBoard, setConfirmedBoard] = useState<BoardRead | null>(null);
@@ -819,19 +818,16 @@ export function BoardOnboardingWizard({
       clearTimeout(pollingTimerRef.current);
       pollingTimerRef.current = null;
     }
-    setRefinePollingActive(false);
   }, []);
 
   const startRefinePolling = useCallback((startTime: number) => {
     cancelPolling();
-    setRefinePollingActive(true);
 
     const poll = async () => {
       if (Date.now() - startTime > 60000) {
         setRefineTimeout(true);
         setRefining(false);
         setRefineStatus("failed");
-        setRefinePollingActive(false);
         return;
       }
       try {
