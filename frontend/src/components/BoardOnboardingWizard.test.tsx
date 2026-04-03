@@ -4,11 +4,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BoardOnboardingWizard } from "./BoardOnboardingWizard";
+import { BoardOnboardingWizard, computeCurrentStep } from "./BoardOnboardingWizard";
 
 const customFetchMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 
@@ -53,8 +52,8 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/input", () => ({
-  Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => (
-    <input type="text" {...props} data-testid={props["data-testid"]} />
+  Input: ({ "data-testid": testid, ...props }: React.InputHTMLAttributes<HTMLInputElement>) => (
+    <input type="text" data-testid={testid} {...props} />
   ),
 }));
 
@@ -98,29 +97,6 @@ vi.mock("@/components/ui/select", () => ({
     <span>{children}</span>
   ),
 }));
-
-async function clickNext() {
-  const btn = await waitFor(
-    () => {
-      const b = screen.queryByRole("button", { name: /next/i });
-      if (!b) return null;
-      if (b.hasAttribute("disabled")) return null;
-      return b;
-    },
-    { timeout: 5000 },
-  );
-  if (btn) {
-    const handleNextPromise = userEvent.click(btn);
-    await handleNextPromise;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
-
-async function waitForStep(title: string) {
-  await waitFor(() => {
-    expect(screen.getByTestId("dialog-title")).toHaveTextContent(title);
-  }, { timeout: 5000 });
-}
 
 describe("BoardOnboardingWizard", () => {
   beforeEach(() => {
@@ -169,8 +145,20 @@ describe("BoardOnboardingWizard", () => {
 
       fireEvent.click(screen.getByText("New product"));
       fireEvent.click(screen.getByText("Idea only"));
-      await clickNext();
-      await waitForStep("First milestone & delivery");
+
+      const nextBtn = await waitFor(
+        () => {
+          const b = screen.queryByRole("button", { name: /next/i });
+          if (!b) return null;
+          if (b.hasAttribute("disabled")) return null;
+          return b;
+        },
+        { timeout: 5000 },
+      );
+      fireEvent.click(nextBtn!);
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery");
+      });
 
       expect(screen.queryByPlaceholderText("e.g., End of Q2 2026")).toBeNull();
 
@@ -221,45 +209,65 @@ describe("BoardOnboardingWizard", () => {
     });
   });
 
-  describe("handleConfirm — onConfirmed receives real board", () => {
-    it("calls onConfirmed with the board from the confirm response, not an empty object", async () => {
+  describe("confirm — does NOT call onConfirmed immediately", () => {
+    it("does not call onConfirmed at step 1 (confirm button not rendered)", () => {
       const onConfirmedSpy = vi.fn();
-      const fakeBoard = {
-        id: "board-1",
-        name: "Test Board",
-        board_type: "goal",
-        created_at: "2026-04-03T00:00:00Z",
-      };
-
-      let confirmCalled = false;
-      customFetchMock.mockImplementation((url: string) => {
-        if (url.includes("/onboarding/confirm")) {
-          confirmCalled = true;
-          return Promise.resolve({
-            status: 200,
-            data: {
-              board: fakeBoard,
-              bootstrap: {
-                lead_status: "created",
-                lead_name: "Ava",
-                team_status: "provisioned",
-                team_agents_created: 2,
-                team_created_roles: ["developer", "qa_engineer"],
-                team_skipped_roles: [],
-                planner_status: "draft_created",
-              },
-            },
-          });
-        }
-        return Promise.resolve({ status: 200, data: {} });
-      });
 
       render(
         <BoardOnboardingWizard boardId="board-1" onConfirmed={onConfirmedSpy} />,
       );
 
+      expect(screen.getByTestId("dialog-title")).toHaveTextContent("What are we building?");
       expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
-      expect(confirmCalled).toBe(false);
+      expect(onConfirmedSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("restore progress — computeCurrentStep", () => {
+    it("returns 1 for empty draft", () => {
+      expect(computeCurrentStep({})).toBe(1);
+    });
+
+    it("returns 2 when draft has only project_mode", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product" } })).toBe(2);
+    });
+
+    it("returns 3 when draft has project_mode and project_stage but no milestone", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists" } })).toBe(3);
+    });
+
+    it("returns 5 when draft has milestone (skips to team step)", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" } })).toBe(5);
+    });
+
+    it("returns 6 when lead_agent name is set", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" }, lead_agent: { name: "Ava" } })).toBe(6);
+    });
+
+    it("returns 10 when all fields are filled", () => {
+      expect(computeCurrentStep({
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        lead_agent: { name: "Ava" },
+        team_plan: { provision_mode: "full_team" },
+        planning_policy: { bootstrap_mode: "generate_backlog" },
+        qa_policy: { strictness: "balanced" },
+        automation_policy: { automation_profile: "normal" },
+      })).toBe(10);
+    });
+  });
+
+  describe("confirm payload — objective is human-readable, not enum", () => {
+    it("confirm button not present at step 1 (confirm only appears at step 11)", () => {
+      customFetchMock.mockImplementation(() =>
+        Promise.resolve({ status: 200, data: {} }),
+      );
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
+      );
+
+      expect(screen.getByTestId("dialog-title")).toHaveTextContent("What are we building?");
+      expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
     });
   });
 

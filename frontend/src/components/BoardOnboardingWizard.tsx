@@ -120,12 +120,42 @@ interface BoardBootstrapResult {
   team_agents_created: number;
   team_created_roles: string[];
   team_skipped_roles: string[];
+  team_failed_roles?: string[];
   planner_status: string;
   planner_output_id?: string;
   automation_sync?: {
     status: string;
     agents_updated: number;
   };
+  bootstrap_summary?: string;
+}
+
+export function computeCurrentStep(d: BoardOnboardingDraftUpdate): number {
+  if (d.project_info?.project_mode && d.project_info?.project_stage && d.project_info?.first_milestone_type) {
+    if (d.lead_agent?.name) {
+      if (d.team_plan?.provision_mode) {
+        if (d.planning_policy?.bootstrap_mode) {
+          if (d.qa_policy?.strictness) {
+            if (d.automation_policy?.automation_profile) {
+              return 10;
+            }
+            return 9;
+          }
+          return 8;
+        }
+        return 7;
+      }
+      return 6;
+    }
+    return 5;
+  }
+  if (d.project_info?.project_mode && d.project_info?.project_stage) {
+    return 3;
+  }
+  if (d.project_info?.project_mode) {
+    return 2;
+  }
+  return 1;
 }
 
 interface _BoardOnboardingRead {
@@ -243,6 +273,152 @@ const AUTOMATION_PROFILE_OPTIONS: { value: AutomationProfile; label: string; pre
 
 function cn(...classes: (string | undefined | null | false)[]): string {
   return classes.filter(Boolean).join(" ");
+}
+
+function humanizeProjectMode(mode: ProjectMode | undefined): string {
+  const labels: Record<ProjectMode, string> = {
+    new_product: "New product",
+    existing_product_evolution: "Existing product evolution",
+    new_feature: "New feature",
+    stabilization: "Stabilization",
+    research_prototype: "Research/prototype",
+  };
+  return mode ? labels[mode] ?? mode : "Not set";
+}
+
+function humanizeProjectStage(stage: ProjectStage | undefined): string {
+  const labels: Record<ProjectStage, string> = {
+    idea_only: "Idea only",
+    spec_exists: "Spec exists",
+    codebase_exists: "Codebase exists",
+    active_development: "Active development",
+    shipped_product: "Shipped product",
+  };
+  return stage ? labels[stage] ?? stage : "Not set";
+}
+
+function humanizeMilestoneType(milestone: FirstMilestoneType | undefined): string {
+  const labels: Record<FirstMilestoneType, string> = {
+    mvp: "MVP",
+    architecture_plan: "Architecture plan",
+    key_feature: "Key feature",
+    stabilization: "Stabilization",
+    research_prototype: "Research/prototype",
+    other: "Other",
+  };
+  return milestone ? labels[milestone] ?? milestone : "Not set";
+}
+
+function humanizeDeliveryMode(mode: DeliveryMode | undefined): string {
+  const labels: Record<DeliveryMode, string> = {
+    quality_first: "Quality first",
+    balanced: "Balanced",
+    fast_first_milestone: "Fast first milestone",
+    aggressive_push: "Aggressive push",
+  };
+  return mode ? labels[mode] ?? mode : "Not set";
+}
+
+function humanizeAutonomyLevel(level: LeadAutonomyLevel | undefined): string {
+  const labels: Record<LeadAutonomyLevel, string> = {
+    ask_first: "Ask first",
+    balanced: "Balanced",
+    autonomous: "Autonomous",
+  };
+  return level ? labels[level] ?? level : "Default";
+}
+
+function humanizeProvisionMode(mode: ProvisionMode | undefined): string {
+  if (mode === "lead_only") return "Lead agent only";
+  if (mode === "full_team") return "Full standard team";
+  if (mode === "selected_roles") return "Selected roles";
+  return "Not set";
+}
+
+function humanizeBootstrapMode(mode: BootstrapMode | undefined): string {
+  const labels: Record<BootstrapMode, string> = {
+    generate_backlog: "Generate initial backlog",
+    empty_board: "Start with empty board",
+    lead_only: "Lead agent and team only",
+    draft_only: "Prepare draft plan",
+  };
+  return mode ? labels[mode] ?? mode : "Not set";
+}
+
+function humanizePlannerMode(mode: PlannerMode | undefined): string {
+  const labels: Record<PlannerMode, string> = {
+    spec_to_backlog: "Spec to backlog",
+    architecture_first: "Architecture first",
+    feature_first: "Feature first",
+    empty_board: "Empty board",
+  };
+  return mode ? labels[mode] ?? mode : "Not set";
+}
+
+function humanizeStrictness(strictness: QaStrictness | undefined): string {
+  const labels: Record<QaStrictness, string> = {
+    flexible: "Flexible — smoke tests, no approval gate",
+    balanced: "Balanced — standard QA with approval required",
+    strict: "Strict — rigorous engineering standards",
+  };
+  return strictness ? labels[strictness] ?? strictness : "Not set";
+}
+
+function humanizeAutomationProfile(profile: AutomationProfile | undefined): string {
+  const labels: Record<AutomationProfile, string> = {
+    economy: "Economy — slow heartbeat (online: 10min, idle: 1hr)",
+    normal: "Normal — balanced heartbeat (online: 5min, idle: 30min)",
+    active: "Active — fast heartbeat (online: 2min, idle: 15min)",
+    aggressive: "Aggressive — real-time heartbeat (online: 30sec, idle: 5min)",
+  };
+  return profile ? labels[profile] ?? profile : "Not set";
+}
+
+function humanizeLeadStatus(status: string | undefined, name: string | undefined): string {
+  if (status === "created") return `Lead '${name || "agent"}' created`;
+  if (status === "updated") return `Lead '${name || "agent"}' updated`;
+  if (status === "unchanged") return "Lead unchanged";
+  return status || "Unknown";
+}
+
+function humanizeTeamStatus(
+  status: string | undefined,
+  created: number,
+  createdRoles: string[],
+  failedRoles: string[],
+): string {
+  if (status === "provisioned") {
+    const roles = createdRoles.map(r => r.replace(/_/g, " ")).join(", ");
+    return `Team provisioned (${created} role${created !== 1 ? "s" : ""}: ${roles})`;
+  }
+  if (status === "already_provisioned") return "Team already provisioned";
+  if (status === "partial_failure") {
+    const ok = createdRoles.map(r => r.replace(/_/g, " ")).join(", ");
+    const fail = failedRoles.map(r => r.replace(/_/g, " ")).join(", ");
+    return `Team partial: ${ok || "none"} created, ${fail || "none"} failed`;
+  }
+  if (status === "failed") return "Team provisioning failed";
+  if (status === "not_requested") return "Team not requested";
+  return status || "Unknown";
+}
+
+function humanizePlannerStatus(status: string | undefined): string {
+  const labels: Record<string, string> = {
+    started: "Planner started",
+    draft_created: "Planner draft created",
+    queued: "Planner queued",
+    failed: "Planner bootstrap failed",
+    not_requested: "Planner not requested",
+  };
+  return status ? labels[status] ?? status : "Unknown";
+}
+
+function humanizeAutomationSyncStatus(status: string | undefined, updated: number): string {
+  if (status === "success") return `Automation synced — ${updated} agent${updated !== 1 ? "s" : ""} updated`;
+  if (status === "partial_failure") return `Automation partial sync (${updated} agents updated)`;
+  if (status === "failed") return "Automation sync failed";
+  if (status === "not_run") return "Automation sync not run";
+  return status || "Unknown";
 }
 
 interface RadioOptionProps {
@@ -386,7 +562,7 @@ export function BoardOnboardingWizard({
         if (result.status === 200 && result.data.draft_goal) {
           const goal = result.data.draft_goal as Partial<BoardOnboardingDraftUpdate>;
           if (goal && typeof goal === "object") {
-            setDraft({
+            const restoredDraft: BoardOnboardingDraftUpdate = {
               project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
               context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
               lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
@@ -394,7 +570,10 @@ export function BoardOnboardingWizard({
               planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
               qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
               automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
-            });
+            };
+            setDraft(restoredDraft);
+            const restoredStep = computeCurrentStep(restoredDraft);
+            setCurrentStep(restoredStep);
           }
         }
       } catch {
@@ -545,6 +724,32 @@ export function BoardOnboardingWizard({
     setCurrentStep((prev) => Math.max(prev - 1, 1));
   }, []);
 
+  const loadRefinedDraft = useCallback(async () => {
+    try {
+      const result = await customFetch<{
+        data: { draft_goal?: Record<string, unknown> | null; status?: string };
+        status: number;
+      }>(`/boards/${boardId}/onboarding`, { method: "GET" });
+
+      if (result.status === 200 && result.data.draft_goal) {
+        const goal = result.data.draft_goal as Partial<BoardOnboardingDraftUpdate>;
+        if (goal && typeof goal === "object") {
+          setDraft({
+            project_info: (goal.project_info as BoardOnboardingDraftUpdate["project_info"]) ?? {},
+            context: (goal.context as BoardOnboardingDraftUpdate["context"]) ?? {},
+            lead_agent: (goal.lead_agent as BoardOnboardingDraftUpdate["lead_agent"]) ?? {},
+            team_plan: (goal.team_plan as BoardOnboardingDraftUpdate["team_plan"]) ?? {},
+            planning_policy: (goal.planning_policy as BoardOnboardingDraftUpdate["planning_policy"]) ?? {},
+            qa_policy: (goal.qa_policy as BoardOnboardingDraftUpdate["qa_policy"]) ?? {},
+            automation_policy: (goal.automation_policy as BoardOnboardingDraftUpdate["automation_policy"]) ?? {},
+          });
+        }
+      }
+    } catch {
+      // Silently ignore — refine result will still show success state
+    }
+  }, [boardId]);
+
   const handleRefine = useCallback(async () => {
     setRefining(true);
     setError(null);
@@ -554,13 +759,15 @@ export function BoardOnboardingWizard({
         { method: "POST" },
       );
       if (result.status >= 400) throw new Error("Failed to refine");
+
+      await loadRefinedDraft();
       setRefined(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to refine");
     } finally {
       setRefining(false);
     }
-  }, [boardId]);
+  }, [boardId, loadRefinedDraft]);
 
   const handleConfirm = useCallback(async () => {
     setLoading(true);
@@ -572,21 +779,20 @@ export function BoardOnboardingWizard({
           method: "POST",
           body: JSON.stringify({
             board_type: "goal",
-            objective: draft.context?.description ?? draft.project_info?.project_mode,
+            objective: draft.context?.description || undefined,
           } as BoardOnboardingConfirm),
         },
       );
       if (result.status >= 400) throw new Error("Failed to confirm");
       setBootstrapResult(result.data.bootstrap);
       setConfirmedBoard(result.data.board);
-      onConfirmed(result.data.board);
       setCurrentStep(11);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to confirm");
     } finally {
       setLoading(false);
     }
-  }, [boardId, draft, onConfirmed]);
+  }, [boardId, draft]);
 
   const renderStep = () => {
     switch (currentStep) {
@@ -995,7 +1201,7 @@ export function BoardOnboardingWizard({
                 {refining ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Refining...
+                    AI is reviewing your configuration...
                   </>
                 ) : (
                   <>
@@ -1008,8 +1214,11 @@ export function BoardOnboardingWizard({
               <div className="rounded-xl border border-green-200 bg-green-50 p-4">
                 <div className="flex items-center gap-2 text-green-700">
                   <Check className="h-4 w-4" />
-                  <span className="font-medium">Configuration looks good. Ready to bootstrap.</span>
+                  <span className="font-medium">Configuration refined. Review updated.</span>
                 </div>
+                <p className="mt-1 text-sm text-green-600">
+                  Your configuration has been improved. Review the updated settings below.
+                </p>
               </div>
             )}
           </div>
@@ -1023,46 +1232,71 @@ export function BoardOnboardingWizard({
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                 <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Project</p>
                 <p className="mt-1 text-sm text-strong">
-                  {draft.project_info?.project_mode?.replace(/_/g, " ")} ·{" "}
-                  {draft.project_info?.project_stage?.replace(/_/g, " ")} ·{" "}
-                  {draft.project_info?.first_milestone_type}
+                  {humanizeProjectMode(draft.project_info?.project_mode)} —{" "}
+                  {humanizeProjectStage(draft.project_info?.project_stage)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Milestone &amp; Delivery</p>
+                <p className="mt-1 text-sm text-strong">
+                  {humanizeMilestoneType(draft.project_info?.first_milestone_type)}
+                  {draft.project_info?.first_milestone_text && ` — ${draft.project_info.first_milestone_text}`}
+                  {draft.project_info?.delivery_mode && ` · ${humanizeDeliveryMode(draft.project_info.delivery_mode)}`}
+                  {draft.project_info?.deadline_mode && draft.project_info.deadline_mode !== "none" &&
+                    ` · Deadline: ${draft.project_info.deadline_mode === "custom" ? (draft.project_info.deadline_text ?? "Custom") : draft.project_info.deadline_mode.replace(/_/g, " ")}`}
                 </p>
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                 <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Lead</p>
                 <p className="mt-1 text-sm text-strong">
-                  {draft.lead_agent?.name} · {draft.lead_agent?.autonomy_level}
+                  {draft.lead_agent?.name || "Default lead"}
+                  {draft.lead_agent?.autonomy_level && ` · ${humanizeAutonomyLevel(draft.lead_agent?.autonomy_level)}`}
+                  {draft.lead_agent?.verbosity && ` · ${draft.lead_agent.verbosity} verbosity`}
+                  {draft.lead_agent?.update_cadence && ` · ${draft.lead_agent.update_cadence} updates`}
                 </p>
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                 <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Team</p>
                 <p className="mt-1 text-sm text-strong">
-                  {draft.team_plan?.provision_mode === "lead_only"
-                    ? "Lead only"
-                    : draft.team_plan?.provision_mode === "full_team"
-                      ? "Full team"
-                      : `Selected: ${draft.team_plan?.roles?.join(", ")}`}
+                  {humanizeProvisionMode(draft.team_plan?.provision_mode)}
+                  {draft.team_plan?.provision_mode === "selected_roles" && draft.team_plan?.roles?.length &&
+                    ` — ${draft.team_plan.roles.map(r => r.replace(/_/g, " ")).join(", ")}`}
                 </p>
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                 <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Planning</p>
                 <p className="mt-1 text-sm text-strong">
-                  {draft.planning_policy?.bootstrap_mode} ·{" "}
-                  {draft.planning_policy?.planner_mode ?? "N/A"}
+                  {humanizeBootstrapMode(draft.planning_policy?.bootstrap_mode)}
+                  {draft.planning_policy?.planner_mode && ` · ${humanizePlannerMode(draft.planning_policy?.planner_mode)}`}
                 </p>
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
-                <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">QA</p>
-                <p className="mt-1 text-sm text-strong">{draft.qa_policy?.strictness}</p>
+                <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">QA &amp; Process</p>
+                <p className="mt-1 text-sm text-strong">
+                  {humanizeStrictness(draft.qa_policy?.strictness)}
+                </p>
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                 <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Automation</p>
-                <p className="mt-1 text-sm text-strong">{draft.automation_policy?.automation_profile}</p>
+                <p className="mt-1 text-sm text-strong">
+                  {humanizeAutomationProfile(draft.automation_policy?.automation_profile)}
+                </p>
               </div>
               {draft.context?.description && (
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                   <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Context</p>
                   <p className="mt-1 text-sm text-strong">{draft.context.description}</p>
+                  {draft.context.constraints && (
+                    <p className="mt-1 text-xs text-[var(--text-quiet)]">
+                      Constraints: {draft.context.constraints}
+                    </p>
+                  )}
+                </div>
+              )}
+              {refined && (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-green-600">AI Refinement</p>
+                  <p className="mt-1 text-sm text-green-700">Configuration has been refined by AI.</p>
                 </div>
               )}
             </div>
@@ -1083,32 +1317,41 @@ export function BoardOnboardingWizard({
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                   <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Lead</p>
                   <p className="mt-1 text-sm text-strong">
-                    {bootstrapResult.lead_status}
-                    {bootstrapResult.lead_name && ` - ${bootstrapResult.lead_name}`}
+                    {humanizeLeadStatus(bootstrapResult.lead_status, bootstrapResult.lead_name)}
                   </p>
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                   <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Team</p>
                   <p className="mt-1 text-sm text-strong">
-                    {bootstrapResult.team_status}
-                    {bootstrapResult.team_created_roles.length > 0 &&
-                      ` (${bootstrapResult.team_created_roles.join(", ")})`}
+                    {humanizeTeamStatus(
+                      bootstrapResult.team_status,
+                      bootstrapResult.team_agents_created,
+                      bootstrapResult.team_created_roles ?? [],
+                      bootstrapResult.team_failed_roles ?? [],
+                    )}
                   </p>
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                   <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Planner</p>
                   <p className="mt-1 text-sm text-strong">
-                    {bootstrapResult.planner_status}
-                    {bootstrapResult.planner_output_id && ` - ${bootstrapResult.planner_output_id}`}
+                    {humanizePlannerStatus(bootstrapResult.planner_status)}
                   </p>
                 </div>
                 {bootstrapResult.automation_sync && (
                   <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                     <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Automation</p>
                     <p className="mt-1 text-sm text-strong">
-                      {bootstrapResult.automation_sync.status} -{" "}
-                      {bootstrapResult.automation_sync.agents_updated} agents updated
+                      {humanizeAutomationSyncStatus(
+                        bootstrapResult.automation_sync.status,
+                        bootstrapResult.automation_sync.agents_updated,
+                      )}
                     </p>
+                  </div>
+                )}
+                {bootstrapResult.bootstrap_summary && (
+                  <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                    <p className="text-xs uppercase tracking-wide text-[var(--text-quiet)]">Summary</p>
+                    <p className="mt-1 text-sm text-strong">{bootstrapResult.bootstrap_summary}</p>
                   </div>
                 )}
               </div>
