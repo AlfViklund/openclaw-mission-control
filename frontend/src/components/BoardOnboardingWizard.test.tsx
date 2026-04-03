@@ -552,6 +552,90 @@ describe("BoardOnboardingWizard", () => {
     });
   });
 
+  describe("refine other_text path — non-special option id", () => {
+    it("requires other_text when option label contains 'Other' even with numeric id", async () => {
+      let capturedPayloads: Record<string, unknown>[] = [];
+      customFetchMock.mockImplementation((url: string, opts?: { method?: string; body?: string }) => {
+        if (url.includes("/refine-answer") && opts?.body) {
+          capturedPayloads.push(JSON.parse(opts.body));
+          return Promise.resolve({ status: 200, data: {} });
+        }
+        if (url.includes("/onboarding") && !url.includes("/draft") && !url.includes("/refine")) {
+          return Promise.resolve({
+            status: 200,
+            data: {
+              draft_goal: {
+                project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
+                lead_agent: { name: "Ava" },
+                team_plan: { provision_mode: "full_team" },
+                planning_policy: { bootstrap_mode: "generate_backlog" },
+                qa_policy: { strictness: "balanced" },
+                automation_policy: { automation_profile: "normal" },
+              },
+              refine_status: "questions",
+              refine_questions: [
+                {
+                  id: "q1",
+                  question: "Who is this product for?",
+                  options: [
+                    { id: "b2b", label: "B2B teams" },
+                    { id: "99", label: "Other (I'll type it)" },
+                  ],
+                },
+              ],
+            },
+          });
+        }
+        return Promise.resolve({ status: 200, data: {} });
+      });
+
+      render(
+        <BoardOnboardingWizard boardId="board-1" onConfirmed={() => undefined} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("dialog-title")).toHaveTextContent("AI refinement");
+      });
+
+      // Input should not be visible until "Other" option is selected
+      expect(screen.queryByPlaceholderText("Please specify")).toBeNull();
+
+      // Select the "Other" option
+      fireEvent.click(screen.getByText("Other (I'll type it)"));
+
+      // Input should now appear
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText("Please specify")).toBeTruthy();
+      });
+
+      // Submit should be disabled while otherText is empty
+      const submitBtn = screen.getByRole("button", { name: /submit answers/i });
+      expect(submitBtn).toBeDisabled();
+
+      // Enter text
+      fireEvent.change(screen.getByPlaceholderText("Please specify"), {
+        target: { value: "Small internal fintech teams" },
+      });
+
+      // Submit should now be enabled
+      await waitFor(() => {
+        expect(submitBtn).toBeEnabled();
+      });
+
+      // Submit
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(capturedPayloads.length).toBe(1);
+        expect(capturedPayloads[0]).toEqual({
+          question_id: "q1",
+          answer: "99",
+          other_text: "Small internal fintech teams",
+        });
+      });
+    });
+  });
+
   describe("outcome — onConfirmed handoff", () => {
     it("does not call onConfirmed until confirm completes", async () => {
       const onConfirmedSpy = vi.fn();

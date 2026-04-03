@@ -1489,4 +1489,59 @@ class TestRefinePromptIncludesAnswers:
         draft = {"project_info": {"project_mode": "new_product"}}
         prompt = service._build_refine_prompt(board, draft, "http://localhost:8000")
 
-        assert "USER ANSWERS TO CLARIFYING QUESTIONS" not in prompt
+        assert "USER ANSWERS" not in prompt
+
+
+class TestLabelBasedOtherTextValidation:
+    """Tests that other_text is required when option label indicates 'other', even with non-special id."""
+
+    def test_rejects_label_based_other_without_other_text(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+        from fastapi import HTTPException
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Who is this product for?",
+                "options": [
+                    {"id": "b2b", "label": "B2B teams"},
+                    {"id": "99", "label": "Other (I'll type it)"},
+                ],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_refine_answer(questions, "q1", "99", "")
+        assert exc_info.value.status_code == 400
+        assert "requires additional text" in str(exc_info.value.detail)
+
+    def test_accepts_label_based_other_with_valid_other_text(self) -> None:
+        from app.api.board_onboarding import _validate_refine_answer
+
+        questions = [
+            {
+                "id": "q1",
+                "question": "Who is this product for?",
+                "options": [
+                    {"id": "b2b", "label": "B2B teams"},
+                    {"id": "99", "label": "Other (I'll type it)"},
+                ],
+            }
+        ]
+        # Should not raise
+        _validate_refine_answer(questions, "q1", "99", "Small internal fintech teams")
+
+    def test_structured_extraction_preserves_label_based_other_answer(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {
+                "role": "user",
+                "refine_answer": {
+                    "question_id": "q1",
+                    "answer": "99",
+                    "other_text": "Internal product teams",
+                },
+            }
+        ]
+        answers = _extract_refine_answers(messages)
+        assert answers == {"q1": {"answer": "99", "other_text": "Internal product teams"}}

@@ -833,40 +833,61 @@ def _extract_current_refine_questions(messages: list) -> list[dict]:
 
 
 def _extract_refine_answers(messages: list) -> dict[str, dict[str, str]]:
-    """Collect all refine answers from structured message fields, with legacy string fallback."""
+    """Collect refine answers from messages.
+
+    Priority order:
+    1. Structured dict — current format with question_id/answer/other_text.
+    2. Legacy flat fields — refine_answer_value + refine_answer_other_text.
+    3. Legacy content parsing — backward-compat fallback for old sessions.
+    """
     answers: dict[str, dict[str, str]] = {}
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
+
         raw = msg.get("refine_answer")
+
+        # 1. Structured format (current)
         if isinstance(raw, dict):
-            qid = str(raw.get("question_id", "")).strip()
-            if qid:
-                answers[qid] = {
+            question_id = str(raw.get("question_id", "")).strip()
+            if question_id:
+                answers[question_id] = {
                     "answer": str(raw.get("answer", "")).strip(),
                     "other_text": str(raw.get("other_text", "")).strip(),
                 }
             continue
-        # Legacy fallback: flat fields from earlier implementation
+
+        # 2. Legacy flat fields
         if isinstance(raw, str) and raw:
-            answers[raw] = {
-                "answer": str(msg.get("refine_answer_value", "")).strip(),
-                "other_text": str(msg.get("refine_answer_other_text", "")).strip(),
-            }
-            continue
-        # Legacy fallback: parse from content string
-        if isinstance(raw, str) and raw:
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.startswith(f"[Wizard] Refine answer to {raw}: "):
-                rest = content[len(f"[Wizard] Refine answer to {raw}: "):]
+            flat_answer = str(msg.get("refine_answer_value", "")).strip()
+            flat_other = str(msg.get("refine_answer_other_text", "")).strip()
+            if flat_answer or flat_other:
+                answers[raw] = {
+                    "answer": flat_answer,
+                    "other_text": flat_other,
+                }
+                continue
+
+        # 3. Legacy content parsing fallback
+        content = msg.get("content", "")
+        if isinstance(raw, str) and raw and isinstance(content, str):
+            prefix = f"[Wizard] Refine answer to {raw}: "
+            if content.startswith(prefix):
+                rest = content[len(prefix):]
                 answer_text = rest
                 other_text = ""
-                other_marker = " (other: "
-                if other_marker in rest:
-                    idx = rest.index(other_marker)
+                marker = " (other: "
+                if marker in rest:
+                    idx = rest.index(marker)
                     answer_text = rest[:idx]
-                    other_text = rest[idx + len(other_marker):-1] if rest.endswith(")") else rest[idx + len(other_marker):]
-                answers[raw] = {"answer": answer_text, "other_text": other_text}
+                    tail = rest[idx + len(marker):]
+                    other_text = tail[:-1] if tail.endswith(")") else tail
+                answers[raw] = {
+                    "answer": answer_text.strip(),
+                    "other_text": other_text.strip(),
+                }
+
     return answers
 
 
