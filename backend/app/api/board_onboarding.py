@@ -832,6 +832,30 @@ def _extract_current_refine_questions(messages: list) -> list[dict]:
     return []
 
 
+def _extract_refine_answers(messages: list) -> dict[str, dict[str, str]]:
+    """Collect all refine answers from messages into {question_id: {answer, other_text}}."""
+    answers: dict[str, dict[str, str]] = {}
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("refine_answer"):
+            qid = msg["refine_answer"]
+            content = msg.get("content", "")
+            answer_text = ""
+            other_text = ""
+            if isinstance(content, str):
+                prefix = f"[Wizard] Refine answer to {qid}: "
+                if content.startswith(prefix):
+                    rest = content[len(prefix):]
+                    other_marker = " (other: "
+                    if other_marker in rest:
+                        idx = rest.index(other_marker)
+                        answer_text = rest[:idx]
+                        other_text = rest[idx + len(other_marker):-1] if rest.endswith(")") else rest[idx + len(other_marker):]
+                    else:
+                        answer_text = rest
+            answers[qid] = {"answer": answer_text, "other_text": other_text}
+    return answers
+
+
 def _validate_refine_answer(
     questions: list[dict],
     question_id: str,
@@ -912,10 +936,12 @@ async def answer_refine_question(
         )
 
     dispatcher = BoardOnboardingMessagingService(session)
+    refine_answers = _extract_refine_answers(messages)
     await dispatcher.dispatch_refine_prompt(
         board=board,
         draft=cast(dict[str, Any], onboarding.draft_goal),
         correlation_id=f"onboarding.refine-answer:{board.id}:{onboarding.id}",
+        refine_answers=refine_answers if refine_answers else None,
     )
 
     refine_state = _compute_refine_state(onboarding)

@@ -144,6 +144,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         board: Board,
         draft: dict[str, Any],
         correlation_id: str | None = None,
+        refine_answers: dict[str, dict[str, str]] | None = None,
     ) -> str:
         trace_id = GatewayDispatchService.resolve_trace_id(
             correlation_id, prefix="onboarding.refine"
@@ -159,7 +160,7 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         ).require_gateway_config_for_board(board)
         session_key = GatewayAgentIdentity.session_key(gateway)
         base_url = settings.base_url
-        prompt = self._build_refine_prompt(board, draft, base_url)
+        prompt = self._build_refine_prompt(board, draft, base_url, refine_answers)
         try:
             await self._dispatch_gateway_message(
                 session_key=session_key,
@@ -202,14 +203,29 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         board: Board,
         draft: dict[str, Any],
         base_url: str,
+        refine_answers: dict[str, dict[str, str]] | None = None,
     ) -> str:
         draft_json = __import__("json").dumps(draft, indent=2, default=str)
+        answers_section = ""
+        if refine_answers:
+            answers_lines = []
+            for qid, data in refine_answers.items():
+                line = f"- Question {qid}: {data.get('answer', '')}"
+                if data.get('other_text'):
+                    line += f" (details: {data['other_text']})"
+                answers_lines.append(line)
+            answers_section = (
+                "\n\nUSER ANSWERS TO CLARIFYING QUESTIONS:\n"
+                + "\n".join(answers_lines)
+                + "\n\nUse these answers to refine the draft. The user has provided "
+                "clarifications that should be incorporated into the configuration."
+            )
         return (
             "PROJECT BOOTSTRAP REFINE\n\n"
             f"Board Name: {board.name}\n"
             f"Board Description: {board.description or '(not provided)'}\n\n"
             "STRUCTURED DRAFT (already collected via wizard):\n"
-            f"{draft_json}\n\n"
+            f"{draft_json}{answers_section}\n\n"
             "YOUR TASK:\n"
             "You are the AI refinement assistant for project bootstrap. The user has already "
             "completed a structured wizard. Your role is NOT to redo the onboarding — "

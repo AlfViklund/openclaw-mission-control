@@ -385,6 +385,8 @@ describe("BoardOnboardingWizard E2E", () => {
       // Step 2 — skip all optional fields
       cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
       cy.contains("button", /mvp/i).click();
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /no deadline/i).click();
       clickNext();
 
       // Step 3 — skip
@@ -524,6 +526,8 @@ describe("BoardOnboardingWizard E2E", () => {
       // Step 2
       cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
       cy.contains("button", /mvp/i).click();
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /no deadline/i).click();
       clickNext();
 
       // Step 3 — skip
@@ -590,6 +594,8 @@ describe("BoardOnboardingWizard E2E", () => {
       // Step 2
       cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
       cy.contains("button", /mvp/i).click();
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /no deadline/i).click();
       clickNext();
 
       // Step 3
@@ -696,6 +702,8 @@ describe("BoardOnboardingWizard E2E", () => {
 
       cy.contains("h2", /first milestone.*delivery/i, { timeout: 10_000 }).should("be.visible");
       cy.contains("button", /mvp/i).click();
+      cy.contains("button", /balanced/i).click();
+      cy.contains("button", /no deadline/i).click();
       clickNext();
 
       cy.contains("h2", /project context/i, { timeout: 10_000 }).should("be.visible");

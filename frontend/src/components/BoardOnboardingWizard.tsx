@@ -138,7 +138,7 @@ interface BoardBootstrapResult {
  * Product policy (do not change without explicit agreement):
  *
  * Step 1 — project_mode + project_stage (required)
- * Step 2 — first_milestone_type + delivery + deadline (required)
+ * Step 2 — first_milestone_type + delivery_mode + deadline_mode (required)
  * Step 3 — context (optional, always skipped in restore)
  * Step 4 — lead_agent.name (required)
  * Step 5 — team_plan.provision_mode (required)
@@ -157,7 +157,7 @@ export function computeCurrentStep(
   refineStatus?: "idle" | "pending" | "questions" | "complete",
 ): number {
   if (!d.project_info?.project_mode || !d.project_info?.project_stage) return 1;
-  if (!d.project_info?.first_milestone_type) return 2;
+  if (!d.project_info?.first_milestone_type || !d.project_info?.delivery_mode || !d.project_info?.deadline_mode) return 2;
   // Step 3 (context) is optional — skip it.
   if (!d.lead_agent?.name) return 4;
   if (!d.team_plan?.provision_mode) return 5;
@@ -622,7 +622,11 @@ export function BoardOnboardingWizard({
       case 1:
         return !!draft.project_info?.project_mode && !!draft.project_info?.project_stage;
       case 2:
-        return !!draft.project_info?.first_milestone_type;
+        return !!(
+          draft.project_info?.first_milestone_type &&
+          draft.project_info?.delivery_mode &&
+          draft.project_info?.deadline_mode
+        );
       case 3:
         return true;
       case 4:

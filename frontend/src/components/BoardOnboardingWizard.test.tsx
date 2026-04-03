@@ -232,20 +232,28 @@ describe("BoardOnboardingWizard", () => {
       expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists" } })).toBe(2);
     });
 
-    it("returns 4 when step 2 is complete, skipping optional step 3", () => {
-      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" } })).toBe(4);
+    it("returns 2 when milestone set but delivery_mode missing", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" } })).toBe(2);
+    });
+
+    it("returns 2 when milestone+delivery set but deadline_mode missing", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced" } })).toBe(2);
+    });
+
+    it("returns 4 when step 2 is fully complete (milestone+delivery+deadline=none), skipping optional step 3", () => {
+      expect(computeCurrentStep({ project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" } })).toBe(4);
     });
 
     it("returns 5 when lead_agent name is set", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
       })).toBe(5);
     });
 
     it("returns 6 when team_plan provision_mode is set", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
       })).toBe(6);
@@ -253,7 +261,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 7 when planning_policy bootstrap_mode is set", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -262,7 +270,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 8 when qa_policy strictness is set", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -272,7 +280,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 10 when all steps 1–8 are complete and no refine state", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -283,7 +291,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 9 when refine is pending", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -294,7 +302,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 9 when refine has questions", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -305,7 +313,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 10 when refine is complete", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -316,7 +324,7 @@ describe("BoardOnboardingWizard", () => {
 
     it("returns 10 when refine is idle", () => {
       expect(computeCurrentStep({
-        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp" },
+        project_info: { project_mode: "new_product", project_stage: "codebase_exists", first_milestone_type: "mvp", delivery_mode: "balanced", deadline_mode: "none" },
         lead_agent: { name: "Ava" },
         team_plan: { provision_mode: "full_team" },
         planning_policy: { bootstrap_mode: "generate_backlog" },
@@ -355,6 +363,8 @@ describe("BoardOnboardingWizard", () => {
 
       await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
       fireEvent.click(screen.getByText("MVP"));
+      fireEvent.click(screen.getByText("Balanced"));
+      fireEvent.click(screen.getByText("No deadline"));
       await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
 
@@ -567,6 +577,8 @@ describe("BoardOnboardingWizard", () => {
 
       await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
       fireEvent.click(screen.getByText("MVP"));
+      fireEvent.click(screen.getByText("Balanced"));
+      fireEvent.click(screen.getByText("No deadline"));
       await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
 
@@ -646,6 +658,8 @@ describe("BoardOnboardingWizard", () => {
 
       await waitFor(() => expect(screen.getByTestId("dialog-title")).toHaveTextContent("First milestone & delivery"));
       fireEvent.click(screen.getByText("MVP"));
+      fireEvent.click(screen.getByText("Balanced"));
+      fireEvent.click(screen.getByText("No deadline"));
       await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
 

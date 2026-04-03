@@ -1331,3 +1331,94 @@ class TestRefineAnswerValidation:
         assert result.draft is not None
         assert result.draft.project_info is not None
         assert result.draft.project_info.project_mode == "new_feature"
+
+
+class TestRefineAnswersExtraction:
+    """Tests for _extract_refine_answers helper — ensures user answers are collected from messages."""
+
+    def test_extracts_single_answer_without_other_text(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {"role": "user", "content": "[Wizard] Refine answer to q1: web", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
+        ]
+        answers = _extract_refine_answers(messages)
+        assert answers == {"q1": {"answer": "web", "other_text": ""}}
+
+    def test_extracts_answer_with_other_text(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {"role": "user", "content": "[Wizard] Refine answer to q1: other (other: custom platform)", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
+        ]
+        answers = _extract_refine_answers(messages)
+        assert answers == {"q1": {"answer": "other", "other_text": "custom platform"}}
+
+    def test_extracts_multiple_answers(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {"role": "user", "content": "[Wizard] Refine answer to q1: web", "timestamp": "2026-04-03T12:00:00Z", "refine_answer": "q1"},
+            {"role": "user", "content": "[Wizard] Refine answer to q2: yes", "timestamp": "2026-04-03T12:01:00Z", "refine_answer": "q2"},
+        ]
+        answers = _extract_refine_answers(messages)
+        assert len(answers) == 2
+        assert answers["q1"] == {"answer": "web", "other_text": ""}
+        assert answers["q2"] == {"answer": "yes", "other_text": ""}
+
+    def test_returns_empty_when_no_refine_answers(self) -> None:
+        from app.api.board_onboarding import _extract_refine_answers
+
+        messages = [
+            {"role": "user", "content": "refine", "refine": "refining"},
+        ]
+        answers = _extract_refine_answers(messages)
+        assert answers == {}
+
+
+class TestRefinePromptIncludesAnswers:
+    """Tests that refine prompt includes user answers when provided."""
+
+    def test_prompt_contains_answers_section(self) -> None:
+        from app.services.openclaw.onboarding_service import BoardOnboardingMessagingService
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        mock_session = MagicMock()
+        service = BoardOnboardingMessagingService(mock_session)
+
+        board = MagicMock()
+        board.name = "Test Board"
+        board.description = "A test board"
+        board.id = uuid4()
+
+        draft = {"project_info": {"project_mode": "new_product"}}
+        refine_answers = {
+            "q1": {"answer": "web", "other_text": ""},
+            "q2": {"answer": "other", "other_text": "custom platform"},
+        }
+
+        prompt = service._build_refine_prompt(board, draft, "http://localhost:8000", refine_answers)
+
+        assert "USER ANSWERS TO CLARIFYING QUESTIONS" in prompt
+        assert "Question q1: web" in prompt
+        assert "Question q2: other (details: custom platform)" in prompt
+        assert "Use these answers to refine the draft" in prompt
+
+    def test_prompt_without_answers_has_no_answers_section(self) -> None:
+        from app.services.openclaw.onboarding_service import BoardOnboardingMessagingService
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        mock_session = MagicMock()
+        service = BoardOnboardingMessagingService(mock_session)
+
+        board = MagicMock()
+        board.name = "Test Board"
+        board.description = "A test board"
+        board.id = uuid4()
+
+        draft = {"project_info": {"project_mode": "new_product"}}
+        prompt = service._build_refine_prompt(board, draft, "http://localhost:8000")
+
+        assert "USER ANSWERS TO CLARIFYING QUESTIONS" not in prompt
