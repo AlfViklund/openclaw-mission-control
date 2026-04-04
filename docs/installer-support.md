@@ -24,3 +24,7 @@ This document defines current support status for `./install.sh`.
 - Debian/Ubuntu behavior must remain stable for every portability PR.
 - New distro support should be added behind explicit package-manager adapters and tests.
 - If a distro is scaffolded but not fully automated, installer should fail fast with actionable manual commands (not generic errors).
+
+## Status
+
+Auto-install support is implemented in `install.sh` for Debian/Ubuntu (`apt-get`), Fedora (`dnf`), openSUSE (`zypper`), Arch (`pacman`), and macOS (`brew`).

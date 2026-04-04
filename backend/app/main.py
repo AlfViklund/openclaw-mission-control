@@ -21,12 +21,14 @@ from app.api.board_memory import router as board_memory_router
 from app.api.board_onboarding import router as board_onboarding_router
 from app.api.board_webhooks import router as board_webhooks_router
 from app.api.boards import router as boards_router
+from app.api.execution_runs import router as execution_runs_router
 from app.api.gateway import router as gateway_router
 from app.api.gateways import router as gateways_router
 from app.api.metrics import router as metrics_router
 from app.api.organizations import router as organizations_router
 from app.api.skills_marketplace import router as skills_marketplace_router
 from app.api.souls_directory import router as souls_directory_router
+from app.api.spec_artifacts import router as spec_artifacts_router
 from app.api.tags import router as tags_router
 from app.api.task_custom_fields import router as task_custom_fields_router
 from app.api.tasks import router as tasks_router
@@ -75,6 +77,10 @@ OPENAPI_TAGS = [
         "description": "Aggregated operational and board analytics metrics endpoints.",
     },
     {
+        "name": "planner",
+        "description": "Spec ingestion and backlog/DAG generation endpoints.",
+    },
+    {
         "name": "organizations",
         "description": "Organization profile, membership, and governance management endpoints.",
     },
@@ -117,6 +123,10 @@ OPENAPI_TAGS = [
     {
         "name": "tasks",
         "description": "Task CRUD, dependency management, and task workflow operations.",
+    },
+    {
+        "name": "executions",
+        "description": "Execution runs, artifacts, and plan/build/test/review tracking.",
     },
     {
         "name": "custom-fields",
@@ -555,6 +565,8 @@ api_v1.include_router(board_webhooks_router)
 api_v1.include_router(board_onboarding_router)
 api_v1.include_router(approvals_router)
 api_v1.include_router(tasks_router)
+api_v1.include_router(execution_runs_router)
+api_v1.include_router(spec_artifacts_router)
 api_v1.include_router(task_custom_fields_router)
 api_v1.include_router(tags_router)
 api_v1.include_router(users_router)

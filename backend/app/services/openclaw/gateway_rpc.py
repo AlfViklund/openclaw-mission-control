@@ -531,13 +531,14 @@ async def send_message(
     session_key: str,
     config: GatewayConfig,
     deliver: bool = False,
+    idempotency_key: str | None = None,
 ) -> object:
     """Send a chat message to a session."""
     params: dict[str, Any] = {
         "sessionKey": session_key,
         "message": message,
         "deliver": deliver,
-        "idempotencyKey": str(uuid4()),
+        "idempotencyKey": idempotency_key or str(uuid4()),
     }
     return await openclaw_call("chat.send", params, config=config)
 

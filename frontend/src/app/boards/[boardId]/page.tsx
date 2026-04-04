@@ -35,6 +35,9 @@ import {
 } from "@/components/molecules/DependencyBanner";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { BoardChatComposer } from "@/components/BoardChatComposer";
+import { BoardBacklogDagPanel } from "@/components/BoardBacklogDagPanel";
+import { BoardSpecArtifactsPanel } from "@/components/BoardSpecArtifactsPanel";
+import { BoardExecutionRunsPanel } from "@/components/BoardExecutionRunsPanel";
 import { TaskCustomFieldsEditor } from "./TaskCustomFieldsEditor";
 import { Button } from "@/components/ui/button";
 import {
@@ -3537,6 +3540,16 @@ export default function BoardDetailPage() {
                   ) : null}
 
                   {viewMode === "board" ? (
+                    <BoardBacklogDagPanel
+                      boardId={boardId ?? ""}
+                      tasks={tasks}
+                      canWrite={canWrite}
+                      onTaskSelect={openComments}
+                      onBoardRefresh={loadBoard}
+                    />
+                  ) : null}
+
+                  {viewMode === "board" ? (
                     <TaskBoard
                       tasks={tasks}
                       onTaskSelect={openComments}
@@ -3836,6 +3849,31 @@ export default function BoardDetailPage() {
                 );
               })()}
             </div>
+            <div className="space-y-3">
+              <BoardSpecArtifactsPanel
+                boardId={boardId ?? ""}
+                canWrite={canWrite}
+                onBoardRefresh={loadBoard}
+              />
+            </div>
+            <section id="execution-runs" className="space-y-3 scroll-mt-24">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Execution runs
+                  </p>
+                  <p className="text-sm text-slate-600">
+                    Runtime sessions, recovery posture, and phase evidence for the selected task.
+                  </p>
+                </div>
+              </div>
+              <BoardExecutionRunsPanel
+                boardId={boardId ?? ""}
+                taskId={selectedTask?.id ?? null}
+                taskTitle={selectedTask?.title ?? null}
+                canWrite={canWrite}
+              />
+            </section>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">

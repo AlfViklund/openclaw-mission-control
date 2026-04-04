@@ -47,6 +47,22 @@ from app.schemas.souls_directory import (
     SoulsDirectorySearchResponse,
     SoulsDirectorySoulRef,
 )
+from app.schemas.spec_artifacts import (
+    PlannerDraftNodeRead,
+    PlannerDraftRead,
+    SpecArtifactCreate,
+    SpecArtifactRead,
+)
+from app.schemas.executions import (
+    ExecutionArtifactCreate,
+    ExecutionArtifactRead,
+    ExecutionPhaseResultCreate,
+    ExecutionHeartbeatCreate,
+    ExecutionRunCreate,
+    ExecutionRunRead,
+    ExecutionRunStart,
+    ExecutionRunUpdate,
+)
 from app.schemas.tags import TagCreate, TagRead, TagRef, TagUpdate
 from app.schemas.tasks import TaskCreate, TaskRead, TaskUpdate
 from app.schemas.users import UserCreate, UserRead, UserUpdate
@@ -99,6 +115,18 @@ __all__ = [
     "SkillPackCreate",
     "SkillPackRead",
     "SkillPackSyncResponse",
+    "PlannerDraftNodeRead",
+    "PlannerDraftRead",
+    "SpecArtifactCreate",
+    "SpecArtifactRead",
+    "ExecutionArtifactCreate",
+    "ExecutionArtifactRead",
+    "ExecutionPhaseResultCreate",
+    "ExecutionHeartbeatCreate",
+    "ExecutionRunCreate",
+    "ExecutionRunRead",
+    "ExecutionRunStart",
+    "ExecutionRunUpdate",
     "TagCreate",
     "TagRead",
     "TagRef",
