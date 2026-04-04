@@ -8,10 +8,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import time
 
+from app.core.config import BACKEND_ROOT
 from app.core.time import utcnow
 
-EVIDENCE_DIR = Path(__file__).resolve().parents[4] / "storage" / "evidence"
-ARTIFACT_DIR = Path(__file__).resolve().parents[4] / "storage" / "artifacts"
+EVIDENCE_DIR = BACKEND_ROOT / "storage" / "evidence"
+ARTIFACT_DIR = BACKEND_ROOT / "storage" / "artifacts"
 DEFAULT_RETENTION_DAYS = 30
 
 

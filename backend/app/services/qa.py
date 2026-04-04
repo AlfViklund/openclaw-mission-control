@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from app.core.config import BACKEND_ROOT
 from app.core.time import utcnow
 from app.models.artifacts import Artifact
 from app.models.runs import Run
@@ -23,7 +24,7 @@ from app.services.runs import complete_run, create_run, start_run
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
 
-EVIDENCE_DIR = Path(__file__).resolve().parents[4] / "storage" / "evidence" / "qa"
+EVIDENCE_DIR = BACKEND_ROOT / "storage" / "evidence" / "qa"
 
 logger = logging.getLogger(__name__)
 

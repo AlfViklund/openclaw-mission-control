@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.core.config import settings
+from app.core.config import BACKEND_ROOT, settings
 from app.services.runtime_adapters.base import RunResult, RuntimeAdapter, RuntimeAdapterError
 
-EVIDENCE_DIR = Path(__file__).resolve().parents[4] / "storage" / "evidence"
+EVIDENCE_DIR = BACKEND_ROOT / "storage" / "evidence"
 
 
 class OpenRouterAdapter(RuntimeAdapter):

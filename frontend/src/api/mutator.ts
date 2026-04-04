@@ -60,7 +60,13 @@ export const customFetch = async <T>(
     }
   }
 
-  const response = await fetch(`${baseUrl}${url}`, {
+  const apiPath = url.startsWith("/api/v1")
+    ? url
+    : url.startsWith("/")
+      ? `/api/v1${url}`
+      : url;
+
+  const response = await fetch(`${baseUrl}${apiPath}`, {
     ...options,
     headers,
   });

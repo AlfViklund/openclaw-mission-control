@@ -370,7 +370,7 @@ class BoardOnboardingRead(SQLModel):
     session_key: str
     status: str
     messages: list[dict[str, object]] | None = None
-    draft_goal: BoardOnboardingAgentComplete | None = None
+    draft_goal: BoardOnboardingDraftUpdate | BoardOnboardingAgentComplete | None = None
     created_at: datetime
     updated_at: datetime
 
