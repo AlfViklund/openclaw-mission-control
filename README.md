@@ -295,6 +295,14 @@ TELEGRAM_ALLOWED_USER_IDS=<ваш Telegram user ID>
 POSTGRES_DB=mission_control
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
+
+# LAN access (замените 192.168.0.14 на IP вашего Mac)
+BASE_URL=http://192.168.0.14:8000
+NEXT_PUBLIC_API_URL=http://192.168.0.14:8000
+CORS_ORIGINS=http://192.168.0.14:3000,http://localhost:3000
+
+# Storage (путь внутри контейнера, не меняйте)
+ARTIFACT_STORAGE_PATH=/app/storage/artifacts
 ```
 
 Создайте `telegram-bot/.env`:
@@ -306,19 +314,28 @@ API_BASE_URL=http://backend:8000
 API_TOKEN=<тот же LOCAL_AUTH_TOKEN>
 ```
 
-### 3. Запустите стек
+### 3. Создайте папку для storage
+
+Артефакты, спецификации и evidence сохраняются на хосте в `./data/storage`.
+Они переживают пересоздание контейнеров.
+
+```bash
+mkdir -p ./data/storage
+```
+
+### 4. Запустите стек
 
 ```bash
 docker compose -f compose.yml --env-file .env up -d --build
 ```
 
-### 4. Откройте UI
+### 5. Откройте UI
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8000/docs
+- **Frontend**: http://localhost:3000 (или http://192.168.0.14:3000 по LAN)
+- **Backend API**: http://localhost:8000/docs (или http://192.168.0.14:8000/docs по LAN)
 - **Telegram**: Начните чат с вашим ботом
 
-### 5. Подключите OpenClaw Gateway
+### 6. Подключите OpenClaw Gateway
 
 В Mission Control UI перейдите к настройкам Gateway и подключите ваш OpenClaw Gateway.
 После подключения запустите Template Sync для провижининга агентов.
@@ -453,6 +470,8 @@ openclaw-mission-control/
 │       ├── notifications.py          # Push notifications
 │       └── app.py                    # Entry point
 ├── compose.yml                       # Docker Compose (6 services)
+├── data/
+│   └── storage/                      # Persistent artifacts (git-ignored)
 ├── docs/
 │   ├── clawdev-architecture.md       # Detailed architecture
 │   ├── clawdev-runbook.md            # Recovery procedures

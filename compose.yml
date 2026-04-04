@@ -45,6 +45,7 @@ services:
       LOCAL_AUTH_TOKEN: ${LOCAL_AUTH_TOKEN}
       BASE_URL: ${BASE_URL:-http://localhost:8000}
       RQ_REDIS_URL: redis://redis:6379/0
+      ARTIFACT_STORAGE_PATH: ${ARTIFACT_STORAGE_PATH:-/app/storage/artifacts}
     depends_on:
       db:
         condition: service_healthy
@@ -52,6 +53,8 @@ services:
         condition: service_healthy
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./data/storage:/app/storage
 
   frontend:
     build:
@@ -112,7 +115,10 @@ services:
       RQ_QUEUE_NAME: ${RQ_QUEUE_NAME:-default}
       RQ_DISPATCH_THROTTLE_SECONDS: ${RQ_DISPATCH_THROTTLE_SECONDS:-2.0}
       RQ_DISPATCH_MAX_RETRIES: ${RQ_DISPATCH_MAX_RETRIES:-3}
+      ARTIFACT_STORAGE_PATH: ${ARTIFACT_STORAGE_PATH:-/app/storage/artifacts}
     restart: unless-stopped
+    volumes:
+      - ./data/storage:/app/storage
 
   telegram-bot:
     build:
