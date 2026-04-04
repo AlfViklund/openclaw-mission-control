@@ -263,9 +263,20 @@ AI проанализирует документ и создаст:
 ### Требования
 
 - Docker & Docker Compose
-- OpenClaw Gateway (работает на вашем Mac)
 - Telegram Bot Token (получите у [@BotFather](https://t.me/BotFather))
 - Ваш Telegram User ID (узнайте у [@userinfobot](https://t.me/userinfobot))
+
+### Минимум, необходимый для первого запуска
+
+Чтобы просто поднять Mission Control локально и открыть его по LAN, вам нужны только:
+
+- Docker / Docker Compose
+- корневой `.env`
+- Telegram Bot Token
+- Telegram User ID
+- папка `./data/storage`
+
+Отдельные env-файлы для `frontend/`, `backend/` или `telegram-bot/` для стандартного compose-запуска **не обязательны**.
 
 ### 1. Клонируйте репозиторий
 
@@ -276,16 +287,14 @@ cd openclaw-mission-control
 
 ### 2. Настройте окружение
 
-Создайте `.env` файл в корне:
+Для обычного запуска через Docker Compose достаточно **одного корневого `.env` файла**.
+
+Создайте `.env` в корне проекта:
 
 ```env
 # Auth
 AUTH_MODE=local
 LOCAL_AUTH_TOKEN=<сгенерируйте 50+ случайных символов>
-
-# OpenClaw Gateway
-OPENCLAW_GATEWAY_URL=ws://ваш-mac.local:8080
-OPENCLAW_GATEWAY_TOKEN=<токен вашего gateway>
 
 # Telegram Bot
 TELEGRAM_BOT_TOKEN=<токен от BotFather>
@@ -296,22 +305,50 @@ POSTGRES_DB=mission_control
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 
-# LAN access (замените 192.168.0.14 на IP вашего Mac)
-BASE_URL=http://192.168.0.14:8000
-NEXT_PUBLIC_API_URL=http://192.168.0.14:8000
-CORS_ORIGINS=http://192.168.0.14:3000,http://localhost:3000
-
 # Storage (путь внутри контейнера, не меняйте)
 ARTIFACT_STORAGE_PATH=/app/storage/artifacts
 ```
 
-Создайте `telegram-bot/.env`:
+`LOCAL_AUTH_TOKEN` должен быть длинным случайным токеном (50+ символов). Пример генерации:
+
+```bash
+openssl rand -base64 48
+```
+
+#### LAN-доступ (опционально)
+
+Если хотите открывать UI с телефона или другого ПК в той же сети, добавьте:
 
 ```env
-TELEGRAM_BOT_TOKEN=<тот же токен>
-TELEGRAM_ALLOWED_USER_IDS=<тот же user ID>
-API_BASE_URL=http://backend:8000
-API_TOKEN=<тот же LOCAL_AUTH_TOKEN>
+# Замените 192.168.0.14 на фактический IP вашего Mac
+BASE_URL=http://192.168.0.14:8000
+NEXT_PUBLIC_API_URL=http://192.168.0.14:8000
+CORS_ORIGINS=http://192.168.0.14:3000,http://localhost:3000
+```
+
+#### OpenClaw Gateway
+
+Для стандартного запуска Mission Control через Docker Compose отдельные переменные `OPENCLAW_GATEWAY_URL` и `OPENCLAW_GATEWAY_TOKEN` **не требуются** в базовом `.env`.
+
+Сначала поднимите Mission Control, затем в UI подключите ваш OpenClaw Gateway через настройки Gateway / Template Sync flow. Если у вас есть отдельная расширенная схема интеграции с gateway вне стандартного compose-flow, настройте её отдельно.
+
+#### Нужно ли создавать telegram-bot/.env?
+
+**Не нужно.** `compose.yml` уже прокидывает telegram-боту нужные значения из корневого `.env`:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_ALLOWED_USER_IDS`
+- `API_TOKEN`
+
+Создавайте `telegram-bot/.env` только если хотите запускать telegram-бот отдельно, вне Docker Compose.
+
+Если вы хотите запускать telegram-бот вручную вне compose, можно создать `telegram-bot/.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=<токен>
+TELEGRAM_ALLOWED_USER_IDS=<user ID>
+API_BASE_URL=http://localhost:8000
+API_TOKEN=<LOCAL_AUTH_TOKEN>
 ```
 
 ### 3. Создайте папку для storage
@@ -331,14 +368,32 @@ docker compose -f compose.yml --env-file .env up -d --build
 
 ### 5. Откройте UI
 
-- **Frontend**: http://localhost:3000 (или http://192.168.0.14:3000 по LAN)
-- **Backend API**: http://localhost:8000/docs (или http://192.168.0.14:8000/docs по LAN)
-- **Telegram**: Начните чат с вашим ботом
+После запуска стек будет доступен:
+
+- **с Mac**:
+  - Frontend: http://localhost:3000
+  - Backend API: http://localhost:8000/docs
+- **с телефона / другого ПК в той же сети**:
+  - Frontend: http://192.168.0.14:3000
+  - Backend API: http://192.168.0.14:8000/docs
+
+Замените `192.168.0.14` на фактический IP вашего Mac.
 
 ### 6. Подключите OpenClaw Gateway
 
-В Mission Control UI перейдите к настройкам Gateway и подключите ваш OpenClaw Gateway.
-После подключения запустите Template Sync для провижининга агентов.
+Сначала убедитесь, что ваш OpenClaw Gateway уже работает на Mac. Затем в Mission Control UI:
+
+1. откройте настройки Gateway,
+2. подключите ваш OpenClaw Gateway,
+3. выполните Template Sync,
+4. после этого переходите к provisioning команды агентов.
+
+То есть базовый порядок такой:
+
+1. поднять Mission Control,
+2. открыть UI,
+3. подключить уже работающий OpenClaw Gateway,
+4. затем создавать/провижинить агентов.
 
 ---
 
@@ -511,11 +566,32 @@ ClawDev спроектирован с безопасностью в основе
 # Полный стек
 docker compose -f compose.yml --env-file .env up -d --build
 
-# Локальная разработка
+# Локальная разработка (только на Mac)
 docker compose -f compose.yml --env-file .env up -d db redis
 cd backend && uv run uvicorn app.main:app --reload --port 8000
 cd frontend && npm run dev
 
+# Локальная разработка с доступом по LAN
+docker compose -f compose.yml --env-file .env up -d db redis
+cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+cd frontend && npm run dev:lan
+```
+
+Для LAN-режима убедитесь, что в корневом `.env` указаны:
+
+```env
+BASE_URL=http://192.168.0.14:8000
+NEXT_PUBLIC_API_URL=http://192.168.0.14:8000
+CORS_ORIGINS=http://192.168.0.14:3000,http://localhost:3000
+```
+
+После этого UI будет доступен по адресу:
+
+```
+http://192.168.0.14:3000
+```
+
+```bash
 # Запуск всех проверок
 make check
 
