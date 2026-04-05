@@ -62,6 +62,8 @@ class ActorContext:
     actor_type: Literal["user", "agent"]
     user: User | None = None
     agent: Agent | None = None
+    auth_variant: Literal["legacy", "signed_active", "signed_pending"] | None = None
+    token_version: int | None = None
 
 
 async def require_user_or_agent(
@@ -88,7 +90,12 @@ async def require_user_or_agent(
         session=session,
     )
     if agent_auth is not None:
-        return ActorContext(actor_type="agent", agent=agent_auth.agent)
+        return ActorContext(
+            actor_type="agent",
+            agent=agent_auth.agent,
+            auth_variant=agent_auth.auth_variant,
+            token_version=agent_auth.token_version,
+        )
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 

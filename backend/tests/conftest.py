@@ -11,6 +11,7 @@ import os
 os.environ.setdefault("AUTH_MODE", "local")
 os.environ.setdefault("LOCAL_AUTH_TOKEN", "test-token-" + "x" * 60)
 os.environ.setdefault("BASE_URL", "http://localhost:8000")
+os.environ.setdefault("AGENT_AUTH_SECRET", "test-agent-auth-secret-" + "y" * 40)
 
 
 def _install_clerk_backend_api_stubs() -> None:

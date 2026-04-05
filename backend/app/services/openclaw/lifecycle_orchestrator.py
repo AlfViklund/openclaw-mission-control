@@ -20,7 +20,8 @@ from app.services.openclaw.constants import CHECKIN_DEADLINE_AFTER_WAKE
 from app.services.openclaw.db_agent_state import (
     mark_provision_complete,
     mark_provision_requested,
-    mint_agent_token,
+    current_agent_runtime_token,
+    rollback_pending_token,
 )
 from app.services.openclaw.db_service import OpenClawDBService
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
@@ -107,7 +108,7 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                     ),
                 )
 
-        raw_token = auth_token or mint_agent_token(locked)
+        raw_token = _resolve_token_for_lifecycle(locked, auth_token)
         mark_provision_requested(
             locked,
             action=action,
@@ -144,6 +145,7 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
         except OpenClawGatewayError as exc:
             locked.last_provision_error = str(exc)
             locked.updated_at = utcnow()
+            rollback_pending_token(locked, str(exc))
             self.session.add(locked)
             await self.session.commit()
             await self.session.refresh(locked)
@@ -156,6 +158,7 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
         except (OSError, RuntimeError, ValueError) as exc:
             locked.last_provision_error = str(exc)
             locked.updated_at = utcnow()
+            rollback_pending_token(locked, str(exc))
             self.session.add(locked)
             await self.session.commit()
             await self.session.refresh(locked)
@@ -187,3 +190,32 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                 )
             )
         return locked
+
+
+def _resolve_token_for_lifecycle(agent: Agent, auth_token: str | None) -> str:
+    """Resolve the token to use for a lifecycle operation.
+
+    Priority:
+    1. If auth_token explicitly passed → use it
+    2. If pending version exists → use pending signed token
+    3. If signed mode → use active signed token
+    4. If legacy mode → fail fast (migration not initialized)
+    """
+    if auth_token is not None:
+        return auth_token
+
+    if agent.pending_agent_token_version is not None:
+        return current_agent_runtime_token(agent)
+
+    if agent.agent_auth_mode == "signed":
+        return current_agent_runtime_token(agent)
+
+    if agent.agent_auth_mode == "legacy_hash":
+        raise RuntimeError(
+            f"Cannot resolve token for legacy agent {agent.id}. "
+            f"Call begin_signed_migration before lifecycle operations."
+        )
+
+    raise RuntimeError(
+        f"Unknown auth mode '{agent.agent_auth_mode}' for agent {agent.id}."
+    )

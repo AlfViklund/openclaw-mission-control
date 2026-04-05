@@ -4,13 +4,19 @@ This module is used for *agent-originated* API calls (as opposed to human users)
 
 Key ideas:
 - Agents authenticate with an opaque token presented as `X-Agent-Token: <token>`.
-- For convenience, some deployments may also allow `Authorization: Bearer <token>`
+- For convenience, some endpoints may also allow `Authorization: Bearer <token>`
   for agents (controlled by caller/dependency).
 - To reduce write-amplification, we only touch `Agent.last_seen_at` at a fixed
   interval and we avoid touching it for safe/read-only HTTP methods.
 
 This is intentionally separate from user authentication (Clerk/local bearer token)
 so we can evolve agent policy independently.
+
+Auth variants:
+- "legacy": PBKDF2 hash match against agent_token_hash (legacy_hash agents)
+- "signed_active": HMAC-signed token matching active agent_token_version
+- "signed_pending": HMAC-signed token matching pending_agent_token_version
+  (triggers promote on first successful heartbeat)
 """
 
 from __future__ import annotations
@@ -22,8 +28,13 @@ from typing import TYPE_CHECKING, Literal
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlmodel import col, select
 
-from app.core.agent_tokens import verify_agent_token
+from app.core.agent_tokens import (
+    issue_signed_agent_token,
+    parse_signed_agent_token,
+    verify_agent_token,
+)
 from app.core.client_ip import get_client_ip
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.rate_limit import agent_auth_limiter
 from app.core.time import utcnow
@@ -46,17 +57,71 @@ class AgentAuthContext:
 
     actor_type: Literal["agent"]
     agent: Agent
+    auth_variant: Literal["legacy", "signed_active", "signed_pending"] = "legacy"
+    token_version: int | None = None
 
 
-async def _find_agent_for_token(session: AsyncSession, token: str) -> Agent | None:
-    agents = list(
+async def _find_agent_for_token(session: AsyncSession, token: str) -> AgentAuthContext | None:
+    parsed = parse_signed_agent_token(token)
+    if parsed is not None:
+        statement = select(Agent).where(col(Agent.id) == parsed.agent_id)
+        agent = (await session.exec(statement)).first()
+        if agent is None:
+            return None
+
+        secret = settings.agent_auth_secret
+        active_valid = (
+            issue_signed_agent_token(
+                agent_id=agent.id,
+                version=agent.agent_token_version,
+                secret=secret,
+            )
+            == token
+        )
+
+        if agent.pending_agent_token_version is not None:
+            pending_valid = (
+                issue_signed_agent_token(
+                    agent_id=agent.id,
+                    version=agent.pending_agent_token_version,
+                    secret=secret,
+                )
+                == token
+            )
+            if pending_valid:
+                return AgentAuthContext(
+                    actor_type="agent",
+                    agent=agent,
+                    auth_variant="signed_pending",
+                    token_version=agent.pending_agent_token_version,
+                )
+
+        if active_valid:
+            return AgentAuthContext(
+                actor_type="agent",
+                agent=agent,
+                auth_variant="signed_active",
+                token_version=agent.agent_token_version,
+            )
+
+        return None
+
+    legacy_candidates = (
         await session.exec(
-            select(Agent).where(col(Agent.agent_token_hash).is_not(None)),
-        ),
-    )
-    for agent in agents:
+            select(Agent).where(
+                col(Agent.agent_token_hash).is_not(None),
+            ),
+        )
+    ).all()
+    for agent in legacy_candidates:
         if agent.agent_token_hash and verify_agent_token(token, agent.agent_token_hash):
-            return agent
+            return AgentAuthContext(
+                actor_type="agent",
+                agent=agent,
+                auth_variant="legacy",
+                token_version=None,
+            )
+
     return None
 
 
@@ -130,16 +195,16 @@ async def get_agent_auth_context(
             bool(authorization),
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    agent = await _find_agent_for_token(session, resolved)
-    if agent is None:
+    ctx = await _find_agent_for_token(session, resolved)
+    if ctx is None:
         logger.warning(
             "agent auth invalid token path=%s token_prefix=%s",
             request.url.path,
             resolved[:6],
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    await _touch_agent_presence(request, session, agent)
-    return AgentAuthContext(actor_type="agent", agent=agent)
+    await _touch_agent_presence(request, session, ctx.agent)
+    return ctx
 
 
 async def get_agent_auth_context_optional(
@@ -176,13 +241,13 @@ async def get_agent_auth_context_optional(
     client_ip = get_client_ip(request)
     if not await agent_auth_limiter.is_allowed(client_ip):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
-    agent = await _find_agent_for_token(session, resolved)
-    if agent is None:
+    ctx = await _find_agent_for_token(session, resolved)
+    if ctx is None:
         logger.warning(
             "agent auth optional invalid token path=%s token_prefix=%s",
             request.url.path,
             resolved[:6],
         )
         return None
-    await _touch_agent_presence(request, session, agent)
-    return AgentAuthContext(actor_type="agent", agent=agent)
+    await _touch_agent_presence(request, session, ctx.agent)
+    return ctx

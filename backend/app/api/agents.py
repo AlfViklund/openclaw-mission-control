@@ -11,8 +11,11 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import ActorContext, require_org_admin, require_user_or_agent
 from app.core.auth import AuthContext, get_auth_context
+from app.core.time import utcnow
 from app.db.session import get_session
+from app.models.boards import Board
 from app.schemas.agents import (
+    AgentAuthRepairResponse,
     AgentCreate,
     AgentHeartbeat,
     AgentHeartbeatCreate,
@@ -155,6 +158,16 @@ async def heartbeat_agent(
 
     service = AgentLifecycleService(session)
     agent_read = await service.heartbeat_agent(agent_id=agent_id, payload=payload, actor=actor)
+
+    if actor.actor_type == "agent" and actor.auth_variant == "signed_pending":
+        from app.services.openclaw.db_agent_state import promote_pending_token
+        agent_obj = await Agent.objects.by_id(agent_read.id).first(session)
+        if agent_obj is not None:
+            promote_pending_token(agent_obj)
+            session.add(agent_obj)
+            await session.commit()
+            await session.refresh(agent_obj)
+            agent_read = service.to_agent_read(service.with_computed_status(agent_obj))
 
     busy_statement = (
         select(Run)
@@ -346,3 +359,223 @@ async def provision_team(
         "errors": result.errors,
         "agents": [AgentRead.model_validate(a).model_dump() for a in result.agents],
     }
+
+
+@router.post("/{agent_id}/repair-auth-sync", response_model=AgentAuthRepairResponse)
+async def repair_agent_auth_sync(
+    agent_id: str,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_ADMIN_DEP,
+) -> AgentAuthRepairResponse:
+    """Repair agent auth sync for a drifted agent.
+
+    For legacy agents: begins staged migration to signed tokens.
+    For signed agents: triggers staged reprovision with current token.
+    Resets session and wakes the agent.
+    """
+    from app.models.agents import Agent
+    from app.models.gateways import Gateway
+
+    from app.services.openclaw.constants import DEFAULT_HEARTBEAT_CONFIG
+    from app.services.openclaw.db_agent_state import (
+        begin_signed_migration,
+        begin_signed_rotation,
+        current_agent_runtime_token,
+    )
+    from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+    from app.services.openclaw.gateway_resolver import (
+        require_gateway_for_board,
+    )
+
+    agent = await Agent.objects.by_id(agent_id).first(session)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    if agent.board_id is None:
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Gateway not found for gateway-main agent",
+            )
+        board = None
+    else:
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        gateway = await require_gateway_for_board(
+            session,
+            board,
+            require_workspace_root=True,
+        )
+
+    if agent.agent_auth_mode == "legacy_hash":
+        if agent.pending_agent_token_version is None:
+            begin_signed_migration(agent)
+            session.add(agent)
+            await session.flush()
+    elif agent.agent_auth_mode == "signed":
+        if agent.pending_agent_token_version is None:
+            begin_signed_rotation(agent)
+            session.add(agent)
+            await session.flush()
+
+    if agent.heartbeat_config is None:
+        agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
+        session.add(agent)
+        await session.flush()
+
+    try:
+        raw_token = current_agent_runtime_token(agent)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cannot resolve runtime token: {exc}",
+        ) from exc
+
+    from app.models.users import User
+    template_user: User | None = None
+
+    orchestrator = AgentLifecycleOrchestrator(session)
+    try:
+        await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            auth_token=raw_token,
+            force_bootstrap=False,
+            reset_session=True,
+            wake=True,
+            deliver_wakeup=True,
+            wakeup_verb="repaired",
+            clear_confirm_token=False,
+            raise_gateway_errors=True,
+        )
+    except HTTPException as exc:
+        agent.last_provision_error = str(exc.detail)
+        agent.updated_at = utcnow()
+        session.add(agent)
+        await session.commit()
+        await session.refresh(agent)
+        raise
+
+    await session.refresh(agent)
+    return AgentAuthRepairResponse(
+        agent_id=agent.id,
+        agent_auth_mode=agent.agent_auth_mode,
+        agent_token_version=agent.agent_token_version,
+        pending_agent_token_version=agent.pending_agent_token_version,
+        status=agent.status,
+        agent_auth_last_error=agent.agent_auth_last_error,
+    )
+
+
+@router.post("/{agent_id}/rotate-auth-token", response_model=AgentAuthRepairResponse)
+async def rotate_agent_auth_token(
+    agent_id: str,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_ADMIN_DEP,
+) -> AgentAuthRepairResponse:
+    """Rotate agent auth token via staged rotation.
+
+    Creates a new pending token version, reprovisions templates,
+    resets session, and wakes the agent. The old token remains valid
+    until the first successful heartbeat with the new token.
+    """
+    from app.models.agents import Agent
+    from app.models.gateways import Gateway
+
+    from app.services.openclaw.constants import DEFAULT_HEARTBEAT_CONFIG
+    from app.services.openclaw.db_agent_state import (
+        begin_signed_rotation,
+        current_agent_runtime_token,
+        rollback_pending_token,
+    )
+    from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+    from app.services.openclaw.gateway_resolver import (
+        require_gateway_for_board,
+    )
+
+    agent = await Agent.objects.by_id(agent_id).first(session)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    if agent.agent_auth_mode != "signed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Token rotation requires agent to be in signed auth mode. "
+                   "Use repair-auth-sync first to migrate from legacy.",
+        )
+
+    if agent.board_id is None:
+        gateway = await Gateway.objects.by_id(agent.gateway_id).first(session)
+        if gateway is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Gateway not found for gateway-main agent",
+            )
+        board = None
+    else:
+        board = await Board.objects.by_id(agent.board_id).first(session)
+        gateway = await require_gateway_for_board(
+            session,
+            board,
+            require_workspace_root=True,
+        )
+
+    begin_signed_rotation(agent)
+    agent.updated_at = utcnow()
+    session.add(agent)
+    await session.flush()
+
+    if agent.heartbeat_config is None:
+        agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
+        session.add(agent)
+        await session.flush()
+
+    try:
+        raw_token = current_agent_runtime_token(agent)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cannot resolve runtime token: {exc}",
+        ) from exc
+
+    from app.models.users import User
+    template_user: User | None = None
+
+    orchestrator = AgentLifecycleOrchestrator(session)
+    try:
+        await orchestrator.run_lifecycle(
+            gateway=gateway,
+            agent_id=agent.id,
+            board=board,
+            user=template_user,
+            action="update",
+            auth_token=raw_token,
+            force_bootstrap=False,
+            reset_session=True,
+            wake=True,
+            deliver_wakeup=True,
+            wakeup_verb="rotated",
+            clear_confirm_token=False,
+            raise_gateway_errors=True,
+        )
+    except HTTPException as exc:
+        from app.services.openclaw.db_agent_state import rollback_pending_token
+        rollback_pending_token(agent, str(exc.detail))
+        agent.updated_at = utcnow()
+        session.add(agent)
+        await session.commit()
+        await session.refresh(agent)
+        raise
+
+    await session.refresh(agent)
+    return AgentAuthRepairResponse(
+        agent_id=agent.id,
+        agent_auth_mode=agent.agent_auth_mode,
+        agent_token_version=agent.agent_token_version,
+        pending_agent_token_version=agent.pending_agent_token_version,
+        status=agent.status,
+        agent_auth_last_error=agent.agent_auth_last_error,
+    )

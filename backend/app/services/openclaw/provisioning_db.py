@@ -21,8 +21,11 @@ from sqlalchemy import asc, func, or_
 from sqlmodel import col, select
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.agent_tokens import verify_agent_token
+from app.core.agent_tokens import (
+    issue_signed_agent_token,
+)
 from app.core.logging import TRACE_LEVEL
+from app.core.config import settings
 from app.core.time import utcnow
 from app.db import crud
 from app.db.pagination import paginate
@@ -52,7 +55,9 @@ from app.services.openclaw.constants import (
     OFFLINE_AFTER,
 )
 from app.services.openclaw.db_agent_state import (
-    mint_agent_token,
+    current_agent_runtime_token,
+    begin_signed_migration,
+    rollback_pending_token,
 )
 from app.services.openclaw.db_service import OpenClawDBService
 from app.services.openclaw.gateway_resolver import (
@@ -242,7 +247,11 @@ class OpenClawProvisioningService(OpenClawDBService):
                 self.session.add(existing)
                 await self.session.commit()
                 await self.session.refresh(existing)
-                auth_token = mint_agent_token(existing)
+                if existing.agent_auth_mode == "legacy_hash" and existing.pending_agent_token_version is None:
+                    begin_signed_migration(existing)
+                    self.session.add(existing)
+                    await self.session.flush()
+                auth_token = current_agent_runtime_token(existing)
                 await AgentLifecycleOrchestrator(self.session).run_lifecycle(
                     gateway=request.gateway,
                     agent_id=existing.id,
@@ -288,8 +297,10 @@ class OpenClawProvisioningService(OpenClawDBService):
             heartbeat_config=heartbeat_config,
             identity_profile=merged_identity_profile,
             openclaw_session_id=self.lead_session_key(board),
+            agent_auth_mode="signed",
+            agent_token_version=1,
         )
-        raw_token = mint_agent_token(agent)
+        raw_token = current_agent_runtime_token(agent)
         await self.add_commit_refresh(agent)
 
         # Strict behavior: provisioning errors surface to the caller. The DB row exists
@@ -493,13 +504,43 @@ async def _get_existing_auth_token(
         backoff=backoff,
     )
     if not tools:
-        return None
+        heartbeat_md = await _get_agent_file(
+            agent_gateway_id=agent_gateway_id,
+            name="HEARTBEAT.md",
+            control_plane=control_plane,
+            backoff=backoff,
+        )
+        if not heartbeat_md:
+            return None
+        tools = heartbeat_md
     values = _parse_tools_md(tools)
     token = values.get("AUTH_TOKEN")
     if not token:
         return None
     token = token.strip()
     return token or None
+
+
+def current_signed_agent_token(agent: Agent) -> str:
+    """Issue the current active signed token for an agent."""
+    return issue_signed_agent_token(
+        agent_id=agent.id,
+        version=agent.agent_token_version,
+        secret=settings.agent_auth_secret,
+    )
+
+
+def pending_signed_agent_token(agent: Agent) -> str:
+    """Issue the pending signed token for an agent.
+
+    Raises AssertionError if no pending version exists.
+    """
+    assert agent.pending_agent_token_version is not None
+    return issue_signed_agent_token(
+        agent_id=agent.id,
+        version=agent.pending_agent_token_version,
+        secret=settings.agent_auth_secret,
+    )
 
 
 async def _paused_board_ids(session: AsyncSession, board_ids: list[UUID]) -> set[UUID]:
@@ -540,15 +581,6 @@ def _append_sync_error(
             message=message,
         ),
     )
-
-
-async def _rotate_agent_token(session: AsyncSession, agent: Agent) -> str:
-    token = mint_agent_token(agent)
-    agent.updated_at = utcnow()
-    session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
-    return token
 
 
 async def _ping_gateway(ctx: _SyncContext, result: GatewayTemplatesSyncResult) -> bool:
@@ -603,48 +635,47 @@ async def _resolve_agent_auth_token(
     *,
     agent_gateway_id: str,
 ) -> tuple[str | None, bool]:
-    try:
-        auth_token = await _get_existing_auth_token(
-            agent_gateway_id=agent_gateway_id,
-            control_plane=ctx.control_plane,
-            backoff=ctx.backoff,
-        )
-    except TimeoutError as exc:
-        _append_sync_error(result, agent=agent, board=board, message=str(exc))
-        return None, True
+    """Resolve token for provisioning during template sync.
 
-    if not auth_token:
-        if not ctx.options.rotate_tokens:
-            result.agents_skipped += 1
+    Uses backend-issued tokens only. Falls back to legacy import only
+    for migration diagnostics, never as source of truth.
+    """
+    if agent.agent_auth_mode == "signed":
+        try:
+            return current_agent_runtime_token(agent), False
+        except RuntimeError:
             _append_sync_error(
                 result,
                 agent=agent,
                 board=board,
-                message=(
-                    "Skipping agent: unable to read AUTH_TOKEN from TOOLS.md "
-                    "(run with rotate_tokens=true to re-key)."
-                ),
+                message="Cannot resolve signed token for agent.",
             )
-            return None, False
-        auth_token = await _rotate_agent_token(ctx.session, agent)
+            return None, True
 
-    if agent.agent_token_hash and not verify_agent_token(
-        auth_token,
-        agent.agent_token_hash,
-    ):
-        if ctx.options.rotate_tokens:
-            auth_token = await _rotate_agent_token(ctx.session, agent)
-        else:
+    if agent.agent_auth_mode == "legacy_hash":
+        if agent.pending_agent_token_version is None:
+            begin_signed_migration(agent)
+            ctx.session.add(agent)
+            await ctx.session.flush()
+
+        try:
+            return current_agent_runtime_token(agent), False
+        except RuntimeError as exc:
             _append_sync_error(
                 result,
                 agent=agent,
                 board=board,
-                message=(
-                    "Warning: AUTH_TOKEN in TOOLS.md does not match backend "
-                    "token hash (agent auth may be broken)."
-                ),
+                message=str(exc),
             )
-    return auth_token, False
+            return None, True
+
+    _append_sync_error(
+        result,
+        agent=agent,
+        board=board,
+        message=f"Unknown auth mode: {agent.agent_auth_mode}",
+    )
+    return None, True
 
 
 async def _sync_one_agent(
@@ -1168,7 +1199,9 @@ class AgentLifecycleService(OpenClawDBService):
         data: dict[str, Any],
     ) -> tuple[Agent, str]:
         agent = Agent.model_validate(data)
-        raw_token = mint_agent_token(agent)
+        agent.agent_auth_mode = "signed"
+        agent.agent_token_version = 1
+        raw_token = current_agent_runtime_token(agent)
         agent.openclaw_session_id = self.resolve_session_key(agent)
         await self.add_commit_refresh(agent)
         return agent, raw_token
@@ -1423,8 +1456,14 @@ class AgentLifecycleService(OpenClawDBService):
 
     @staticmethod
     def mark_agent_update_pending(agent: Agent) -> str:
-        raw_token = mint_agent_token(agent)
-        return raw_token
+        """Resolve token for an update without rotating.
+
+        Uses the current backend-issued token. Does NOT create a new version.
+        Auto-initializes migration for legacy agents that have not started it.
+        """
+        if agent.agent_auth_mode == "legacy_hash" and agent.pending_agent_token_version is None:
+            begin_signed_migration(agent)
+        return current_agent_runtime_token(agent)
 
     async def provision_updated_agent(
         self,
@@ -1498,10 +1537,12 @@ class AgentLifecycleService(OpenClawDBService):
         ctx = await self.require_user_context(user)
         await self.require_agent_access(agent=agent, ctx=ctx, write=True)
 
-        if agent.agent_token_hash is not None:
-            return
+        if agent.agent_token_hash is not None and agent.pending_agent_token_version is None:
+            begin_signed_migration(agent)
+            self.session.add(agent)
+            await self.session.flush()
 
-        raw_token = mint_agent_token(agent)
+        raw_token = current_agent_runtime_token(agent)
         await self.add_commit_refresh(agent)
         board = await self.require_board(
             str(agent.board_id) if agent.board_id else None,

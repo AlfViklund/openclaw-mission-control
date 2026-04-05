@@ -949,6 +949,66 @@ class BaseAgentLifecycleManager(ABC):
             overwrite=options.overwrite,
         )
 
+        await self._verify_token_readback(
+            agent_id=agent_id,
+            expected_token=auth_token,
+        )
+
+    async def _verify_token_readback(
+        self,
+        *,
+        agent_id: str,
+        expected_token: str,
+    ) -> None:
+        """Verify that TOOLS.md on the gateway contains the expected AUTH_TOKEN.
+
+        Raises RuntimeError on actual token mismatch. Silently skips when
+        the file cannot be read (gateway unreachable, etc) — this is a
+        best-effort safety check, not a hard requirement.
+        """
+        try:
+            payload = await self._control_plane.get_agent_file_payload(
+                agent_id=agent_id,
+                name="TOOLS.md",
+            )
+        except OpenClawGatewayError:
+            return
+
+        content: str | None = None
+        if isinstance(payload, str):
+            content = payload
+        elif isinstance(payload, dict):
+            c = payload.get("content")
+            if isinstance(c, str):
+                content = c
+            else:
+                file_obj = payload.get("file")
+                if isinstance(file_obj, dict):
+                    nested = file_obj.get("content")
+                    if isinstance(nested, str):
+                        content = nested
+
+        if content is None:
+            return
+
+        from app.services.openclaw.constants import _TOOLS_KV_RE
+        values: dict[str, str] = {}
+        for raw in content.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = _TOOLS_KV_RE.match(line)
+            if not match:
+                continue
+            values[match.group("key")] = match.group("value").strip()
+
+        actual_token = values.get("AUTH_TOKEN", "").strip()
+        if actual_token and actual_token != expected_token:
+            raise RuntimeError(
+                f"Token readback mismatch: expected {expected_token[:12]}..., "
+                f"got {actual_token[:12]}..."
+            )
+
 
 class BoardAgentLifecycleManager(BaseAgentLifecycleManager):
     """Provisioning manager for board-scoped agents."""

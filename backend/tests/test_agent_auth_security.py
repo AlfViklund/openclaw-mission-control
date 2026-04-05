@@ -41,7 +41,11 @@ async def test_optional_agent_auth_rate_limits_bearer_agent_token(
 
     async def _fake_find(_session: object, token: str) -> object:
         assert token == "agent-secret"
-        return agent
+        return agent_auth.AgentAuthContext(
+            actor_type="agent",
+            agent=agent,
+            auth_variant="legacy",
+        )
 
     monkeypatch.setattr(agent_auth, "agent_auth_limiter", limiter)
     monkeypatch.setattr(agent_auth, "_find_agent_for_token", _fake_find)

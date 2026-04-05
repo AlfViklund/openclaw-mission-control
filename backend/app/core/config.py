@@ -23,6 +23,17 @@ LOCAL_AUTH_TOKEN_PLACEHOLDERS = frozenset(
         "replace-with-strong-random-token",
     },
 )
+AGENT_AUTH_SECRET_MIN_LENGTH = 32
+AGENT_AUTH_SECRET_PLACEHOLDERS = frozenset(
+    {
+        "change-me",
+        "changeme",
+        "replace-me",
+        "replace-with-strong-random-token",
+        "your-secret-here",
+        "your-agent-auth-secret",
+    },
+)
 
 
 class Settings(BaseSettings):
@@ -98,6 +109,9 @@ class Settings(BaseSettings):
     enable_openrouter: bool = False
     openrouter_api_key: str = ""
 
+    # Agent auth signing secret (separate from LOCAL_AUTH_TOKEN)
+    agent_auth_secret: str = ""
+
     @model_validator(mode="after")
     def _defaults(self) -> Self:
         if self.auth_mode == AuthMode.CLERK:
@@ -145,6 +159,17 @@ class Settings(BaseSettings):
         # schema drift (e.g. missing newly-added columns).
         if "db_auto_migrate" not in self.model_fields_set and self.environment == "dev":
             self.db_auto_migrate = True
+
+        secret = self.agent_auth_secret.strip()
+        if (
+            not secret
+            or len(secret) < AGENT_AUTH_SECRET_MIN_LENGTH
+            or secret.lower() in AGENT_AUTH_SECRET_PLACEHOLDERS
+        ):
+            raise ValueError(
+                f"AGENT_AUTH_SECRET must be at least {AGENT_AUTH_SECRET_MIN_LENGTH} characters and non-placeholder.",
+            )
+
         return self
 
 

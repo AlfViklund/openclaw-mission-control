@@ -318,3 +318,23 @@ class AgentNudge(SQLModel):
         description="Short message to direct an agent toward immediate attention.",
         examples=["Please update the incident triage status for task T-001."],
     )
+
+
+class AgentAuthRepairResponse(SQLModel):
+    """Response for repair-auth-sync and rotate-auth-token endpoints."""
+
+    model_config = SQLModelConfig(
+        json_schema_extra={
+            "x-llm-intent": "agent_auth_repair_status",
+            "x-when-to-use": [
+                "Check the result of an auth repair or rotation operation",
+            ],
+        },
+    )
+
+    agent_id: UUID = Field(description="Agent UUID.")
+    agent_auth_mode: str = Field(description="Current auth mode (legacy_hash or signed).")
+    agent_token_version: int = Field(description="Active token version.")
+    pending_agent_token_version: int | None = Field(description="Pending token version if migration/rotation in progress.")
+    status: str = Field(description="Agent lifecycle status.")
+    agent_auth_last_error: str | None = Field(description="Last auth error if any.")
