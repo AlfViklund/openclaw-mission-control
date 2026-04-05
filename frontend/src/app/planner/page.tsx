@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/auth/clerk";
 import { getLocalAuthToken } from "@/auth/localAuth";
 import {
@@ -66,6 +67,32 @@ interface PlannerTask {
   suggested_agent_role?: string;
 }
 
+interface PlannerEpicState {
+  epic_id: string;
+  status: string;
+  coverage_summary?: string | null;
+  remaining_work_summary?: string | null;
+  materialized_tasks: number;
+  done_tasks: number;
+  open_acceptance_items: string[];
+  next_focus_roles: string[];
+}
+
+interface PlannerExpansionRun {
+  id: string;
+  planner_output_id: string;
+  board_id: string;
+  round_number: number;
+  status: string;
+  trigger: string;
+  source_epic_ids: string[];
+  created_task_ids: string[];
+  summary?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface PlannerOutput {
   id: string;
   board_id: string;
@@ -92,11 +119,16 @@ interface PlannerOutput {
     status: string;
     detail?: string | null;
   }[];
+  epic_states: PlannerEpicState[];
+  expansion_policy: Record<string, unknown>;
   parallelism_groups: { level: number; task_ids: string[] }[];
+  materialized_task_count: number;
+  remaining_scope_count: number | null;
   error_message: string | null;
   created_at: string;
   created_by: string | null;
   applied_at: string | null;
+  latest_expansion_at: string | null;
 }
 
 const ROLE_COLORS: Record<string, string> = {
@@ -202,6 +234,52 @@ async function applyPlannerOutput(id: string): Promise<PlannerOutput> {
     const text = await res.text();
     throw new Error(`Apply failed: ${res.status} ${text}`);
   }
+  return res.json();
+}
+
+async function expandPlannerOutput(id: string): Promise<PlannerOutput> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/${id}/expand`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ trigger: "manual" }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Expand failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+async function updatePlannerExpansionPolicy(
+  id: string,
+  expansionPolicy: Record<string, unknown>,
+): Promise<PlannerOutput> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ expansion_policy: expansionPolicy }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Policy update failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+async function fetchPlannerExpansionRuns(id: string): Promise<PlannerExpansionRun[]> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/${id}/expansions`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch expansion history");
   return res.json();
 }
 
@@ -423,6 +501,8 @@ function buildFlowElements(tasks: PlannerTask[], epics: { id: string; title: str
 
 export default function PlannerPage() {
   const { isSignedIn } = useAuth();
+  const searchParams = useSearchParams();
+  const boardIdFromUrl = searchParams.get("boardId") ?? "";
   const [boards, setBoards] = useState<Board[]>([]);
   const [selectedBoardId, setSelectedBoardId] = useState("");
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -436,6 +516,9 @@ export default function PlannerPage() {
   const [deleteTarget, setDeleteTarget] = useState<PlannerOutput | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
+  const [isExpanding, setIsExpanding] = useState(false);
+  const [isUpdatingPolicy, setIsUpdatingPolicy] = useState(false);
+  const [expansionRuns, setExpansionRuns] = useState<PlannerExpansionRun[]>([]);
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [previewSection, setPreviewSection] = useState<"docs" | "epics" | "tasks">("docs");
   const selectedOutputId = selectedOutput?.id ?? null;
@@ -451,7 +534,12 @@ export default function PlannerPage() {
       const nextBoards = await fetchBoards();
       setBoards(nextBoards);
 
-      const boardId = selectedBoardId || localStorage.getItem("clawdev_active_board_id") || nextBoards[0]?.id || "";
+      const boardId =
+        boardIdFromUrl ||
+        selectedBoardId ||
+        localStorage.getItem("clawdev_active_board_id") ||
+        nextBoards[0]?.id ||
+        "";
       if (boardId && boardId !== selectedBoardId) {
         setSelectedBoardId(boardId);
       }
@@ -470,7 +558,7 @@ export default function PlannerPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedBoardId]);
+  }, [boardIdFromUrl, selectedBoardId]);
 
   useEffect(() => {
     if (isSignedIn) loadData();
@@ -505,6 +593,16 @@ export default function PlannerPage() {
 
     setSelectedOutput(plannerOutputs[0]);
   }, [plannerOutputs, selectedOutputId]);
+
+  useEffect(() => {
+    if (!isSignedIn || !selectedOutputId) {
+      setExpansionRuns([]);
+      return;
+    }
+    void fetchPlannerExpansionRuns(selectedOutputId)
+      .then(setExpansionRuns)
+      .catch(() => setExpansionRuns([]));
+  }, [isSignedIn, selectedOutputId, plannerOutputs]);
 
   const handleGenerate = async (force = false) => {
     if (!selectedArtifact) return;
@@ -554,6 +652,37 @@ export default function PlannerPage() {
     }
   };
 
+  const handleExpand = async (output: PlannerOutput) => {
+    setIsExpanding(true);
+    setError(null);
+    try {
+      const updated = await expandPlannerOutput(output.id);
+      setSelectedOutput(updated);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Expand failed");
+    } finally {
+      setIsExpanding(false);
+    }
+  };
+
+  const handleToggleAutoExpand = async (output: PlannerOutput, enabled: boolean) => {
+    setIsUpdatingPolicy(true);
+    setError(null);
+    try {
+      const updated = await updatePlannerExpansionPolicy(output.id, {
+        ...(output.expansion_policy || {}),
+        auto_expand_enabled: enabled,
+      });
+      setSelectedOutput(updated);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Policy update failed");
+    } finally {
+      setIsUpdatingPolicy(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setIsDeleting(true);
@@ -580,6 +709,10 @@ export default function PlannerPage() {
   const selectedSpec = selectedOutput
     ? artifacts.find((artifact) => artifact.id === selectedOutput.artifact_id)
     : null;
+  const autoExpandEnabled = Boolean(
+    selectedOutput?.expansion_policy?.auto_expand_enabled ?? false,
+  );
+  const latestExpansionRun = expansionRuns[0] ?? null;
 
   return (
     <>
@@ -590,7 +723,7 @@ export default function PlannerPage() {
           signUpForceRedirectUrl: "/planner",
         }}
         title="Backlog Planner"
-        description="Generate structured backlogs from specifications with dependency graphs."
+        description="Turn specifications into approved execution packages with progressive task materialization."
         headerActions={
           <div className="flex items-center gap-2">
             <select
@@ -609,7 +742,7 @@ export default function PlannerPage() {
               disabled={artifacts.length === 0 || !selectedBoardId || isGenerating}
             >
               <GitBranch className="mr-2 h-4 w-4" />
-              Generate Backlog
+              Generate Planner Package
             </button>
             {selectedOutput &&
               selectedOutput.status !== "applied" &&
@@ -642,7 +775,7 @@ export default function PlannerPage() {
               <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center">
                 <GitBranch className="mx-auto h-8 w-8 text-slate-400" />
                 <p className="mt-2 text-sm text-slate-500">No planner outputs yet</p>
-                <p className="text-xs text-slate-400">Generate a backlog from a spec to get started</p>
+                <p className="text-xs text-slate-400">Generate an execution package from a spec to get started</p>
               </div>
             ) : (
               plannerOutputs.map(output => {
@@ -680,13 +813,13 @@ export default function PlannerPage() {
                       </span>
                     </div>
                     <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-400">
-                        <span>{output.tasks.length} tasks</span>
+                        <span>{output.tasks.length} seed tasks</span>
                         <span>{output.epics.length} epics</span>
                         <span>{new Date(output.created_at).toLocaleDateString()}</span>
                       </div>
                       {output.status === "generating" && (
                         <p className="mt-2 text-[11px] text-slate-500">
-                          Lead agent is drafting the backlog. The page refreshes automatically.
+                          Lead agent is drafting the execution package. The page refreshes automatically.
                         </p>
                       )}
                     </button>
@@ -703,6 +836,54 @@ export default function PlannerPage() {
                   phaseStatuses={selectedOutput.phase_statuses || []}
                   pipelinePhase={selectedOutput.pipeline_phase}
                 />
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Seed Tasks
+                    </p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-900">
+                      {selectedOutput.tasks.length}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Initial work package generated from the dossier.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Materialized
+                    </p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-900">
+                      {selectedOutput.materialized_task_count}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Tasks already created on the board.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Remaining Scope
+                    </p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-900">
+                      {selectedOutput.remaining_scope_count ?? "—"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Outstanding acceptance/work items still to materialize.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Auto-Expand
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">
+                      {autoExpandEnabled ? "Buffered auto" : "Paused"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {latestExpansionRun
+                        ? `Latest round ${latestExpansionRun.round_number}: ${latestExpansionRun.status}`
+                        : "No expansion rounds yet."}
+                    </p>
+                  </div>
+                </div>
                 {selectedOutput.status === "generating" ? (
               <div className="rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-8 shadow-sm h-full flex flex-col justify-center">
                 <div className="flex items-center gap-3">
@@ -821,11 +1002,111 @@ export default function PlannerPage() {
                   </div>
                 )}
 
+                {selectedOutput.epic_states.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-700">Execution Coverage</h3>
+                        <p className="text-xs text-slate-500">
+                          What is already materialized on the board and what still remains in approved scope.
+                        </p>
+                      </div>
+                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                        {selectedOutput.epic_states.length} epic states
+                      </span>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {selectedOutput.epic_states.map((state) => (
+                        <div key={state.epic_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">{state.epic_id}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {state.materialized_tasks} materialized · {state.done_tasks} done · {state.status}
+                              </p>
+                            </div>
+                            {state.next_focus_roles.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {state.next_focus_roles.map((role) => (
+                                  <span
+                                    key={`${state.epic_id}-${role}`}
+                                    className={cn(
+                                      "rounded-full px-2 py-1 text-[10px] font-medium",
+                                      ROLE_COLORS[role] || "bg-slate-100 text-slate-600",
+                                    )}
+                                  >
+                                    {role}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {state.coverage_summary && (
+                            <p className="mt-3 text-sm text-slate-700">{state.coverage_summary}</p>
+                          )}
+                          {state.remaining_work_summary && (
+                            <p className="mt-2 text-xs text-slate-600">
+                              Remaining: {state.remaining_work_summary}
+                            </p>
+                          )}
+                          {state.open_acceptance_items.length > 0 && (
+                            <ul className="mt-2 list-disc pl-5 text-xs text-slate-500">
+                              {state.open_acceptance_items.slice(0, 4).map((item) => (
+                                <li key={`${state.epic_id}-${item}`}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {expansionRuns.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-700">Expansion History</h3>
+                        <p className="text-xs text-slate-500">
+                          Progressive materialization rounds after the initial work package.
+                        </p>
+                      </div>
+                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                        {expansionRuns.length} runs
+                      </span>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {expansionRuns.map((run) => (
+                        <div key={run.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">
+                                Round {run.round_number} · {run.status}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                Trigger: {run.trigger}
+                                {run.source_epic_ids.length > 0 ? ` · ${run.source_epic_ids.join(", ")}` : ""}
+                              </p>
+                            </div>
+                            <p className="text-[11px] text-slate-400">
+                              {new Date(run.updated_at).toLocaleString()}
+                            </p>
+                          </div>
+                          {run.summary && <p className="mt-2 text-sm text-slate-700">{run.summary}</p>}
+                          {run.error_message && (
+                            <p className="mt-2 text-xs text-red-600">{run.error_message}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {selectedOutput.tasks.length > 0 && (
                   <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                 <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <h3 className="text-sm font-semibold text-slate-700">Dependency Graph</h3>
+                    <h3 className="text-sm font-semibold text-slate-700">Seed Task Graph</h3>
                     {selectedOutput.parallelism_groups.length > 0 && (
                       <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
                         {selectedOutput.parallelism_groups.length} parallel levels
@@ -844,7 +1125,7 @@ export default function PlannerPage() {
                         ) : (
                           <Play className="mr-1 h-3 w-3" />
                         )}
-                        Apply to Board
+                        Create Initial Work Package
                       </button>
                     )}
                     {selectedOutput.status === "draft" && (
@@ -856,10 +1137,34 @@ export default function PlannerPage() {
                       </button>
                     )}
                     {selectedOutput.status === "applied" && (
-                      <span className="text-xs text-green-600 flex items-center gap-1">
-                        <CheckCircle className="h-3 w-3" />
-                        Applied {selectedOutput.applied_at && new Date(selectedOutput.applied_at).toLocaleDateString()}
-                      </span>
+                      <>
+                        <button
+                          onClick={() => handleExpand(selectedOutput)}
+                          disabled={isExpanding}
+                          className={cn(buttonVariants({ size: "sm", variant: "outline" }))}
+                        >
+                          {isExpanding ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="mr-1 h-3 w-3" />
+                          )}
+                          Expand Next Batch
+                        </button>
+                        <button
+                          onClick={() => handleToggleAutoExpand(selectedOutput, !autoExpandEnabled)}
+                          disabled={isUpdatingPolicy}
+                          className={cn(buttonVariants({ size: "sm", variant: "outline" }))}
+                        >
+                          {isUpdatingPolicy ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : null}
+                          {autoExpandEnabled ? "Pause Auto-Expand" : "Resume Auto-Expand"}
+                        </button>
+                        <span className="text-xs text-green-600 flex items-center gap-1">
+                          <CheckCircle className="h-3 w-3" />
+                          Applied {selectedOutput.applied_at && new Date(selectedOutput.applied_at).toLocaleDateString()}
+                        </span>
+                      </>
                     )}
                   </div>
                 </div>
@@ -893,7 +1198,7 @@ export default function PlannerPage() {
                 <GitBranch className="h-12 w-12 text-slate-300" />
                 <h3 className="mt-4 text-lg font-medium text-slate-600">No DAG to display</h3>
                 <p className="mt-2 text-sm text-slate-400">
-                  Select a planner output from the list or generate a new backlog
+                  Select a planner output from the list or generate a new planner package
                 </p>
               </div>
             )}
@@ -912,9 +1217,9 @@ export default function PlannerPage() {
       <Dialog open={showGenerateDialog} onOpenChange={setShowGenerateDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Generate Backlog</DialogTitle>
+            <DialogTitle>Generate Planner Package</DialogTitle>
             <DialogDescription>
-              Select a specification artifact to start a background backlog generation.
+              Select a specification artifact to start a background planner generation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1005,7 +1310,7 @@ export default function PlannerPage() {
                     </span>
                   )}
                   <span className="text-xs text-slate-400">
-                    {selectedOutput.tasks.length} tasks · {selectedOutput.epics.length} epics
+                    {selectedOutput.tasks.length} seed tasks · {selectedOutput.epics.length} epics
                   </span>
                 </div>
               )}
@@ -1141,7 +1446,7 @@ export default function PlannerPage() {
                 ) : (
                   <Play className="mr-2 h-4 w-4" />
                 )}
-                Apply to Board
+                Create Initial Work Package
               </button>
             </div>
           )}

@@ -94,6 +94,10 @@ class TaskRead(TaskBase):
     suggested_agent_role: str | None = None
     planner_task_id: str | None = None
     epic_id: str | None = None
+    planner_output_id: UUID | None = None
+    planner_epic_id: str | None = None
+    materialized_from: str | None = None
+    expansion_round: int | None = None
 
 
 class TaskCommentCreate(SQLModel):

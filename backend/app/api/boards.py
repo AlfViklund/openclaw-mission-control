@@ -35,6 +35,7 @@ from app.schemas.boards import (
     BoardUpdate,
     BoardUpdateResult,
 )
+from app.schemas.planner import PlannerExecutionCoverageRead
 from app.schemas.common import OkResponse
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.schemas.view_models import BoardGroupSnapshot, BoardSnapshot
@@ -43,6 +44,7 @@ from app.services.board_group_snapshot import build_board_group_snapshot
 from app.services.board_automation import sync_board_automation_policy
 from app.services.board_lifecycle import delete_board as delete_board_service
 from app.services.board_snapshot import build_board_snapshot
+from app.services.planner import get_board_execution_coverage
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
@@ -508,6 +510,21 @@ async def get_board_snapshot(
 ) -> BoardSnapshot:
     """Get a board snapshot view model."""
     return await build_board_snapshot(session, board)
+
+
+@router.get("/{board_id}/execution-coverage", response_model=PlannerExecutionCoverageRead)
+async def get_board_execution_coverage_endpoint(
+    board: Board = BOARD_ACTOR_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
+) -> PlannerExecutionCoverageRead:
+    """Get execution coverage for the latest applied planner package on the board."""
+    try:
+        return await get_board_execution_coverage(session, board_id=board.id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

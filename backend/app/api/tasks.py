@@ -7,7 +7,7 @@ import json
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import TYPE_CHECKING, Annotated, Any, Sequence, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -1436,7 +1436,10 @@ async def list_tasks(
     status_filter: str | None = STATUS_QUERY,
     assigned_agent_id: UUID | None = None,
     unassigned: bool | None = None,
-    since: datetime | None = Query(default=None, description="Filter by updated_at after this time"),
+    since: Annotated[
+        datetime | None,
+        Query(description="Filter by updated_at after this time"),
+    ] = None,
     board: Board = BOARD_READ_DEP,
     session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = ACTOR_DEP,
@@ -1464,7 +1467,10 @@ async def list_tasks(
 
 @router.get("/unblocked-transitions")
 async def list_unblocked_transitions(
-    since: datetime | None = Query(default=None, description="Return unblocked events after this time"),
+    since: Annotated[
+        datetime | None,
+        Query(description="Return unblocked events after this time"),
+    ] = None,
     board: Board = BOARD_READ_DEP,
     session: AsyncSession = SESSION_DEP,
     _actor: ActorContext = ACTOR_DEP,
@@ -2842,6 +2848,14 @@ async def _finalize_updated_task(
     await _record_task_comment_from_update(session, update=update)
     await _record_task_update_activity(session, update=update)
     await _notify_task_update_assignment_changes(session, update=update)
+    if update.previous_status != update.task.status and update.task.status == "done":
+        from app.services.planner import maybe_queue_auto_expand_for_board
+
+        await maybe_queue_auto_expand_for_board(
+            session,
+            board_id=update.board_id,
+            trigger="task_done",
+        )
 
     return await _task_read_response(
         session,

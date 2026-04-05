@@ -1,4 +1,4 @@
-"""PlannerOutput model representing generated backlog from a specification."""
+"""PlannerOutput model representing generated execution packages from a specification."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ PLANNER_STATUSES = frozenset(
 
 
 class PlannerOutput(QueryModel, table=True):
-    """Generated backlog structure from a specification artifact."""
+    """Generated execution package structure from a specification artifact."""
 
     __tablename__ = "planner_outputs"  # pyright: ignore[reportAssignmentType]
 
@@ -29,15 +29,22 @@ class PlannerOutput(QueryModel, table=True):
 
     status: str = Field(default="draft", index=True)
     pipeline_phase: str = Field(default="queued", index=True)
-    json_schema_version: int = Field(default=1)
+    json_schema_version: int = Field(default=2)
 
     epics: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     tasks: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     documents: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     phase_statuses: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    epic_states: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    expansion_policy: dict[str, object] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+    )
 
     # Computed parallelism levels (which tasks can run simultaneously)
     parallelism_groups: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    materialized_task_count: int = Field(default=0)
+    remaining_scope_count: int | None = None
 
     error_message: str | None = None
 
@@ -48,3 +55,4 @@ class PlannerOutput(QueryModel, table=True):
         index=True,
     )
     applied_at: datetime | None = None
+    latest_expansion_at: datetime | None = None

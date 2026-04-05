@@ -42,14 +42,21 @@ async def update_planner_output(
     *,
     tasks: list[dict] | None = None,
     epics: list[dict] | None = None,
+    expansion_policy: dict[str, object] | None = None,
 ) -> PlannerOutput:
-    """Update a draft planner output's tasks and epics."""
-    if planner_output.status != "draft":
-        raise ValueError("Only draft planner outputs can be edited")
+    """Update editable planner output fields."""
+    if planner_output.status not in {"draft", "applied"}:
+        raise ValueError("Only draft or applied planner outputs can be edited")
     if tasks is not None:
+        if planner_output.status != "draft":
+            raise ValueError("Only draft planner outputs can edit tasks")
         planner_output.tasks = tasks
     if epics is not None:
+        if planner_output.status != "draft":
+            raise ValueError("Only draft planner outputs can edit epics")
         planner_output.epics = epics
+    if expansion_policy is not None:
+        planner_output.expansion_policy = expansion_policy
     session.add(planner_output)
     await session.commit()
     await session.refresh(planner_output)

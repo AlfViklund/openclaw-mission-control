@@ -18,6 +18,7 @@ from app.models.organization_invite_board_access import OrganizationInviteBoardA
 from app.models.organization_invites import OrganizationInvite
 from app.models.organization_members import OrganizationMember
 from app.models.organizations import Organization
+from app.models.planner_expansion_runs import PlannerExpansionRun
 from app.models.planner_outputs import PlannerOutput
 from app.models.runs import Run
 from app.models.skills import GatewayInstalledSkill, MarketplaceSkill, SkillPack
@@ -51,6 +52,7 @@ __all__ = [
     "MarketplaceSkill",
     "SkillPack",
     "Organization",
+    "PlannerExpansionRun",
     "PlannerOutput",
     "Run",
     "BoardTaskCustomField",

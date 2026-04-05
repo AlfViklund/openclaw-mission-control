@@ -420,11 +420,265 @@ class TestPlannerGenerationLifecycle:
             tasks_by_title = {task.title: task for task in created_tasks}
 
             assert updated.status == "applied"
+            assert updated.materialized_task_count == 3
             assert tasks_by_title["Implement feature"].assigned_agent_id == developer.id
             assert tasks_by_title["Write README"].assigned_agent_id == writer.id
             assert tasks_by_title["Coordinate release"].assigned_agent_id == lead.id
+            assert tasks_by_title["Implement feature"].planner_output_id == planner_output.id
+            assert tasks_by_title["Implement feature"].planner_epic_id == "epic_1"
+            assert tasks_by_title["Implement feature"].materialized_from == "initial"
+            assert tasks_by_title["Implement feature"].expansion_round == 0
             tags = await Tag.objects.filter_by(organization_id=organization.id).all(session)
             assert [tag.slug for tag in tags] == ["backend"]
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_get_board_execution_coverage_summarizes_materialized_scope(self) -> None:
+        from app.services.planner import get_board_execution_coverage
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                applied_at=None,
+                documents=[{"key": "spec_digest", "title": "Specification Digest"}],
+                epics=[{"id": "epic_1", "title": "Ship product"}],
+                tasks=[{"id": "epic_1_task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                epic_states=[
+                    {
+                        "epic_id": "epic_1",
+                        "status": "active",
+                        "coverage_summary": "Core implementation started.",
+                        "remaining_work_summary": "Need QA and docs follow-up.",
+                        "materialized_tasks": 1,
+                        "done_tasks": 0,
+                        "open_acceptance_items": ["QA sign-off", "Docs handoff"],
+                        "next_focus_roles": ["qa", "docs"],
+                    }
+                ],
+                expansion_policy={
+                    "auto_expand_enabled": True,
+                    "initial_task_budget": 8,
+                    "low_backlog_threshold": 4,
+                    "max_new_tasks_per_round": 2,
+                    "max_new_tasks_per_epic": 2,
+                    "max_active_epics": 3,
+                },
+                materialized_task_count=1,
+                remaining_scope_count=2,
+            )
+            task = Task(
+                board_id=board.id,
+                title="Implement feature",
+                status="done",
+                planner_task_id="epic_1_task_1",
+                epic_id="epic_1",
+                planner_output_id=planner_output.id,
+                planner_epic_id="epic_1",
+                materialized_from="initial",
+                expansion_round=0,
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            session.add(task)
+            await session.commit()
+
+            coverage = await get_board_execution_coverage(session, board_id=board.id)
+
+            assert coverage["planner_output_id"] == planner_output.id
+            assert coverage["docs_count"] == 1
+            assert coverage["materialized_tasks"] == 1
+            assert coverage["done_tasks"] == 1
+            assert coverage["remaining_scope_count"] == 2
+            assert coverage["auto_expand_enabled"] is True
+            assert coverage["next_expansion_eligible"] is True
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_get_board_execution_coverage_backfills_existing_applied_tasks(self) -> None:
+        from app.services.planner import get_board_execution_coverage
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                epics=[{"id": "epic_1", "title": "Ship product"}],
+                tasks=[{"id": "task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                documents=[],
+                epic_states=[],
+            )
+            task = Task(
+                board_id=board.id,
+                title="Implement feature",
+                status="inbox",
+                planner_task_id="task_1",
+                epic_id="epic_1",
+                auto_created=True,
+                auto_reason=f"planner_output:{planner_output.id}",
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            session.add(task)
+            await session.commit()
+
+            coverage = await get_board_execution_coverage(session, board_id=board.id)
+            await session.refresh(task)
+            await session.refresh(planner_output)
+
+            assert coverage["materialized_tasks"] == 1
+            assert coverage["epics_total"] == 1
+            assert task.planner_output_id == planner_output.id
+            assert task.materialized_from == "initial"
+            assert planner_output.epic_states
+            assert planner_output.epic_states[0]["epic_id"] == "epic_1"
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_queue_planner_expansion_creates_running_expansion_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.models.planner_expansion_runs import PlannerExpansionRun
+        from app.services.planner import queue_planner_expansion
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                epics=[{"id": "epic_1", "title": "Ship product"}],
+                tasks=[{"id": "epic_1_task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                documents=[],
+                epic_states=[
+                    {
+                        "epic_id": "epic_1",
+                        "status": "active",
+                        "coverage_summary": "Core implementation started.",
+                        "remaining_work_summary": "Need follow-up.",
+                        "materialized_tasks": 1,
+                        "done_tasks": 0,
+                        "open_acceptance_items": ["Follow-up task"],
+                        "next_focus_roles": ["qa"],
+                    }
+                ],
+                expansion_policy={"auto_expand_enabled": True, "initial_task_budget": 8},
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            await session.commit()
+
+            launched: list[tuple[UUID, UUID, int | None]] = []
+
+            def _fake_launch(*, planner_output_id: UUID, expansion_run_id: UUID, max_new_tasks: int | None) -> None:
+                launched.append((planner_output_id, expansion_run_id, max_new_tasks))
+
+            monkeypatch.setattr("app.services.planner._launch_planner_expansion", _fake_launch)
+
+            updated = await queue_planner_expansion(
+                session,
+                planner_output=planner_output,
+                trigger="manual",
+                max_new_tasks=3,
+            )
+
+            runs = await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output.id).all(session)
+            assert updated.id == planner_output.id
+            assert len(runs) == 1
+            assert runs[0].status == "running"
+            assert runs[0].trigger == "manual"
+            assert launched == [(planner_output.id, runs[0].id, 3)]
         finally:
             await session.close()
             await engine.dispose()

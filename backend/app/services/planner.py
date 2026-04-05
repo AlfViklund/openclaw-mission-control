@@ -22,6 +22,7 @@ from app.db.session import async_session_maker
 from app.models.agents import Agent
 from app.models.artifacts import Artifact
 from app.models.boards import Board
+from app.models.planner_expansion_runs import PlannerExpansionRun
 from app.models.planner_outputs import PlannerOutput
 from app.services.artifact_storage import read_artifact_file
 from app.services.artifact_storage import save_artifact_file
@@ -44,10 +45,14 @@ PLANNER_PHASE_LABELS = {
     "digest": "Specification Digest",
     "dossier": "Project Dossier",
     "epics": "Epic Synthesis",
-    "tasks": "Task Expansion",
+    "tasks": "Seed Task Package",
     "ready": "Board Package Ready",
 }
 PLANNER_PHASE_ORDER = tuple(PLANNER_PHASE_LABELS.keys())
+PLANNER_EXPANSION_RUNNING_STATUSES = frozenset({"running"})
+PLANNER_EXPANSION_AUTO_TRIGGERS = frozenset({"backlog_low", "dependency_unblocked", "task_done"})
+DEFAULT_EXPANSION_MODE = "buffered_auto"
+DEFAULT_MAX_ACTIVE_EPICS = 3
 PLANNER_DOCUMENT_BLUEPRINTS = (
     {
         "key": "spec_digest",
@@ -181,10 +186,14 @@ Rules:
 - primary_role should be one of: dev, qa, docs, ops
 - Return 3 to 8 epics unless the scope is obviously smaller
 """
-PLANNER_TASK_PACK_SYSTEM_PROMPT = """You are generating a task pack for one epic in a software delivery plan.
+PLANNER_TASK_PACK_SYSTEM_PROMPT = """You are generating the initial seed task pack for one epic in a software delivery plan.
 
 Output ONLY valid JSON with this exact structure:
 {
+  "coverage_summary": "...",
+  "remaining_work_summary": "...",
+  "open_acceptance_items": ["..."],
+  "next_focus_roles": ["dev", "qa"],
   "tasks": [
     {
       "id": "task_1",
@@ -201,10 +210,49 @@ Output ONLY valid JSON with this exact structure:
 
 Rules:
 - Return tasks only for the provided epic
+- This is the initial work package, not the full backlog
+- Generate only the highest-leverage seed tasks that should appear on the board first
+- Use open_acceptance_items to capture notable scope that remains after the seed tasks
+- coverage_summary should explain what part of the epic is now covered by the seed tasks
+- remaining_work_summary should explain what still needs materialization later
+- next_focus_roles should contain only dev, qa, docs, ops and reflect who should likely own the next batch
 - Dependencies must reference only task IDs from this response
 - suggested_agent_role should be one of: dev, qa, docs, ops
 - estimate should be one of: small, medium, large, xlarge
 - Include the docs, QA, and ops tasks that belong to this epic, not just coding work
+"""
+PLANNER_EXPANSION_SYSTEM_PROMPT = """You are materializing the next small task batch for already-approved scope.
+
+Output ONLY valid JSON with this exact structure:
+{
+  "coverage_summary": "...",
+  "remaining_work_summary": "...",
+  "open_acceptance_items": ["..."],
+  "next_focus_roles": ["dev", "qa"],
+  "scope_suggestions": ["..."],
+  "tasks": [
+    {
+      "id": "task_1",
+      "title": "...",
+      "description": "...",
+      "acceptance_criteria": ["criterion 1", "criterion 2"],
+      "depends_on": ["task_2"],
+      "tags": ["backend", "api"],
+      "estimate": "medium",
+      "suggested_agent_role": "dev"
+    }
+  ]
+}
+
+Rules:
+- Only create tasks that are clearly inside the already-approved epic and dossier scope
+- Do NOT recreate, restate, or rename work that already exists on the board
+- Generate only the next small batch that should be materialized now
+- Prefer 1 to 2 tasks per epic unless the request explicitly allows more
+- Leave new product scope in scope_suggestions instead of creating tasks for it
+- Keep dependencies minimal and only reference task IDs from this response
+- suggested_agent_role should be one of: dev, qa, docs, ops
+- estimate should be one of: small, medium, large, xlarge
 """
 PLANNER_DEPENDENCY_SYSTEM_PROMPT = """You are normalizing dependencies for an existing task graph.
 
@@ -462,6 +510,131 @@ def _normalize_epic_tasks(epic: dict, payload: dict) -> list[dict]:
     return normalized
 
 
+def _count_assignable_planner_agents(
+    role_agents: dict[str, list[Agent]],
+    lead_agent: Agent | None,
+) -> int:
+    specialist_count = sum(len(agents) for agents in role_agents.values())
+    if lead_agent is not None and _agent_is_assignable(lead_agent):
+        return specialist_count + 1
+    return max(specialist_count, 1)
+
+
+def _default_initial_task_budget(*, online_assignable_agents: int) -> int:
+    return max(8, min(16, 4 * max(1, online_assignable_agents)))
+
+
+def _default_expansion_policy(
+    *,
+    online_assignable_agents: int,
+    initial_task_budget: int,
+) -> dict[str, object]:
+    low_backlog_threshold = max(4, max(1, online_assignable_agents))
+    max_new_tasks_per_round = min(8, 2 * max(1, online_assignable_agents))
+    return {
+        "mode": DEFAULT_EXPANSION_MODE,
+        "auto_expand_enabled": True,
+        "initial_task_budget": initial_task_budget,
+        "low_backlog_threshold": low_backlog_threshold,
+        "max_new_tasks_per_round": max_new_tasks_per_round,
+        "max_new_tasks_per_epic": 2,
+        "max_active_epics": DEFAULT_MAX_ACTIVE_EPICS,
+        "allow_scope_growth": False,
+    }
+
+
+def _normalize_expansion_policy(
+    policy: dict[str, object] | None,
+    *,
+    online_assignable_agents: int,
+    initial_task_budget: int,
+) -> dict[str, object]:
+    normalized = _default_expansion_policy(
+        online_assignable_agents=online_assignable_agents,
+        initial_task_budget=initial_task_budget,
+    )
+    if isinstance(policy, dict):
+        normalized.update(policy)
+    normalized["mode"] = str(normalized.get("mode") or DEFAULT_EXPANSION_MODE)
+    normalized["auto_expand_enabled"] = bool(normalized.get("auto_expand_enabled", True))
+    normalized["initial_task_budget"] = int(
+        normalized.get("initial_task_budget") or initial_task_budget
+    )
+    normalized["low_backlog_threshold"] = max(
+        1,
+        int(normalized.get("low_backlog_threshold") or 1),
+    )
+    normalized["max_new_tasks_per_round"] = max(
+        1,
+        int(normalized.get("max_new_tasks_per_round") or 1),
+    )
+    normalized["max_new_tasks_per_epic"] = max(
+        1,
+        int(normalized.get("max_new_tasks_per_epic") or 1),
+    )
+    normalized["max_active_epics"] = max(
+        1,
+        int(normalized.get("max_active_epics") or DEFAULT_MAX_ACTIVE_EPICS),
+    )
+    normalized["allow_scope_growth"] = bool(normalized.get("allow_scope_growth", False))
+    return normalized
+
+
+def _estimate_remaining_scope_count(epic_states: list[dict]) -> int | None:
+    if not epic_states:
+        return None
+    return sum(len(list(state.get("open_acceptance_items") or [])) for state in epic_states)
+
+
+def _build_epic_state(
+    *,
+    epic: dict,
+    payload: dict,
+    materialized_tasks: int,
+    done_tasks: int = 0,
+) -> dict[str, Any]:
+    open_acceptance_items = [
+        str(item).strip()
+        for item in payload.get("open_acceptance_items", [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    next_focus_roles = [
+        str(item).strip()
+        for item in payload.get("next_focus_roles", [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    status = "planned"
+    if materialized_tasks > 0:
+        status = "active"
+    if materialized_tasks > 0 and done_tasks >= materialized_tasks and not open_acceptance_items:
+        status = "completed"
+    return {
+        "epic_id": str(epic.get("id") or "epic"),
+        "status": status,
+        "coverage_summary": payload.get("coverage_summary"),
+        "remaining_work_summary": payload.get("remaining_work_summary"),
+        "materialized_tasks": materialized_tasks,
+        "done_tasks": done_tasks,
+        "open_acceptance_items": open_acceptance_items,
+        "next_focus_roles": next_focus_roles,
+    }
+
+
+def _normalize_task_title(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _compact_existing_epic_tasks(tasks: list[dict[str, Any]], *, max_chars: int = 6000) -> str:
+    lines: list[str] = []
+    for task in tasks:
+        task_id = str(task.get("planner_task_id") or task.get("id") or "task")
+        status = str(task.get("status") or "unknown")
+        title = str(task.get("title") or "Untitled")
+        role = str(task.get("suggested_agent_role") or "lead")
+        lines.append(f"- {task_id} [{status}] ({role}) {title}")
+    return _clip_text("\n".join(lines) or "- None yet", max_chars=max_chars)
+
+
 async def _persist_planner_document(
     session: AsyncSession,
     *,
@@ -517,7 +690,7 @@ async def generate_backlog_from_text(
     artifact_id: UUID,
     board_id: UUID,
     spec_text: str,
-    max_tasks: int = 50,
+    max_tasks: int | None = None,
     created_by: UUID | None = None,
     force: bool = False,
 ) -> PlannerOutput:
@@ -572,7 +745,11 @@ async def generate_backlog_from_text(
         tasks=[],
         documents=[],
         phase_statuses=_default_phase_statuses(),
+        epic_states=[],
+        expansion_policy={},
         parallelism_groups=[],
+        materialized_task_count=0,
+        remaining_scope_count=None,
     )
     session.add(planner_output)
     await session.commit()
@@ -592,7 +769,7 @@ def _launch_planner_generation(
     planner_output_id: UUID,
     board_id: UUID,
     spec_text: str,
-    max_tasks: int,
+    max_tasks: int | None,
 ) -> None:
     """Spawn background planner generation without blocking the request."""
 
@@ -601,7 +778,7 @@ def _launch_planner_generation(
             planner_output_id=planner_output_id,
             board_id=board_id,
             spec_text=spec_text,
-            max_tasks=max_tasks,
+            initial_task_budget=max_tasks,
         )
     )
 
@@ -622,7 +799,7 @@ async def _run_planner_generation(
     planner_output_id: UUID,
     board_id: UUID,
     spec_text: str,
-    max_tasks: int,
+    initial_task_budget: int | None,
 ) -> None:
     """Generate and persist planner output using a fresh DB session."""
 
@@ -656,6 +833,23 @@ async def _run_planner_generation(
                     "No board lead agent available for planning. "
                     "Provision an agent with is_board_lead=True first."
                 )
+
+            online_assignable_agents = _count_assignable_planner_agents(
+                role_agents,
+                lead_agent,
+            )
+            seed_task_budget = (
+                initial_task_budget
+                if initial_task_budget is not None
+                else _default_initial_task_budget(
+                    online_assignable_agents=online_assignable_agents,
+                )
+            )
+            planner_output.expansion_policy = _normalize_expansion_policy(
+                planner_output.expansion_policy,
+                online_assignable_agents=online_assignable_agents,
+                initial_task_budget=seed_task_budget,
+            )
 
             _set_pipeline_phase(
                 planner_output,
@@ -703,14 +897,14 @@ async def _run_planner_generation(
             session.add(planner_output)
             await session.commit()
 
-            tasks, warning = await _generate_tasks_from_epics(
+            tasks, epic_states, warning = await _generate_tasks_from_epics(
                 session=session,
                 board=board,
                 documents=documents,
                 epics=epics,
                 role_agents=role_agents,
                 lead_agent=lead_agent,
-                max_tasks=max_tasks,
+                max_tasks=seed_task_budget,
             )
         except Exception as exc:
             await _mark_planner_output_failed(
@@ -750,7 +944,10 @@ async def _run_planner_generation(
             return
 
         planner_output.tasks = tasks
+        planner_output.epic_states = epic_states
         planner_output.parallelism_groups = compute_parallelism_groups(tasks)
+        planner_output.materialized_task_count = 0
+        planner_output.remaining_scope_count = _estimate_remaining_scope_count(epic_states)
         planner_output.status = "draft"
         planner_output.pipeline_phase = "ready"
         planner_output.error_message = warning
@@ -969,13 +1166,14 @@ async def _generate_tasks_from_epics(
     role_agents: dict[str, list[Agent]],
     lead_agent: Agent,
     max_tasks: int,
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], list[dict], str | None]:
     if not epics:
-        return [], None
+        return [], [], None
 
     document_context = _document_context_for_prompt(documents)
-    per_epic_limit = max(3, max_tasks // max(1, len(epics)))
+    per_epic_limit = max(1, min(3, max_tasks // max(1, len(epics)) or 1))
     tasks: list[dict] = []
+    epic_states: list[dict] = []
 
     for epic in epics:
         response_text = await _call_llm_via_gateway(
@@ -983,11 +1181,12 @@ async def _generate_tasks_from_epics(
             board=board,
             system_prompt=PLANNER_TASK_PACK_SYSTEM_PROMPT,
             user_prompt=(
-                f"Expand the epic '{epic.get('title', 'Untitled Epic')}' into a task pack.\n\n"
+                f"Create the initial seed task pack for the epic '{epic.get('title', 'Untitled Epic')}'.\n\n"
                 f"Epic description: {epic.get('description', '')}\n"
                 f"Target task budget: up to {per_epic_limit} tasks.\n\n"
-                "Generate only the tasks for this epic. Include implementation, QA, docs, and ops "
-                "work that belongs inside this epic.\n\n"
+                "Generate only the initial tasks for this epic. Include implementation, QA, docs, "
+                "and ops work that belongs inside this epic, but leave later scope in the "
+                "remaining_work_summary and open_acceptance_items fields.\n\n"
                 f"--- DOSSIER ---\n\n{document_context}"
             ),
             preferred_role="lead",
@@ -1003,6 +1202,13 @@ async def _generate_tasks_from_epics(
         if not epic_tasks:
             raise ValueError(f"Task expansion returned no tasks for epic {epic.get('title', 'unknown')}")
         tasks.extend(epic_tasks)
+        epic_states.append(
+            _build_epic_state(
+                epic=epic,
+                payload=parsed,
+                materialized_tasks=len(epic_tasks),
+            )
+        )
 
     warning: str | None = None
     try:
@@ -1046,10 +1252,21 @@ async def _generate_tasks_from_epics(
             }
             for task in tasks
         ]
+        materialized_by_epic: dict[str, int] = {}
+        for task in tasks:
+            epic_id = str(task.get("epic_id") or "")
+            if epic_id:
+                materialized_by_epic[epic_id] = materialized_by_epic.get(epic_id, 0) + 1
+        for state in epic_states:
+            epic_id = str(state.get("epic_id") or "")
+            state["materialized_tasks"] = materialized_by_epic.get(epic_id, 0)
+            state["status"] = "active" if state["materialized_tasks"] else "planned"
         warning = (
-            f"{warning}; task list trimmed to {max_tasks}" if warning else f"Task list trimmed to {max_tasks}"
+            f"{warning}; seed task list trimmed to {max_tasks}"
+            if warning
+            else f"Seed task list trimmed to {max_tasks}"
         )
-    return tasks, warning
+    return tasks, epic_states, warning
 
 
 async def generate_backlog(
@@ -1057,7 +1274,7 @@ async def generate_backlog(
     *,
     artifact_id: UUID,
     board_id: UUID,
-    max_tasks: int = 50,
+    max_tasks: int | None = None,
     created_by: UUID | None = None,
     force: bool = False,
 ) -> PlannerOutput:
@@ -1280,6 +1497,135 @@ async def _wait_for_agent_response(
     raise RuntimeError("Timeout waiting for agent response")
 
 
+def _sync_epic_states_with_materialized_tasks(
+    planner_output: PlannerOutput,
+    *,
+    materialized_tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    task_counts: dict[str, dict[str, int]] = {}
+    for task in materialized_tasks:
+        epic_id = str(task.get("planner_epic_id") or task.get("epic_id") or "")
+        if not epic_id:
+            continue
+        state = task_counts.setdefault(
+            epic_id,
+            {"materialized": 0, "done": 0, "blocked_open": 0, "open": 0},
+        )
+        state["materialized"] += 1
+        if str(task.get("status") or "") == "done":
+            state["done"] += 1
+        else:
+            state["open"] += 1
+            if bool(task.get("is_blocked")):
+                state["blocked_open"] += 1
+
+    updated: list[dict[str, Any]] = []
+    for state in planner_output.epic_states or []:
+        epic_id = str(state.get("epic_id") or "")
+        counts = task_counts.get(
+            epic_id,
+            {"materialized": 0, "done": 0, "blocked_open": 0, "open": 0},
+        )
+        next_state = dict(state)
+        next_state["materialized_tasks"] = counts["materialized"]
+        next_state["done_tasks"] = counts["done"]
+        open_acceptance_items = list(next_state.get("open_acceptance_items") or [])
+        if counts["materialized"] == 0:
+            next_state["status"] = "planned"
+        elif counts["open"] == 0 and not open_acceptance_items:
+            next_state["status"] = "completed"
+        elif counts["open"] > 0 and counts["blocked_open"] == counts["open"]:
+            next_state["status"] = "blocked"
+        else:
+            next_state["status"] = "active"
+        updated.append(next_state)
+    return updated
+
+
+async def _create_board_tasks_from_planner_tasks(
+    session: AsyncSession,
+    *,
+    planner_output: PlannerOutput,
+    board: Board,
+    tasks: list[dict],
+    role_agents: dict[str, list[Agent]],
+    lead_agent: Agent | None,
+    materialized_from: str,
+    expansion_round: int,
+) -> list[UUID]:
+    from app.models.tag_assignments import TagAssignment
+    from app.models.tags import Tag
+    from app.models.task_dependencies import TaskDependency
+    from app.models.tasks import Task
+    from app.services.tags import slugify_tag
+
+    id_map: dict[str, UUID] = {}
+    created_ids: list[UUID] = []
+
+    for task_data in tasks:
+        assignee = _select_planner_task_assignee(
+            task_data=task_data,
+            role_agents=role_agents,
+            lead_agent=lead_agent,
+        )
+        task = Task(
+            board_id=planner_output.board_id,
+            title=task_data.get("title", "Untitled"),
+            description=task_data.get("description"),
+            status="inbox",
+            priority="medium",
+            acceptance_criteria=task_data.get("acceptance_criteria", []),
+            estimate=task_data.get("estimate"),
+            suggested_agent_role=task_data.get("suggested_agent_role"),
+            planner_task_id=task_data.get("id"),
+            epic_id=task_data.get("epic_id"),
+            planner_output_id=planner_output.id,
+            planner_epic_id=task_data.get("epic_id"),
+            materialized_from=materialized_from,
+            expansion_round=expansion_round,
+            assigned_agent_id=assignee.id if assignee is not None else None,
+            auto_created=True,
+            auto_reason=f"planner_output:{planner_output.id}",
+        )
+        session.add(task)
+        id_map[str(task_data["id"])] = task.id
+        created_ids.append(task.id)
+
+    await session.flush()
+
+    for task_data in tasks:
+        new_id = id_map[str(task_data["id"])]
+        for dep_id in task_data.get("depends_on", []):
+            if dep_id in id_map:
+                session.add(
+                    TaskDependency(
+                        board_id=planner_output.board_id,
+                        task_id=new_id,
+                        depends_on_task_id=id_map[dep_id],
+                    )
+                )
+
+        tags = task_data.get("tags", [])
+        for tag_name in tags:
+            tag_slug = slugify_tag(str(tag_name))
+            tag = await Tag.objects.filter_by(
+                organization_id=board.organization_id,
+                slug=tag_slug,
+            ).first(session)
+            if not tag:
+                tag = Tag(
+                    organization_id=board.organization_id,
+                    name=str(tag_name),
+                    slug=tag_slug,
+                    color="blue",
+                )
+                session.add(tag)
+                await session.flush()
+            session.add(TagAssignment(task_id=new_id, tag_id=tag.id))
+
+    return created_ids
+
+
 async def apply_planner_output(
     session: AsyncSession,
     planner_output: PlannerOutput,
@@ -1287,13 +1633,7 @@ async def apply_planner_output(
     tasks_override: list[dict] | None = None,
     epics_override: list[dict] | None = None,
 ) -> PlannerOutput:
-    """Apply a planner output by creating real tasks on the board.
-
-    Creates Task and TaskDependency records for each planned task.
-    """
-    from app.models.task_dependencies import TaskDependency
-    from app.models.tasks import Task
-    from app.services.tags import slugify_tag
+    """Apply a planner output by creating the initial materialized task batch on the board."""
 
     tasks = tasks_override or planner_output.tasks
     epics = epics_override or planner_output.epics
@@ -1313,70 +1653,37 @@ async def apply_planner_output(
         session,
         board_id=planner_output.board_id,
     )
-    id_map: dict[str, UUID] = {}
-
-    for task_data in tasks:
-        assignee = _select_planner_task_assignee(
-            task_data=task_data,
-            role_agents=role_agents,
-            lead_agent=lead_agent,
-        )
-        task = Task(
-            board_id=planner_output.board_id,
-            title=task_data.get("title", "Untitled"),
-            description=task_data.get("description"),
-            status="inbox",
-            priority="medium",
-            acceptance_criteria=task_data.get("acceptance_criteria", []),
-            estimate=task_data.get("estimate"),
-            suggested_agent_role=task_data.get("suggested_agent_role"),
-            planner_task_id=task_data.get("id"),
-            epic_id=task_data.get("epic_id"),
-            assigned_agent_id=assignee.id if assignee is not None else None,
-            auto_created=True,
-            auto_reason=f"planner_output:{planner_output.id}",
-        )
-        session.add(task)
-        id_map[task_data["id"]] = task.id
-
-    await session.flush()
-
-    for task_data in tasks:
-        new_id = id_map[task_data["id"]]
-        for dep_id in task_data.get("depends_on", []):
-            if dep_id in id_map:
-                dep = TaskDependency(
-                    board_id=planner_output.board_id,
-                    task_id=new_id,
-                    depends_on_task_id=id_map[dep_id],
-                )
-                session.add(dep)
-
-        tags = task_data.get("tags", [])
-        if tags and planner_output.board_id:
-            from app.models.tags import Tag
-            from app.models.tag_assignments import TagAssignment
-            for tag_name in tags:
-                tag_slug = slugify_tag(str(tag_name))
-                tag = await Tag.objects.filter_by(
-                    organization_id=board.organization_id,
-                    slug=tag_slug,
-                ).first(session)
-                if not tag:
-                    tag = Tag(
-                        organization_id=board.organization_id,
-                        name=str(tag_name),
-                        slug=tag_slug,
-                        color="blue",
-                    )
-                    session.add(tag)
-                    await session.flush()
-                session.add(TagAssignment(task_id=new_id, tag_id=tag.id))
+    await _create_board_tasks_from_planner_tasks(
+        session,
+        planner_output=planner_output,
+        board=board,
+        tasks=tasks,
+        role_agents=role_agents,
+        lead_agent=lead_agent,
+        materialized_from="initial",
+        expansion_round=0,
+    )
 
     planner_output.status = "applied"
     planner_output.applied_at = utcnow()
     planner_output.epics = epics
     planner_output.tasks = tasks
+    planner_output.materialized_task_count = len(tasks)
+    planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+        planner_output,
+        materialized_tasks=[
+            {
+                "epic_id": task.get("epic_id"),
+                "planner_epic_id": task.get("epic_id"),
+                "status": "inbox",
+                "is_blocked": False,
+            }
+            for task in tasks
+        ],
+    )
+    planner_output.remaining_scope_count = _estimate_remaining_scope_count(
+        planner_output.epic_states,
+    )
 
     session.add(planner_output)
     await session.commit()
@@ -1445,6 +1752,861 @@ async def _notify_lead_of_planner_package(
                 "planner_output_id": str(planner_output.id),
                 "lead_agent_id": str(lead_agent.id),
             },
+        )
+
+
+async def list_planner_expansion_runs(
+    session: AsyncSession,
+    *,
+    planner_output_id: UUID,
+    limit: int = 20,
+) -> list[PlannerExpansionRun]:
+    return list(
+        await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output_id)
+        .order_by(col(PlannerExpansionRun.created_at).desc())
+        .limit(limit)
+        .all(session)
+    )
+
+
+async def _latest_planner_expansion_run(
+    session: AsyncSession,
+    *,
+    planner_output_id: UUID,
+) -> PlannerExpansionRun | None:
+    return (
+        await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output_id)
+        .order_by(col(PlannerExpansionRun.created_at).desc())
+        .first(session)
+    )
+
+
+async def _active_planner_expansion_run(
+    session: AsyncSession,
+    *,
+    planner_output_id: UUID,
+) -> PlannerExpansionRun | None:
+    return (
+        await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output_id)
+        .filter(col(PlannerExpansionRun.status).in_(tuple(PLANNER_EXPANSION_RUNNING_STATUSES)))
+        .first(session)
+    )
+
+
+async def _latest_applied_planner_output_for_board(
+    session: AsyncSession,
+    *,
+    board_id: UUID,
+) -> PlannerOutput | None:
+    return (
+        await PlannerOutput.objects.filter_by(board_id=board_id, status="applied")
+        .order_by(col(PlannerOutput.applied_at).desc(), col(PlannerOutput.created_at).desc())
+        .first(session)
+    )
+
+
+async def _load_materialized_task_snapshots(
+    session: AsyncSession,
+    *,
+    board_id: UUID,
+    planner_output_id: UUID,
+) -> list[dict[str, Any]]:
+    from app.models.tasks import Task
+    from app.services.task_dependencies import (
+        blocked_by_dependency_ids,
+        dependency_ids_by_task_id,
+        dependency_status_by_id,
+    )
+
+    tasks = list(
+        await Task.objects.filter_by(board_id=board_id, planner_output_id=planner_output_id)
+        .order_by(col(Task.created_at).asc())
+        .all(session)
+    )
+    task_ids = [task.id for task in tasks]
+    deps_by_task_id = await dependency_ids_by_task_id(
+        session,
+        board_id=board_id,
+        task_ids=task_ids,
+    )
+    all_dependency_ids = list({dep_id for values in deps_by_task_id.values() for dep_id in values})
+    dependency_statuses = await dependency_status_by_id(
+        session,
+        board_id=board_id,
+        dependency_ids=all_dependency_ids,
+    )
+
+    snapshots: list[dict[str, Any]] = []
+    for task in tasks:
+        dep_ids = deps_by_task_id.get(task.id, [])
+        blocked_by = blocked_by_dependency_ids(
+            dependency_ids=dep_ids,
+            status_by_id=dependency_statuses,
+        )
+        snapshots.append(
+            {
+                "id": str(task.id),
+                "title": task.title,
+                "status": task.status,
+                "planner_task_id": task.planner_task_id,
+                "epic_id": task.epic_id,
+                "planner_epic_id": task.planner_epic_id,
+                "suggested_agent_role": task.suggested_agent_role,
+                "materialized_from": task.materialized_from,
+                "expansion_round": task.expansion_round,
+                "is_blocked": bool(blocked_by) if task.status != "done" else False,
+            }
+        )
+    return snapshots
+
+
+def _merge_epic_state_updates(
+    *,
+    current_states: list[dict[str, Any]],
+    updated_states: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    updates_by_epic = {
+        str(state.get("epic_id") or ""): state
+        for state in updated_states
+        if state.get("epic_id")
+    }
+    merged: list[dict[str, Any]] = []
+    for state in current_states:
+        epic_id = str(state.get("epic_id") or "")
+        merged_state = dict(state)
+        merged_state.update(updates_by_epic.get(epic_id, {}))
+        merged.append(merged_state)
+    return merged
+
+
+def _pick_epics_for_expansion(
+    *,
+    planner_output: PlannerOutput,
+    max_active_epics: int,
+) -> list[dict[str, Any]]:
+    epic_index = {
+        str(epic.get("id") or ""): index for index, epic in enumerate(planner_output.epics)
+    }
+    states = list(planner_output.epic_states or [])
+    actionable_active = [
+        state
+        for state in states
+        if state.get("status") in {"active", "blocked"}
+        and (
+            state.get("remaining_work_summary")
+            or list(state.get("open_acceptance_items") or [])
+        )
+    ]
+    if actionable_active:
+        actionable_active.sort(
+            key=lambda state: (
+                state.get("status") == "blocked",
+                int(state.get("materialized_tasks") or 0),
+                epic_index.get(str(state.get("epic_id") or ""), 999),
+            )
+        )
+        return actionable_active[:max_active_epics]
+
+    planned = [state for state in states if state.get("status") == "planned"]
+    planned.sort(key=lambda state: epic_index.get(str(state.get("epic_id") or ""), 999))
+    return planned[:max_active_epics]
+
+
+def _normalize_expansion_tasks(
+    epic: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    round_number: int,
+) -> list[dict[str, Any]]:
+    epic_id = str(epic.get("id") or "epic")
+    normalized: list[dict[str, Any]] = []
+    raw_tasks = list(payload.get("tasks", []))
+    raw_id_map: dict[str, str] = {}
+    for index, task in enumerate(raw_tasks, start=1):
+        raw_id = str(task.get("id") or f"task_{index}")
+        raw_id_map[raw_id] = f"{epic_id}_r{round_number}_{raw_id}"
+    for index, task in enumerate(raw_tasks, start=1):
+        raw_id = str(task.get("id") or f"task_{index}")
+        normalized.append(
+            {
+                "id": raw_id_map[raw_id],
+                "epic_id": epic_id,
+                "title": str(task.get("title") or "Untitled"),
+                "description": task.get("description"),
+                "acceptance_criteria": list(task.get("acceptance_criteria") or []),
+                "depends_on": [
+                    raw_id_map.get(dep_id, dep_id)
+                    for dep_id in task.get("depends_on", [])
+                    if isinstance(dep_id, str) and dep_id in raw_id_map and dep_id != raw_id
+                ],
+                "tags": list(task.get("tags") or []),
+                "estimate": task.get("estimate"),
+                "suggested_agent_role": task.get("suggested_agent_role"),
+            }
+        )
+    return normalized
+
+
+def _dedupe_expansion_tasks(
+    *,
+    candidate_tasks: list[dict[str, Any]],
+    existing_tasks: list[dict[str, Any]],
+    max_new_tasks: int,
+) -> list[dict[str, Any]]:
+    existing_ids = {
+        str(task.get("planner_task_id") or "")
+        for task in existing_tasks
+        if task.get("planner_task_id")
+    }
+    existing_titles = {
+        (
+            str(task.get("planner_epic_id") or task.get("epic_id") or ""),
+            _normalize_task_title(task.get("title")),
+        )
+        for task in existing_tasks
+    }
+    kept: list[dict[str, Any]] = []
+    kept_ids: set[str] = set()
+    kept_titles: set[tuple[str, str]] = set()
+    for task in candidate_tasks:
+        task_id = str(task.get("id") or "")
+        epic_id = str(task.get("epic_id") or "")
+        title_key = (epic_id, _normalize_task_title(task.get("title")))
+        if not task_id or task_id in existing_ids or task_id in kept_ids:
+            continue
+        if title_key in existing_titles or title_key in kept_titles:
+            continue
+        kept.append(dict(task))
+        kept_ids.add(task_id)
+        kept_titles.add(title_key)
+        if len(kept) >= max_new_tasks:
+            break
+    valid_ids = {str(task.get("id")) for task in kept}
+    for task in kept:
+        task["depends_on"] = [
+            dep_id for dep_id in task.get("depends_on", []) if dep_id in valid_ids
+        ]
+    return kept
+
+
+def _remaining_scope_summary(epic_states: list[dict[str, Any]]) -> str | None:
+    lines = [
+        f"- {state.get('epic_id')}: {state.get('remaining_work_summary')}"
+        for state in epic_states
+        if state.get("remaining_work_summary")
+    ]
+    if not lines:
+        return None
+    return "\n".join(lines[:6])
+
+
+def _default_backfilled_epic_states(planner_output: PlannerOutput) -> list[dict[str, Any]]:
+    seed_tasks_by_epic: dict[str, list[dict[str, Any]]] = {}
+    for task in planner_output.tasks or []:
+        epic_id = str(task.get("epic_id") or "")
+        if not epic_id:
+            continue
+        seed_tasks_by_epic.setdefault(epic_id, []).append(task)
+
+    states: list[dict[str, Any]] = []
+    for epic in planner_output.epics or []:
+        epic_id = str(epic.get("id") or "")
+        epic_tasks = seed_tasks_by_epic.get(epic_id, [])
+        next_focus_roles = [
+            str(role)
+            for role in {
+                task.get("suggested_agent_role")
+                for task in epic_tasks
+                if task.get("suggested_agent_role")
+            }
+        ]
+        states.append(
+            {
+                "epic_id": epic_id,
+                "status": "active" if epic_tasks else "planned",
+                "coverage_summary": (
+                    "Initial seed task package was created for this epic."
+                    if epic_tasks
+                    else "Epic exists in the approved planner package but has not been materialized yet."
+                ),
+                "remaining_work_summary": (
+                    "Use the approved dossier and current board state to materialize the next in-scope tasks for this epic."
+                ),
+                "materialized_tasks": len(epic_tasks),
+                "done_tasks": 0,
+                "open_acceptance_items": [],
+                "next_focus_roles": next_focus_roles,
+            }
+        )
+    return states
+
+
+async def _backfill_existing_planner_package_state(
+    session: AsyncSession,
+    *,
+    planner_output: PlannerOutput,
+) -> None:
+    from app.models.tasks import Task
+
+    task_map = {
+        str(task.get("id") or ""): task for task in planner_output.tasks or [] if task.get("id")
+    }
+    if not task_map:
+        if not planner_output.epic_states and planner_output.epics:
+            planner_output.epic_states = _default_backfilled_epic_states(planner_output)
+            planner_output.remaining_scope_count = _estimate_remaining_scope_count(
+                planner_output.epic_states,
+            )
+            session.add(planner_output)
+            await session.commit()
+        return
+
+    candidates = list(
+        await Task.objects.filter_by(board_id=planner_output.board_id)
+        .filter(
+            col(Task.planner_output_id).is_(None),
+            col(Task.auto_reason) == f"planner_output:{planner_output.id}",
+        )
+        .all(session)
+    )
+    changed = False
+    for task in candidates:
+        planner_task_id = str(task.planner_task_id or "")
+        seed_task = task_map.get(planner_task_id)
+        if seed_task is None:
+            continue
+        task.planner_output_id = planner_output.id
+        task.planner_epic_id = str(
+            seed_task.get("epic_id") or task.epic_id or ""
+        ) or None
+        task.materialized_from = task.materialized_from or "initial"
+        task.expansion_round = 0 if task.expansion_round is None else task.expansion_round
+        session.add(task)
+        changed = True
+
+    if not planner_output.epic_states and planner_output.epics:
+        planner_output.epic_states = _default_backfilled_epic_states(planner_output)
+        planner_output.remaining_scope_count = _estimate_remaining_scope_count(
+            planner_output.epic_states,
+        )
+        session.add(planner_output)
+        changed = True
+
+    if changed:
+        await session.commit()
+
+
+async def get_board_execution_coverage(
+    session: AsyncSession,
+    *,
+    board_id: UUID,
+) -> dict[str, Any]:
+    board = await Board.objects.by_id(board_id).first(session)
+    if board is None:
+        raise ValueError(f"Board {board_id} not found")
+
+    planner_output = await _latest_applied_planner_output_for_board(session, board_id=board_id)
+    if planner_output is None:
+        return {
+            "board_id": board_id,
+            "planner_output_id": None,
+            "planner_status": None,
+            "docs_count": 0,
+            "epics_total": 0,
+            "epics_active": 0,
+            "epics_completed": 0,
+            "materialized_tasks": 0,
+            "done_tasks": 0,
+            "in_progress_tasks": 0,
+            "review_tasks": 0,
+            "inbox_tasks": 0,
+            "remaining_scope_count": None,
+            "remaining_scope_summary": None,
+            "active_epics": [],
+            "next_expansion_eligible": False,
+            "next_expansion_reason": "No applied planner package yet.",
+            "auto_expand_enabled": False,
+            "expansion_policy": {},
+            "last_expansion_run": None,
+        }
+
+    await _backfill_existing_planner_package_state(
+        session,
+        planner_output=planner_output,
+    )
+    task_snapshots = await _load_materialized_task_snapshots(
+        session,
+        board_id=board_id,
+        planner_output_id=planner_output.id,
+    )
+    planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+        planner_output,
+        materialized_tasks=task_snapshots,
+    )
+    role_agents, lead_agent = await _resolve_board_agents_for_planner(
+        session,
+        board_id=board_id,
+    )
+    policy = _normalize_expansion_policy(
+        planner_output.expansion_policy,
+        online_assignable_agents=_count_assignable_planner_agents(role_agents, lead_agent),
+        initial_task_budget=int(
+            (planner_output.expansion_policy or {}).get("initial_task_budget") or len(planner_output.tasks) or 8
+        ),
+    )
+    active_run = await _active_planner_expansion_run(
+        session,
+        planner_output_id=planner_output.id,
+    )
+    unblocked_non_done = sum(
+        1
+        for task in task_snapshots
+        if task.get("status") != "done" and not bool(task.get("is_blocked"))
+    )
+    threshold = int(policy.get("low_backlog_threshold") or 1)
+    eligible = (
+        not board.is_paused
+        and bool(policy.get("auto_expand_enabled"))
+        and active_run is None
+        and unblocked_non_done < threshold
+    )
+    if board.is_paused:
+        eligibility_reason = "Board is paused."
+    elif not bool(policy.get("auto_expand_enabled")):
+        eligibility_reason = "Auto-expand is paused."
+    elif active_run is not None:
+        eligibility_reason = f"Expansion round {active_run.round_number} is still running."
+    elif unblocked_non_done >= threshold:
+        eligibility_reason = (
+            f"Ready backlog buffer is healthy ({unblocked_non_done}/{threshold})."
+        )
+    else:
+        eligibility_reason = "Ready backlog is below the buffered threshold."
+
+    last_run = await _latest_planner_expansion_run(
+        session,
+        planner_output_id=planner_output.id,
+    )
+    status_counts = {"done": 0, "in_progress": 0, "review": 0, "inbox": 0}
+    for task in task_snapshots:
+        status_key = str(task.get("status") or "")
+        if status_key in status_counts:
+            status_counts[status_key] += 1
+
+    active_epics = [
+        state
+        for state in planner_output.epic_states
+        if state.get("status") in {"active", "blocked"}
+    ]
+    return {
+        "board_id": board_id,
+        "planner_output_id": planner_output.id,
+        "planner_status": planner_output.status,
+        "docs_count": len(planner_output.documents or []),
+        "epics_total": len(planner_output.epics or []),
+        "epics_active": len([state for state in planner_output.epic_states if state.get("status") == "active"]),
+        "epics_completed": len([state for state in planner_output.epic_states if state.get("status") == "completed"]),
+        "materialized_tasks": len(task_snapshots),
+        "done_tasks": status_counts["done"],
+        "in_progress_tasks": status_counts["in_progress"],
+        "review_tasks": status_counts["review"],
+        "inbox_tasks": status_counts["inbox"],
+        "remaining_scope_count": _estimate_remaining_scope_count(planner_output.epic_states),
+        "remaining_scope_summary": _remaining_scope_summary(planner_output.epic_states),
+        "active_epics": active_epics,
+        "next_expansion_eligible": eligible,
+        "next_expansion_reason": eligibility_reason,
+        "auto_expand_enabled": bool(policy.get("auto_expand_enabled")),
+        "expansion_policy": policy,
+        "last_expansion_run": last_run,
+    }
+
+
+def _launch_planner_expansion(
+    *,
+    planner_output_id: UUID,
+    expansion_run_id: UUID,
+    max_new_tasks: int | None,
+) -> None:
+    task = asyncio.create_task(
+        _run_planner_expansion(
+            planner_output_id=planner_output_id,
+            expansion_run_id=expansion_run_id,
+            max_new_tasks=max_new_tasks,
+        )
+    )
+
+    def _log_task_result(done_task: asyncio.Task[None]) -> None:
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception(
+                "Planner background expansion crashed",
+                extra={
+                    "planner_output_id": str(planner_output_id),
+                    "expansion_run_id": str(expansion_run_id),
+                },
+            )
+
+    task.add_done_callback(_log_task_result)
+
+
+async def queue_planner_expansion(
+    session: AsyncSession,
+    *,
+    planner_output: PlannerOutput,
+    trigger: str = "manual",
+    max_new_tasks: int | None = None,
+) -> PlannerOutput:
+    if planner_output.status != "applied":
+        raise ValueError("Only applied planner outputs can be expanded")
+
+    board = await Board.objects.by_id(planner_output.board_id).first(session)
+    if board is None:
+        raise ValueError(f"Board {planner_output.board_id} not found")
+    if board.is_paused:
+        raise ValueError("Board is paused")
+
+    await _backfill_existing_planner_package_state(
+        session,
+        planner_output=planner_output,
+    )
+
+    active_run = await _active_planner_expansion_run(
+        session,
+        planner_output_id=planner_output.id,
+    )
+    if active_run is not None:
+        return planner_output
+
+    role_agents, lead_agent = await _resolve_board_agents_for_planner(
+        session,
+        board_id=planner_output.board_id,
+    )
+    policy = _normalize_expansion_policy(
+        planner_output.expansion_policy,
+        online_assignable_agents=_count_assignable_planner_agents(role_agents, lead_agent),
+        initial_task_budget=int(
+            (planner_output.expansion_policy or {}).get("initial_task_budget")
+            or len(planner_output.tasks)
+            or 8
+        ),
+    )
+    planner_output.expansion_policy = policy
+    if trigger in PLANNER_EXPANSION_AUTO_TRIGGERS and not bool(policy.get("auto_expand_enabled")):
+        return planner_output
+
+    latest_run = await _latest_planner_expansion_run(
+        session,
+        planner_output_id=planner_output.id,
+    )
+    run = PlannerExpansionRun(
+        planner_output_id=planner_output.id,
+        board_id=planner_output.board_id,
+        round_number=(latest_run.round_number + 1) if latest_run is not None else 1,
+        status="running",
+        trigger=trigger,
+        source_epic_ids=[],
+        created_task_ids=[],
+        updated_at=utcnow(),
+    )
+    session.add(planner_output)
+    session.add(run)
+    await session.commit()
+    await session.refresh(planner_output)
+    await session.refresh(run)
+    _launch_planner_expansion(
+        planner_output_id=planner_output.id,
+        expansion_run_id=run.id,
+        max_new_tasks=max_new_tasks,
+    )
+    return planner_output
+
+
+async def maybe_queue_auto_expand_for_board(
+    session: AsyncSession,
+    *,
+    board_id: UUID,
+    trigger: str,
+) -> PlannerOutput | None:
+    planner_output = await _latest_applied_planner_output_for_board(session, board_id=board_id)
+    if planner_output is None:
+        return None
+    board = await Board.objects.by_id(board_id).first(session)
+    if board is None or board.is_paused:
+        return None
+    coverage = await get_board_execution_coverage(session, board_id=board_id)
+    if not coverage["next_expansion_eligible"]:
+        return None
+    return await queue_planner_expansion(
+        session,
+        planner_output=planner_output,
+        trigger=trigger,
+        max_new_tasks=None,
+    )
+
+
+async def _notify_lead_of_expansion(
+    session: AsyncSession,
+    *,
+    planner_output: PlannerOutput,
+    lead_agent: Agent | None,
+    expansion_run: PlannerExpansionRun,
+    created_titles: list[str],
+) -> None:
+    if lead_agent is None or not lead_agent.openclaw_session_id:
+        return
+    board = await Board.objects.by_id(planner_output.board_id).first(session)
+    if board is None:
+        return
+    created_lines = "\n".join(f"- {title}" for title in created_titles) or "- None"
+    source_epics = ", ".join(expansion_run.source_epic_ids) or "n/a"
+    message = (
+        "Planner expanded the next execution batch.\n\n"
+        f"Board: {board.name}\n"
+        f"Planner output: {planner_output.id}\n"
+        f"Expansion round: {expansion_run.round_number}\n"
+        f"Trigger: {expansion_run.trigger}\n"
+        f"Epics: {source_epics}\n\n"
+        "New tasks:\n"
+        f"{created_lines}\n\n"
+        "Use this delta together with the approved planner package. Do not re-plan the full scope."
+    )
+    try:
+        from app.services.openclaw.gateway_dispatch import GatewayDispatchService
+
+        await GatewayDispatchService(session).send_to_agent(
+            agent=lead_agent,
+            message=message,
+            deliver=True,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to notify lead after planner expansion",
+            extra={
+                "planner_output_id": str(planner_output.id),
+                "expansion_run_id": str(expansion_run.id),
+            },
+        )
+
+
+async def _run_planner_expansion(
+    *,
+    planner_output_id: UUID,
+    expansion_run_id: UUID,
+    max_new_tasks: int | None,
+) -> None:
+    async with async_session_maker() as session:
+        planner_output = await PlannerOutput.objects.by_id(planner_output_id).first(session)
+        expansion_run = await PlannerExpansionRun.objects.by_id(expansion_run_id).first(session)
+        if planner_output is None or expansion_run is None:
+            return
+        board = await Board.objects.by_id(planner_output.board_id).first(session)
+        if board is None:
+            expansion_run.status = "failed"
+            expansion_run.error_message = f"Board {planner_output.board_id} not found"
+            expansion_run.updated_at = utcnow()
+            session.add(expansion_run)
+            await session.commit()
+            return
+
+        await _backfill_existing_planner_package_state(
+            session,
+            planner_output=planner_output,
+        )
+
+        role_agents, lead_agent = await _resolve_board_agents_for_planner(
+            session,
+            board_id=planner_output.board_id,
+        )
+        policy = _normalize_expansion_policy(
+            planner_output.expansion_policy,
+            online_assignable_agents=_count_assignable_planner_agents(role_agents, lead_agent),
+            initial_task_budget=int(
+                (planner_output.expansion_policy or {}).get("initial_task_budget")
+                or len(planner_output.tasks)
+                or 8
+            ),
+        )
+        planner_output.expansion_policy = policy
+        task_snapshots = await _load_materialized_task_snapshots(
+            session,
+            board_id=planner_output.board_id,
+            planner_output_id=planner_output.id,
+        )
+        planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+            planner_output,
+            materialized_tasks=task_snapshots,
+        )
+        max_total_tasks = max_new_tasks or int(policy.get("max_new_tasks_per_round") or 1)
+        per_epic_limit = min(
+            int(policy.get("max_new_tasks_per_epic") or 1),
+            max_total_tasks,
+        )
+        epic_map = {str(epic.get("id") or ""): epic for epic in planner_output.epics}
+        selected_states = _pick_epics_for_expansion(
+            planner_output=planner_output,
+            max_active_epics=int(policy.get("max_active_epics") or DEFAULT_MAX_ACTIVE_EPICS),
+        )
+        expansion_run.source_epic_ids = [
+            str(state.get("epic_id") or "")
+            for state in selected_states
+            if state.get("epic_id")
+        ]
+        if not selected_states:
+            expansion_run.status = "skipped"
+            expansion_run.summary = "No eligible epics remained for expansion."
+            expansion_run.updated_at = utcnow()
+            session.add(expansion_run)
+            await session.commit()
+            return
+
+        candidate_tasks: list[dict[str, Any]] = []
+        state_updates: list[dict[str, Any]] = []
+        scope_suggestions: list[str] = []
+        for state in selected_states:
+            epic_id = str(state.get("epic_id") or "")
+            epic = epic_map.get(epic_id)
+            if epic is None:
+                continue
+            existing_epic_tasks = [
+                task for task in task_snapshots if str(task.get("planner_epic_id") or task.get("epic_id") or "") == epic_id
+            ]
+            response_text = await _call_llm_via_gateway(
+                session=session,
+                board=board,
+                system_prompt=PLANNER_EXPANSION_SYSTEM_PROMPT,
+                user_prompt=(
+                    f"Materialize the next batch for epic '{epic.get('title', 'Untitled Epic')}'.\n\n"
+                    f"Epic description: {epic.get('description', '')}\n"
+                    f"Current epic status: {state.get('status', 'planned')}\n"
+                    f"Remaining work summary: {state.get('remaining_work_summary') or 'Not recorded yet.'}\n"
+                    f"Open acceptance items: {json.dumps(list(state.get('open_acceptance_items') or []))}\n"
+                    f"Task budget: up to {per_epic_limit} tasks.\n\n"
+                    "--- EXISTING MATERIALIZED TASKS ---\n\n"
+                    f"{_compact_existing_epic_tasks(existing_epic_tasks)}\n\n"
+                    "--- DOSSIER ---\n\n"
+                    f"{_document_context_for_prompt(planner_output.documents or [])}"
+                ),
+                preferred_role="lead",
+                role_agents=role_agents,
+                lead_agent=lead_agent,
+            )
+            parsed = _extract_json_from_response(response_text)
+            if not parsed:
+                raise ValueError(f"Failed to parse expansion response for epic {epic_id}")
+            scope_suggestions.extend(
+                [
+                    str(item).strip()
+                    for item in parsed.get("scope_suggestions", [])
+                    if isinstance(item, str) and str(item).strip()
+                ]
+            )
+            normalized_tasks = _normalize_expansion_tasks(
+                epic,
+                parsed,
+                round_number=expansion_run.round_number,
+            )
+            deduped = _dedupe_expansion_tasks(
+                candidate_tasks=normalized_tasks,
+                existing_tasks=task_snapshots + candidate_tasks,
+                max_new_tasks=max_total_tasks - len(candidate_tasks),
+            )
+            candidate_tasks.extend(deduped)
+            state_updates.append(
+                _build_epic_state(
+                    epic=epic,
+                    payload=parsed,
+                    materialized_tasks=int(state.get("materialized_tasks") or 0) + len(deduped),
+                    done_tasks=int(state.get("done_tasks") or 0),
+                )
+            )
+            if len(candidate_tasks) >= max_total_tasks:
+                break
+
+        if candidate_tasks:
+            try:
+                dependency_response = await _call_llm_via_gateway(
+                    session=session,
+                    board=board,
+                    system_prompt=PLANNER_DEPENDENCY_SYSTEM_PROMPT,
+                    user_prompt=(
+                        "Normalize the task dependencies for this next-batch task list.\n\n"
+                        f"--- TASK OUTLINE ---\n\n{_compact_task_outline(candidate_tasks)}"
+                    ),
+                    preferred_role="lead",
+                    role_agents=role_agents,
+                    lead_agent=lead_agent,
+                )
+                parsed = _extract_json_from_response(dependency_response)
+                if parsed:
+                    normalized = _normalize_dependency_patch(candidate_tasks, parsed)
+                    if validate_dag(normalized) is None:
+                        candidate_tasks = normalized
+            except Exception:
+                pass
+
+        if not candidate_tasks:
+            expansion_run.status = "skipped"
+            expansion_run.summary = (
+                "No new in-scope tasks were materialized."
+                + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
+            )
+            expansion_run.updated_at = utcnow()
+            planner_output.epic_states = _merge_epic_state_updates(
+                current_states=planner_output.epic_states or [],
+                updated_states=state_updates,
+            )
+            session.add(planner_output)
+            session.add(expansion_run)
+            await session.commit()
+            return
+
+        created_ids = await _create_board_tasks_from_planner_tasks(
+            session,
+            planner_output=planner_output,
+            board=board,
+            tasks=candidate_tasks,
+            role_agents=role_agents,
+            lead_agent=lead_agent,
+            materialized_from="expansion",
+            expansion_round=expansion_run.round_number,
+        )
+        task_snapshots = await _load_materialized_task_snapshots(
+            session,
+            board_id=planner_output.board_id,
+            planner_output_id=planner_output.id,
+        )
+        planner_output.epic_states = _merge_epic_state_updates(
+            current_states=planner_output.epic_states or [],
+            updated_states=state_updates,
+        )
+        planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+            planner_output,
+            materialized_tasks=task_snapshots,
+        )
+        planner_output.materialized_task_count = len(task_snapshots)
+        planner_output.remaining_scope_count = _estimate_remaining_scope_count(
+            planner_output.epic_states,
+        )
+        planner_output.latest_expansion_at = utcnow()
+        expansion_run.status = "succeeded"
+        expansion_run.created_task_ids = [str(task_id) for task_id in created_ids]
+        expansion_run.summary = (
+            f"Created {len(created_ids)} tasks across "
+            f"{len(expansion_run.source_epic_ids)} epic(s)."
+            + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
+        )
+        expansion_run.updated_at = utcnow()
+        session.add(planner_output)
+        session.add(expansion_run)
+        await session.commit()
+        await _notify_lead_of_expansion(
+            session,
+            planner_output=planner_output,
+            lead_agent=lead_agent,
+            expansion_run=expansion_run,
+            created_titles=[task.get("title", "Untitled") for task in candidate_tasks],
         )
 
 

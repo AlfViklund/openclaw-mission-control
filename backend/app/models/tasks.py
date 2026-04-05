@@ -36,6 +36,14 @@ class Task(TenantScoped, table=True):
     suggested_agent_role: str | None = None
     planner_task_id: str | None = None  # Original task ID from planner output
     epic_id: str | None = None
+    planner_output_id: UUID | None = Field(
+        default=None,
+        foreign_key="planner_outputs.id",
+        index=True,
+    )
+    planner_epic_id: str | None = None
+    materialized_from: str | None = Field(default=None, index=True)
+    expansion_round: int | None = None
 
     created_by_user_id: UUID | None = Field(
         default=None,

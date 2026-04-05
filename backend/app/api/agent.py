@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -113,17 +114,20 @@ class AgentTaskListFilters(SQLModel):
     status_filter: str | None = None
     assigned_agent_id: UUID | None = None
     unassigned: bool | None = None
+    since: datetime | None = None
 
 
 def _task_list_filters(
     status_filter: str | None = TASK_STATUS_QUERY,
     assigned_agent_id: UUID | None = None,
     unassigned: bool | None = None,
+    since: datetime | None = None,
 ) -> AgentTaskListFilters:
     return AgentTaskListFilters(
         status_filter=status_filter,
         assigned_agent_id=assigned_agent_id,
         unassigned=unassigned,
+        since=since,
     )
 
 
@@ -581,6 +585,7 @@ async def list_tasks(
         status_filter=filters.status_filter,
         assigned_agent_id=filters.assigned_agent_id,
         unassigned=filters.unassigned,
+        since=filters.since,
         board=board,
         session=session,
         _actor=_actor(agent_ctx),

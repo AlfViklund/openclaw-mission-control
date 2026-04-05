@@ -11,6 +11,7 @@ import {
 } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   Activity,
   ArrowUpRight,
@@ -166,6 +167,102 @@ type Agent = AgentRead & { status: string; wake_reason?: string | null };
 type TaskComment = TaskCommentRead;
 
 type Approval = ApprovalRead & { status: string };
+
+type ExecutionCoverageEpicState = {
+  epic_id: string;
+  status: string;
+  coverage_summary?: string | null;
+  remaining_work_summary?: string | null;
+  materialized_tasks: number;
+  done_tasks: number;
+  open_acceptance_items: string[];
+  next_focus_roles: string[];
+};
+
+type ExecutionCoverageRun = {
+  id: string;
+  round_number: number;
+  status: string;
+  trigger: string;
+  source_epic_ids: string[];
+  created_task_ids: string[];
+  summary?: string | null;
+  error_message?: string | null;
+  updated_at: string;
+};
+
+type ExecutionCoverage = {
+  board_id: string;
+  planner_output_id?: string | null;
+  planner_status?: string | null;
+  docs_count: number;
+  epics_total: number;
+  epics_active: number;
+  epics_completed: number;
+  materialized_tasks: number;
+  done_tasks: number;
+  in_progress_tasks: number;
+  review_tasks: number;
+  inbox_tasks: number;
+  remaining_scope_count?: number | null;
+  remaining_scope_summary?: string | null;
+  active_epics: ExecutionCoverageEpicState[];
+  next_expansion_eligible: boolean;
+  next_expansion_reason?: string | null;
+  auto_expand_enabled: boolean;
+  expansion_policy: Record<string, unknown>;
+  last_expansion_run?: ExecutionCoverageRun | null;
+};
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
+function getAuthToken(): string {
+  return getLocalAuthToken() || "";
+}
+
+async function fetchExecutionCoverage(boardId: string): Promise<ExecutionCoverage> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards/${boardId}/execution-coverage`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch execution coverage");
+  return res.json();
+}
+
+async function expandBoardPlanner(boardId: string, plannerOutputId: string): Promise<void> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/${plannerOutputId}/expand`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ trigger: "manual" }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to expand planner for board ${boardId}: ${text}`);
+  }
+}
+
+async function updateExecutionCoveragePolicy(
+  plannerOutputId: string,
+  expansionPolicy: Record<string, unknown>,
+): Promise<void> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/planner/${plannerOutputId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ expansion_policy: expansionPolicy }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to update planner policy: ${text}`);
+  }
+}
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -908,6 +1005,11 @@ export default function BoardDetailPage() {
   const [board, setBoard] = useState<Board | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [executionCoverage, setExecutionCoverage] =
+    useState<ExecutionCoverage | null>(null);
+  const [executionCoverageError, setExecutionCoverageError] = useState<string | null>(null);
+  const [isExecutionCoverageLoading, setIsExecutionCoverageLoading] = useState(false);
+  const [isExecutionActionRunning, setIsExecutionActionRunning] = useState(false);
   const [groupSnapshot, setGroupSnapshot] = useState<BoardGroupSnapshot | null>(
     null,
   );
@@ -1367,9 +1469,85 @@ export default function BoardDetailPage() {
     }
   }, [boardId, isSignedIn]);
 
+  const loadExecutionCoverage = useCallback(async () => {
+    if (!isSignedIn || !boardId) {
+      setExecutionCoverage(null);
+      return;
+    }
+    setIsExecutionCoverageLoading(true);
+    setExecutionCoverageError(null);
+    try {
+      const coverage = await fetchExecutionCoverage(boardId);
+      setExecutionCoverage(coverage);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Unable to load execution coverage.";
+      setExecutionCoverageError(message);
+    } finally {
+      setIsExecutionCoverageLoading(false);
+    }
+  }, [boardId, isSignedIn]);
+
   useEffect(() => {
     void loadBoard();
   }, [loadBoard]);
+
+  useEffect(() => {
+    void loadExecutionCoverage();
+  }, [loadExecutionCoverage]);
+
+  useEffect(() => {
+    if (!isSignedIn || !boardId) return;
+    const intervalMs =
+      executionCoverage?.last_expansion_run?.status === "running" ? 5000 : 30000;
+    const intervalId = window.setInterval(() => {
+      void loadExecutionCoverage();
+    }, intervalMs);
+    return () => window.clearInterval(intervalId);
+  }, [
+    boardId,
+    executionCoverage?.last_expansion_run?.status,
+    isSignedIn,
+    loadExecutionCoverage,
+  ]);
+
+  const handleExpandNextBatch = useCallback(async () => {
+    if (!boardId || !executionCoverage?.planner_output_id) return;
+    setIsExecutionActionRunning(true);
+    setExecutionCoverageError(null);
+    try {
+      await expandBoardPlanner(boardId, executionCoverage.planner_output_id);
+      await loadExecutionCoverage();
+    } catch (err) {
+      setExecutionCoverageError(
+        err instanceof Error ? err.message : "Unable to expand next batch.",
+      );
+    } finally {
+      setIsExecutionActionRunning(false);
+    }
+  }, [boardId, executionCoverage?.planner_output_id, loadExecutionCoverage]);
+
+  const handleToggleExecutionAutoExpand = useCallback(
+    async (enabled: boolean) => {
+      if (!executionCoverage?.planner_output_id) return;
+      setIsExecutionActionRunning(true);
+      setExecutionCoverageError(null);
+      try {
+        await updateExecutionCoveragePolicy(executionCoverage.planner_output_id, {
+          ...(executionCoverage.expansion_policy || {}),
+          auto_expand_enabled: enabled,
+        });
+        await loadExecutionCoverage();
+      } catch (err) {
+        setExecutionCoverageError(
+          err instanceof Error ? err.message : "Unable to update auto-expand.",
+        );
+      } finally {
+        setIsExecutionActionRunning(false);
+      }
+    },
+    [executionCoverage, loadExecutionCoverage],
+  );
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -3322,7 +3500,7 @@ export default function BoardDetailPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => router.push(`/boards/${boardId}/planner`)}
+                      onClick={() => router.push(`/planner?boardId=${boardId}`)}
                       className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
                       title="Planner"
                     >
@@ -3428,6 +3606,139 @@ export default function BoardDetailPage() {
               </div>
             </div>
           </div>
+
+          {executionCoverage?.planner_output_id ? (
+            <div className="border-b border-slate-200 bg-slate-50/60 px-4 py-4 md:px-8">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Execution Coverage
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      Approved planner package drives progressive task materialization for this board.
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {executionCoverage.next_expansion_reason || "No coverage note available."}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleExpandNextBatch()}
+                      disabled={isExecutionActionRunning}
+                    >
+                      {isExecutionActionRunning ? (
+                        <RefreshCcw className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      Expand next batch
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void handleToggleExecutionAutoExpand(
+                          !executionCoverage.auto_expand_enabled,
+                        )
+                      }
+                      disabled={isExecutionActionRunning}
+                    >
+                      {executionCoverage.auto_expand_enabled
+                        ? "Pause auto-expand"
+                        : "Resume auto-expand"}
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-6">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Docs</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">{executionCoverage.docs_count}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Epics</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">
+                      {executionCoverage.epics_completed}/{executionCoverage.epics_total}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {executionCoverage.epics_active} active
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Materialized</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">{executionCoverage.materialized_tasks}</p>
+                    <p className="text-[11px] text-slate-500">{executionCoverage.inbox_tasks} inbox</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">In Flight</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">
+                      {executionCoverage.in_progress_tasks + executionCoverage.review_tasks}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {executionCoverage.in_progress_tasks} doing · {executionCoverage.review_tasks} review
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Done</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">{executionCoverage.done_tasks}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Remaining</p>
+                    <p className="mt-1 text-lg font-semibold text-slate-900">
+                      {executionCoverage.remaining_scope_count ?? "—"}
+                    </p>
+                  </div>
+                </div>
+                {executionCoverage.active_epics.length > 0 ? (
+                  <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                    {executionCoverage.active_epics.slice(0, 4).map((epic) => (
+                      <div key={epic.epic_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{epic.epic_id}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              {epic.materialized_tasks} materialized · {epic.done_tasks} done · {epic.status}
+                            </p>
+                          </div>
+                          {epic.next_focus_roles.length > 0 ? (
+                            <div className="text-[11px] text-slate-500">
+                              Next: {epic.next_focus_roles.join(", ")}
+                            </div>
+                          ) : null}
+                        </div>
+                        {epic.remaining_work_summary ? (
+                          <p className="mt-2 text-xs text-slate-600">
+                            {epic.remaining_work_summary}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {executionCoverage.last_expansion_run ? (
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Last expansion
+                    </p>
+                    <p className="mt-1 text-sm text-slate-700">
+                      Round {executionCoverage.last_expansion_run.round_number} ·{" "}
+                      {executionCoverage.last_expansion_run.status}
+                      {executionCoverage.last_expansion_run.summary
+                        ? ` · ${executionCoverage.last_expansion_run.summary}`
+                        : ""}
+                    </p>
+                  </div>
+                ) : null}
+                {executionCoverageError ? (
+                  <p className="mt-3 text-xs text-red-600">{executionCoverageError}</p>
+                ) : isExecutionCoverageLoading ? (
+                  <p className="mt-3 text-xs text-slate-500">Refreshing execution coverage…</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           <div className="relative flex flex-col gap-4 p-4 md:flex-row md:gap-6 md:p-6">
             {isOrgAdmin ? (

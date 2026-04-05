@@ -7,8 +7,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.api.planner import generate_backlog_endpoint
-from app.schemas.planner import PlannerGenerateRequest
+from app.api.planner import expand_planner_output_endpoint, generate_backlog_endpoint
+from app.schemas.planner import PlannerExpandRequest, PlannerGenerateRequest
 
 
 @pytest.mark.asyncio
@@ -77,3 +77,46 @@ async def test_generate_backlog_endpoint_raises_404_when_artifact_missing(
         )
 
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_expand_planner_output_endpoint_queues_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_output_id = uuid4()
+    planner_output = SimpleNamespace(id=planner_output_id, status="applied")
+
+    async def _fake_get_planner_output_by_id(_session: object, value: object) -> object:
+        assert value == planner_output_id
+        return planner_output
+
+    async def _fake_queue_planner_expansion(
+        session: object,
+        *,
+        planner_output: object,
+        trigger: str,
+        max_new_tasks: int | None,
+    ) -> object:
+        assert session is not None
+        assert planner_output is not None
+        assert trigger == "manual"
+        assert max_new_tasks == 5
+        return planner_output
+
+    monkeypatch.setattr(
+        "app.api.planner.get_planner_output_by_id",
+        _fake_get_planner_output_by_id,
+    )
+    monkeypatch.setattr(
+        "app.api.planner.queue_planner_expansion",
+        _fake_queue_planner_expansion,
+    )
+
+    result = await expand_planner_output_endpoint(
+        planner_output_id=planner_output_id,
+        payload=PlannerExpandRequest(trigger="manual", max_new_tasks=5),
+        session=object(),  # type: ignore[arg-type]
+        _actor=SimpleNamespace(),
+    )
+
+    assert result == planner_output
