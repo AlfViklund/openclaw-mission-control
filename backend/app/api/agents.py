@@ -460,6 +460,13 @@ async def repair_agent_auth_sync(
         await session.refresh(agent)
         raise
 
+    # Clear stale error from pre-repair rollback and record successful sync
+    agent.agent_auth_last_error = None
+    agent.agent_auth_last_synced_at = utcnow()
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+
     await session.refresh(agent)
     return AgentAuthRepairResponse(
         agent_id=agent.id,
