@@ -63,6 +63,58 @@ def _agent_update_params(
 AGENT_UPDATE_PARAMS_DEP = Depends(_agent_update_params)
 
 
+async def _reset_and_wake_repaired_agent_session(*, agent: object, gateway: object) -> None:
+    from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
+    from app.services.openclaw.gateway_rpc import OpenClawGatewayError, ensure_session, openclaw_call, send_message
+    from app.services.openclaw.internal.session_keys import resolve_canonical_agent_session
+    from app.services.openclaw.provisioning import _is_missing_session_error
+    from app.services.openclaw.shared import GatewayAgentIdentity
+
+    gateway_url = str(getattr(gateway, "url", "") or "").strip()
+    if not gateway_url:
+        msg = "Gateway url is required"
+        raise ValueError(msg)
+
+    if getattr(agent, "board_id", None) is None:
+        session_key = (
+            getattr(agent, "openclaw_session_id", None)
+            or GatewayAgentIdentity.session_key(gateway)
+            or ""
+        ).strip()
+        if not session_key:
+            msg = "gateway main agent session_key is required"
+            raise ValueError(msg)
+    else:
+        session_key = resolve_canonical_agent_session(agent).strip()
+        if not session_key:
+            msg = "board agent session_key is required"
+            raise ValueError(msg)
+
+    client_config = GatewayClientConfig(
+        url=gateway_url,
+        token=getattr(gateway, "token", None),
+        allow_insecure_tls=bool(getattr(gateway, "allow_insecure_tls", False)),
+        disable_device_pairing=bool(getattr(gateway, "disable_device_pairing", False)),
+    )
+    try:
+        await openclaw_call("sessions.reset", {"key": session_key}, config=client_config)
+    except OpenClawGatewayError as exc:
+        if not _is_missing_session_error(exc):
+            raise
+
+    await ensure_session(session_key, config=client_config, label=getattr(agent, "name", None))
+    await send_message(
+        (
+            f"Hello {getattr(agent, 'name', 'Agent')}. Your workspace has been updated.\n\n"
+            "Start the agent. If BOOTSTRAP.md exists, read it first, then read AGENTS.md. "
+            "Begin heartbeats after startup."
+        ),
+        session_key=session_key,
+        config=client_config,
+        deliver=True,
+    )
+
+
 @router.get("", response_model=DefaultLimitOffsetPage[AgentRead])
 async def list_agents(
     board_id: UUID | None = BOARD_ID_QUERY,
@@ -525,6 +577,22 @@ async def repair_agent_auth_sync(
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
+
+    try:
+        await _reset_and_wake_repaired_agent_session(agent=agent, gateway=gateway)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        agent.agent_auth_last_error = str(exc)
+        agent.updated_at = utcnow()
+        session.add(agent)
+        await session.commit()
+        await session.refresh(agent)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway session recovery failed: {exc}",
+        ) from exc
+
     return AgentAuthRepairResponse(
         agent_id=agent.id,
         agent_auth_mode=agent.agent_auth_mode,
