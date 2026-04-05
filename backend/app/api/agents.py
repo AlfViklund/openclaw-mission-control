@@ -385,8 +385,6 @@ async def repair_agent_auth_sync(
         current_agent_runtime_token,
         rollback_pending_token,
     )
-    from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
-    from app.services.openclaw.provisioning import OpenClawGatewayProvisioner
     from app.services.openclaw.gateway_resolver import (
         require_gateway_for_board,
     )
@@ -427,7 +425,12 @@ async def repair_agent_auth_sync(
         await session.flush()
 
     try:
-    raw_token = current_agent_runtime_token(agent)
+        raw_token = current_agent_runtime_token(agent)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cannot resolve runtime token: {exc}",
+        ) from exc
 
     from pathlib import Path
     import re
@@ -482,53 +485,6 @@ async def repair_agent_auth_sync(
     agent.updated_at = utcnow()
     session.add(agent)
     await session.commit()
-    await session.refresh(agent)
-    return AgentAuthRepairResponse(
-        agent_id=agent.id,
-        agent_auth_mode=agent.agent_auth_mode,
-        agent_token_version=agent.agent_token_version,
-        pending_agent_token_version=agent.pending_agent_token_version,
-        status=agent.status,
-        agent_auth_last_error=agent.agent_auth_last_error,
-    )
-    provisioner = OpenClawGatewayProvisioner()
-    try:
-        from app.models.users import User
-
-        template_user: User | None = None
-        await provisioner.sync_existing_agent_workspace(
-            agent=agent,
-            gateway=gateway,
-            board=board,
-            auth_token=raw_token,
-            user=template_user,
-            action="update",
-            force_bootstrap=False,
-            overwrite=False,
-            reset_session=True,
-            wake=True,
-            deliver_wakeup=True,
-            wakeup_verb="repaired",
-            file_names_override={"HEARTBEAT.md", "TOOLS.md"},
-        )
-    except Exception as fallback_exc:
-        agent.last_provision_error = str(fallback_exc)
-        agent.updated_at = utcnow()
-        session.add(agent)
-        await session.commit()
-        await session.refresh(agent)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gateway update failed: {fallback_exc}",
-        ) from fallback_exc
-
-    # Clear stale error from pre-repair rollback and record successful sync
-    agent.agent_auth_last_error = None
-    agent.agent_auth_last_synced_at = utcnow()
-    session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
-
     await session.refresh(agent)
     return AgentAuthRepairResponse(
         agent_id=agent.id,
