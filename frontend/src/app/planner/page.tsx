@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   Loader2,
   FileText,
@@ -93,7 +94,7 @@ const STATUS_CONFIG: Record<string, { icon: typeof CheckCircle; color: string; l
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 function getAuthToken(): string {
-  return localStorage.getItem("mc_auth_token") || "";
+  return getLocalAuthToken() || "";
 }
 
 async function fetchSpecArtifacts(boardId?: string): Promise<Artifact[]> {

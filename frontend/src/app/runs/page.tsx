@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   Loader2,
   Play,
@@ -79,7 +80,7 @@ const RUNTIME_LABELS: Record<string, string> = {
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 function getAuthToken(): string {
-  return localStorage.getItem("mc_auth_token") || "";
+  return getLocalAuthToken() || "";
 }
 
 async function fetchRuns(filters?: { task_id?: string; stage?: string; status?: string }): Promise<Run[]> {

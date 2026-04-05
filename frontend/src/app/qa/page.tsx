@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   Loader2,
   Play,
@@ -39,7 +40,7 @@ interface TaskOption {
 }
 
 function getAuthToken(): string {
-  return localStorage.getItem("mc_auth_token") || "";
+  return getLocalAuthToken() || "";
 }
 
 async function runTests(taskId: string, browsers?: string, grep?: string) {

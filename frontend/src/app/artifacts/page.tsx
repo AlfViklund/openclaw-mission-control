@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   FileText,
   Upload,
@@ -107,6 +109,10 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function resolveAuthToken(): string {
+  return getLocalAuthToken() || "";
+}
+
 async function fetchArtifacts(
   baseUrl: string,
   token: string,
@@ -193,9 +199,11 @@ async function fetchPreview(baseUrl: string, token: string, artifactId: string):
 
 export default function ArtifactsPage() {
   const { isSignedIn } = useAuth();
+  const searchParams = useSearchParams();
+  const boardIdFromUrl = searchParams.get("board_id") ?? "";
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardTasks, setBoardTasks] = useState<TaskOption[]>([]);
-  const [selectedBoardId, setSelectedBoardId] = useState("");
+  const [selectedBoardId, setSelectedBoardId] = useState(boardIdFromUrl);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -210,7 +218,7 @@ export default function ArtifactsPage() {
 
   // Filters
   const [filterType, setFilterType] = useState<string>("");
-  const [filterBoardId, setFilterBoardId] = useState<string>("");
+  const [filterBoardId, setFilterBoardId] = useState<string>(boardIdFromUrl);
   const [showFilters, setShowFilters] = useState(false);
 
   // Upload form state
@@ -226,7 +234,7 @@ export default function ArtifactsPage() {
     }
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const token = localStorage.getItem("mc_auth_token") || "";
+      const token = resolveAuthToken();
       const tasks = await fetchBoardTasks(baseUrl, token, boardId);
       setBoardTasks(tasks);
     } catch {
@@ -239,7 +247,7 @@ export default function ArtifactsPage() {
     setError(null);
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const token = localStorage.getItem("mc_auth_token") || "";
+      const token = resolveAuthToken();
       if (!token) {
         setError("Authentication required. Please sign in.");
         setIsLoading(false);
@@ -248,7 +256,7 @@ export default function ArtifactsPage() {
       const nextBoards = await fetchBoards(baseUrl, token);
       setBoards(nextBoards);
 
-      const boardId = selectedBoardId || localStorage.getItem("clawdev_active_board_id") || nextBoards[0]?.id || "";
+      const boardId = boardIdFromUrl || selectedBoardId || localStorage.getItem("clawdev_active_board_id") || nextBoards[0]?.id || "";
       if (boardId && boardId !== selectedBoardId) {
         setSelectedBoardId(boardId);
       }
@@ -294,7 +302,7 @@ export default function ArtifactsPage() {
     setUploadError(null);
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const token = localStorage.getItem("mc_auth_token") || "";
+      const token = resolveAuthToken();
       await uploadArtifact(baseUrl, token, selectedFile, uploadBoardId, uploadType, uploadTaskId || undefined);
       setShowUploadDialog(false);
       setSelectedFile(null);
@@ -314,7 +322,7 @@ export default function ArtifactsPage() {
     setIsDeleting(true);
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const token = localStorage.getItem("mc_auth_token") || "";
+      const token = resolveAuthToken();
       await deleteArtifact(baseUrl, token, deleteTarget.id);
       setDeleteTarget(null);
       await loadArtifacts();
@@ -331,7 +339,7 @@ export default function ArtifactsPage() {
     setPreviewLoading(true);
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const token = localStorage.getItem("mc_auth_token") || "";
+      const token = resolveAuthToken();
       const data = await fetchPreview(baseUrl, token, artifact.id);
       setPreviewContent(data.preview);
     } catch {
@@ -343,7 +351,6 @@ export default function ArtifactsPage() {
 
   const handleDownload = (artifact: Artifact) => {
     const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
-    const token = localStorage.getItem("mc_auth_token") || "";
     const url = `${baseUrl}/api/v1/artifacts/${artifact.id}/download`;
     const a = document.createElement("a");
     a.href = url;
@@ -375,8 +382,8 @@ export default function ArtifactsPage() {
       <DashboardPageLayout
         signedOut={{
           message: "Sign in to view artifacts.",
-          forceRedirectUrl: "/artifacts",
-          signUpForceRedirectUrl: "/artifacts",
+          forceRedirectUrl: boardIdFromUrl ? `/artifacts?board_id=${encodeURIComponent(boardIdFromUrl)}` : "/artifacts",
+          signUpForceRedirectUrl: boardIdFromUrl ? `/artifacts?board_id=${encodeURIComponent(boardIdFromUrl)}` : "/artifacts",
         }}
         title="Spec & Artifact Hub"
         description={`${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} stored. Upload specifications, plans, diffs, and reports.`}

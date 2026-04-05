@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/clerk";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import {
   Loader2,
   Activity,
@@ -62,7 +63,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getAuthToken(): string {
-  return localStorage.getItem("mc_auth_token") || "";
+  return getLocalAuthToken() || "";
 }
 
 async function runHealthCheck(): Promise<HealthCheckResult> {

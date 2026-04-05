@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle, XCircle, Loader2, Clock, ArrowRight } from "lucide-react";
+import { getLocalAuthToken } from "@/auth/localAuth";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -16,7 +17,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 const STAGES = ["plan", "build", "test"];
 
 function getAuthToken(): string {
-  return localStorage.getItem("mc_auth_token") || "";
+  return getLocalAuthToken() || "";
 }
 
 async function fetchTaskRuns(taskId: string) {

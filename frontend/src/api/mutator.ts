@@ -60,7 +60,9 @@ export const customFetch = async <T>(
     }
   }
 
-  const apiPath = url.startsWith("/api/v1")
+  const isRootProbePath =
+    url === "/healthz" || url === "/health" || url === "/readyz";
+  const apiPath = url.startsWith("/api/v1") || isRootProbePath
     ? url
     : url.startsWith("/")
       ? `/api/v1${url}`

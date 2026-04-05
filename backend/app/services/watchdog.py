@@ -127,7 +127,7 @@ async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict
     if not offline_ids:
         return []
 
-    tasks = await session.exec(select(Task).where(col(Task.status) == "in_progress")).all()
+    tasks = (await session.exec(select(Task).where(col(Task.status) == "in_progress"))).all()
     reassigned = []
 
     for task in tasks:
@@ -168,12 +168,12 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
                 })
 
     recent_cutoff = now - timedelta(hours=24)
-    failed_runs = await session.exec(
+    failed_runs = (await session.exec(
         select(Run).where(
             col(Run.status) == "failed",
             col(Run.finished_at) >= recent_cutoff,
         )
-    ).all()
+    )).all()
     for run in failed_runs:
         retry_count = sum(
             1 for e in run.evidence_paths if e.get("type") == "retry"
@@ -187,9 +187,9 @@ async def check_escalations(session: AsyncSession) -> list[dict]:
                 "severity": "high",
             })
 
-    inbox_tasks = await session.exec(
+    inbox_tasks = (await session.exec(
         select(Task).where(col(Task.status) == "inbox")
-    ).all()
+    )).all()
     for task in inbox_tasks:
         deps_result = await session.exec(
             select(TaskDependency).where(col(TaskDependency.task_id) == task.id)
