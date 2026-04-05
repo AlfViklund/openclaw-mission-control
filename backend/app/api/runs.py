@@ -9,21 +9,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import col, select
 
-from app.api.deps import require_user_auth
+from app.api.deps import ActorContext, require_user_auth, require_user_or_agent, resolve_actor_task_execution_agent
 from app.db.pagination import paginate
 from app.db.session import get_session
-from app.models.agents import Agent
 from app.models.runs import Run
 from app.models.tasks import Task
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.schemas.runs import RunCreate, RunEvidenceRead, RunRead, RunUpdate
-from app.schemas.common import OkResponse
 from app.services.runs import (
     cancel_run,
-    complete_run,
     create_run,
     get_run_by_id,
-    list_runs,
     start_run,
     update_run,
 )
@@ -37,28 +33,63 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 SESSION_DEP = Depends(get_session)
 USER_DEP = Depends(require_user_auth)
+ACTOR_DEP = Depends(require_user_or_agent)
 
 
-@router.post("", response_model=RunRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=RunRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["runs", "agent-lead", "agent-worker"],
+    operation_id="createRun",
+    openapi_extra={
+        "x-llm-intent": "execution_run_create",
+        "x-required-actor": "user_or_board_agent",
+        "x-when-to-use": [
+            "Create a tracked execution run for a board task stage.",
+            "Record stage execution when a board agent is starting work on its own task.",
+        ],
+        "x-negative-guidance": [
+            "Do not use for tasks on a different board than the authenticated agent.",
+            "Do not use to impersonate another agent unless the caller is board lead.",
+        ],
+        "x-routing-policy": [
+            "Prefer this endpoint when you already know the exact task, stage, and runtime.",
+            "Prefer pipeline execute when you want validation plus stage orchestration in one call.",
+        ],
+        "x-routing-policy-examples": [
+            {
+                "input": {"intent": "start a build run for my assigned task", "required_privilege": "any_agent"},
+                "decision": "execution_run_create",
+            },
+            {
+                "input": {"intent": "start a run on behalf of another board agent", "required_privilege": "board_lead"},
+                "decision": "execution_run_create",
+            },
+        ],
+    },
+)
 async def create_and_start_run(
     payload: RunCreate,
     session: AsyncSession = SESSION_DEP,
-    user: ActorContext = USER_DEP,
+    _actor: ActorContext = ACTOR_DEP,
 ) -> Run:
     """Create and start a new run for a task stage."""
     task = await Task.objects.by_id(payload.task_id).first(session)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-    if payload.agent_id:
-        agent = await Agent.objects.by_id(payload.agent_id).first(session)
-        if not agent:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    effective_agent_id = await resolve_actor_task_execution_agent(
+        session,
+        actor=_actor,
+        task=task,
+        requested_agent_id=payload.agent_id,
+    )
 
     run = await create_run(
         session,
         task_id=payload.task_id,
-        agent_id=payload.agent_id,
+        agent_id=effective_agent_id,
         runtime=payload.runtime,
         stage=payload.stage,
         model=payload.model,

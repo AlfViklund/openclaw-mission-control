@@ -5,9 +5,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentRead } from "./agentRead";
+import type { ActivityEventRead } from "./activityEventRead";
 import type { ApprovalRead } from "./approvalRead";
 import type { BoardMemoryRead } from "./boardMemoryRead";
 import type { BoardRead } from "./boardRead";
+import type { BoardRuntimeIntegrity } from "./boardRuntimeIntegrity";
 import type { TaskCardRead } from "./taskCardRead";
 
 /**
@@ -18,6 +20,10 @@ export interface BoardSnapshot {
   approvals: ApprovalRead[];
   board: BoardRead;
   chat_messages: BoardMemoryRead[];
+  coordination_messages?: BoardMemoryRead[];
   pending_approvals_count?: number;
+  runtime_events?: ActivityEventRead[];
+  runtime_integrity?: BoardRuntimeIntegrity | null;
+  runtime_messages?: BoardMemoryRead[];
   tasks: TaskCardRead[];
 }

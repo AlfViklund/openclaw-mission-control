@@ -97,6 +97,8 @@ import type {
   AgentRead,
   ApprovalRead,
   BoardGroupSnapshot,
+  BoardRuntimeAgentState,
+  BoardRuntimeIntegrity,
   BoardMemoryRead,
   BoardRead,
   ActivityEventRead,
@@ -276,6 +278,22 @@ function timeAgo(date: Date): string {
 }
 
 type BoardChatMessage = BoardMemoryRead;
+type BoardPanelTab = "chat" | "coordination" | "runtime";
+
+const RUNTIME_MEMORY_TAGS = new Set([
+  "auth",
+  "blocked",
+  "platform",
+  "provision",
+  "provisioning",
+  "reconcile",
+  "runtime",
+  "template",
+  "wake",
+]);
+
+const isRuntimeMemoryMessage = (message: BoardMemoryRead): boolean =>
+  (message.tags ?? []).some((tag) => RUNTIME_MEMORY_TAGS.has(tag.toLowerCase()));
 
 type LiveFeedEventType =
   | "task.comment"
@@ -764,6 +782,120 @@ const ChatMessageCard = memo(function ChatMessageCard({
 
 ChatMessageCard.displayName = "ChatMessageCard";
 
+const humanizeRuntimeEventType = (eventType: string): string =>
+  eventType.replace(/[._-]+/g, " ").trim() || "runtime event";
+
+const RuntimeEventCard = memo(function RuntimeEventCard({
+  event,
+}: {
+  event: ActivityEventRead;
+}) {
+  const label = humanizeRuntimeEventType(event.event_type);
+  return (
+    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-slate-900">{label}</p>
+        <span className="text-xs text-slate-500">
+          {formatShortTimestamp(event.created_at)}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-amber-700">
+        <span className="rounded-full border border-amber-300 bg-white px-2 py-0.5 font-semibold">
+          {event.event_type}
+        </span>
+        {event.agent_id ? <span>Agent scoped</span> : null}
+      </div>
+      {event.message ? (
+        <div className="mt-3 select-text cursor-text text-sm leading-relaxed text-slate-900 break-words">
+          <Markdown content={event.message} variant="basic" />
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+RuntimeEventCard.displayName = "RuntimeEventCard";
+
+const RuntimeAgentCard = memo(function RuntimeAgentCard({
+  agent,
+}: {
+  agent: BoardRuntimeAgentState;
+}) {
+  const blocker = agent.runtime_blocker?.trim() || null;
+  const statusTone = blocker
+    ? "border-rose-200 bg-rose-50 text-rose-700"
+    : agent.status === "online" || agent.status === "idle" || agent.status === "dormant"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : "border-slate-200 bg-slate-100 text-slate-700";
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">{agent.name}</p>
+          <p className="mt-1 text-xs uppercase tracking-wide text-slate-500">
+            {agent.role_label}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide",
+            statusTone,
+          )}
+        >
+          {humanizeAgentStatus(agent.status)}
+        </span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+          tasks: {agent.assigned_task_count ?? 0}
+        </span>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+          wake: {agent.wake_reason ?? "idle_no_work"}
+        </span>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+          template: {agent.template_sync_state ?? "missing"}
+        </span>
+        {agent.pending_agent_token_version ? (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-700">
+            pending token v{agent.pending_agent_token_version}
+          </span>
+        ) : null}
+      </div>
+      {blocker ? (
+        <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          {blocker}
+          {agent.agent_auth_last_error ? ` · ${agent.agent_auth_last_error}` : ""}
+          {!agent.agent_auth_last_error && agent.last_provision_error
+            ? ` · ${agent.last_provision_error}`
+            : ""}
+        </div>
+      ) : null}
+      <div className="mt-3 space-y-1 text-xs text-slate-500">
+        <p>
+          Last seen:{" "}
+          {agent.last_seen_at ? formatShortTimestamp(agent.last_seen_at) : "never"}
+        </p>
+        <p>
+          Auth sync:{" "}
+          {agent.agent_auth_last_synced_at
+            ? formatShortTimestamp(agent.agent_auth_last_synced_at)
+            : "never"}
+        </p>
+        <p>
+          Workspace:{" "}
+          {agent.workspace_exists
+            ? agent.workspace_path ?? "present"
+            : agent.workspace_path
+              ? `missing (${agent.workspace_path})`
+              : "unavailable"}
+        </p>
+      </div>
+    </div>
+  );
+});
+
+RuntimeAgentCard.displayName = "RuntimeAgentCard";
+
 const LiveFeedCard = memo(function LiveFeedCard({
   item,
   taskTitle,
@@ -1055,10 +1187,20 @@ export default function BoardDetailPage() {
     null,
   );
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [boardPanelTab, setBoardPanelTab] = useState<BoardPanelTab>("chat");
   const [chatMessages, setChatMessages] = useState<BoardChatMessage[]>([]);
+  const [coordinationMessages, setCoordinationMessages] = useState<
+    BoardMemoryRead[]
+  >([]);
+  const [runtimeMessages, setRuntimeMessages] = useState<BoardMemoryRead[]>([]);
+  const [runtimeEvents, setRuntimeEvents] = useState<ActivityEventRead[]>([]);
+  const [runtimeIntegrity, setRuntimeIntegrity] =
+    useState<BoardRuntimeIntegrity | null>(null);
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const chatMessagesRef = useRef<BoardChatMessage[]>([]);
+  const coordinationMessagesRef = useRef<BoardMemoryRead[]>([]);
+  const runtimeMessagesRef = useRef<BoardMemoryRead[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const [isAgentsControlDialogOpen, setIsAgentsControlDialogOpen] =
     useState(false);
@@ -1430,6 +1572,10 @@ export default function BoardDetailPage() {
       setAgents((snapshot.agents ?? []).map(normalizeAgent));
       setApprovals((snapshot.approvals ?? []).map(normalizeApproval));
       setChatMessages(snapshot.chat_messages ?? []);
+      setCoordinationMessages(snapshot.coordination_messages ?? []);
+      setRuntimeMessages(snapshot.runtime_messages ?? []);
+      setRuntimeEvents(snapshot.runtime_events ?? []);
+      setRuntimeIntegrity(snapshot.runtime_integrity ?? null);
 
       try {
         const groupResult =
@@ -1570,6 +1716,14 @@ export default function BoardDetailPage() {
   }, [chatMessages]);
 
   useEffect(() => {
+    coordinationMessagesRef.current = coordinationMessages;
+  }, [coordinationMessages]);
+
+  useEffect(() => {
+    runtimeMessagesRef.current = runtimeMessages;
+  }, [runtimeMessages]);
+
+  useEffect(() => {
     liveFeedRef.current = liveFeed;
   }, [liveFeed]);
 
@@ -1592,6 +1746,16 @@ export default function BoardDetailPage() {
    * don't re-stream the entire chat log.
    */
   const latestChatTimestamp = (items: BoardChatMessage[]) => {
+    if (!items.length) return undefined;
+    const latest = items.reduce((max, item) => {
+      const ts = apiDatetimeToMs(item.created_at);
+      return ts === null ? max : Math.max(max, ts);
+    }, 0);
+    if (!latest) return undefined;
+    return new Date(latest).toISOString();
+  };
+
+  const latestMemoryTimestamp = (items: BoardMemoryRead[]) => {
     if (!items.length) return undefined;
     const latest = items.reduce((max, item) => {
       const ts = apiDatetimeToMs(item.created_at);
@@ -1720,6 +1884,137 @@ export default function BoardDetailPage() {
     isPageActive,
     isSignedIn,
     pushLiveFeed,
+  ]);
+
+  useEffect(() => {
+    if (!isPageActive) return;
+    if (!isSignedIn || !boardId || !board) return;
+    if (!isChatOpen) return;
+    let isCancelled = false;
+    const abortController = new AbortController();
+    const backoff = createExponentialBackoff(SSE_RECONNECT_BACKOFF);
+    let reconnectTimeout: number | undefined;
+
+    const connect = async () => {
+      try {
+        const combined = [
+          ...coordinationMessagesRef.current,
+          ...runtimeMessagesRef.current,
+        ];
+        const since = latestMemoryTimestamp(combined);
+        const params = { is_chat: false, ...(since ? { since } : {}) };
+        const streamResult =
+          await streamBoardMemoryApiV1BoardsBoardIdMemoryStreamGet(
+            boardId,
+            params,
+            {
+              headers: { Accept: "text/event-stream" },
+              signal: abortController.signal,
+            },
+          );
+        if (streamResult.status !== 200) {
+          throw new Error("Unable to connect board coordination stream.");
+        }
+        const response = streamResult.data as Response;
+        if (!(response instanceof Response) || !response.body) {
+          throw new Error("Unable to connect board coordination stream.");
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!isCancelled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value && value.length) {
+            backoff.reset();
+          }
+          buffer += decoder.decode(value, { stream: true });
+          buffer = buffer.replace(/\r\n/g, "\n");
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary !== -1) {
+            const raw = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const lines = raw.split("\n");
+            let eventType = "message";
+            let data = "";
+            for (const line of lines) {
+              if (line.startsWith("event:")) {
+                eventType = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                data += line.slice(5).trim();
+              }
+            }
+            if (eventType === "memory" && data) {
+              try {
+                const payload = JSON.parse(data) as {
+                  memory?: BoardMemoryRead;
+                };
+                const memory = payload.memory;
+                if (!memory || memory.is_chat) {
+                  boundary = buffer.indexOf("\n\n");
+                  continue;
+                }
+                if (isRuntimeMemoryMessage(memory)) {
+                  setRuntimeMessages((prev) => {
+                    if (prev.some((item) => item.id === memory.id)) return prev;
+                    const next = [...prev, memory];
+                    next.sort((a, b) => {
+                      const aTime = apiDatetimeToMs(a.created_at) ?? 0;
+                      const bTime = apiDatetimeToMs(b.created_at) ?? 0;
+                      return aTime - bTime;
+                    });
+                    return next;
+                  });
+                } else {
+                  setCoordinationMessages((prev) => {
+                    if (prev.some((item) => item.id === memory.id)) return prev;
+                    const next = [...prev, memory];
+                    next.sort((a, b) => {
+                      const aTime = apiDatetimeToMs(a.created_at) ?? 0;
+                      const bTime = apiDatetimeToMs(b.created_at) ?? 0;
+                      return aTime - bTime;
+                    });
+                    return next;
+                  });
+                }
+              } catch {
+                // ignore malformed
+              }
+            }
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+      } catch {
+        // Reconnect handled below.
+      }
+
+      if (!isCancelled) {
+        if (reconnectTimeout !== undefined) {
+          window.clearTimeout(reconnectTimeout);
+        }
+        const delay = backoff.nextDelayMs();
+        reconnectTimeout = window.setTimeout(() => {
+          reconnectTimeout = undefined;
+          void connect();
+        }, delay);
+      }
+    };
+
+    void connect();
+    return () => {
+      isCancelled = true;
+      abortController.abort();
+      if (reconnectTimeout !== undefined) {
+        window.clearTimeout(reconnectTimeout);
+      }
+    };
+  }, [
+    board,
+    boardId,
+    isChatOpen,
+    isPageActive,
+    isSignedIn,
   ]);
 
   useEffect(() => {
@@ -2182,6 +2477,23 @@ export default function BoardDetailPage() {
                     };
                     return next;
                   });
+                  setRuntimeIntegrity((prev) => {
+                    if (!prev?.agents?.length) return prev;
+                    return {
+                      ...prev,
+                      agents: prev.agents.map((agent) =>
+                        agent.agent_id === normalized.id
+                          ? {
+                              ...agent,
+                              status: normalized.status,
+                              wake_reason: normalized.wake_reason ?? agent.wake_reason,
+                              last_seen_at:
+                                normalized.last_seen_at ?? agent.last_seen_at,
+                            }
+                          : agent,
+                      ),
+                    };
+                  });
                 }
               } catch {
                 // Ignore malformed payloads.
@@ -2409,6 +2721,22 @@ export default function BoardDetailPage() {
       return bTime - aTime;
     });
   }, [liveFeed]);
+
+  const orderedRuntimeEvents = useMemo(() => {
+    return [...runtimeEvents].sort((a, b) => {
+      const aTime = apiDatetimeToMs(a.created_at) ?? 0;
+      const bTime = apiDatetimeToMs(b.created_at) ?? 0;
+      return bTime - aTime;
+    });
+  }, [runtimeEvents]);
+
+  const runtimeAgentStates = runtimeIntegrity?.agents ?? [];
+  const missingRoleCount = runtimeIntegrity?.missing_roles?.length ?? 0;
+  const blockedAgentCount =
+    runtimeIntegrity?.platform_blocked_agent_ids?.length ?? 0;
+  const authDriftCount = runtimeIntegrity?.auth_drift_agent_ids?.length ?? 0;
+  const templateDriftCount =
+    runtimeIntegrity?.template_drift_agent_ids?.length ?? 0;
 
   const assignableAgents = useMemo(
     () => agents.filter((agent) => !agent.is_board_lead),
@@ -2808,6 +3136,7 @@ export default function BoardDetailPage() {
       closeComments();
     }
     setIsLiveFeedOpen(false);
+    setBoardPanelTab("chat");
     if (
       searchParams.get("panel") !== "chat" ||
       searchParams.get("taskId") ||
@@ -4514,10 +4843,10 @@ export default function BoardDetailPage() {
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 md:px-6 md:py-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Board chat
+                Board cockpit
               </p>
               <p className="mt-1 text-sm font-medium text-slate-900">
-                Talk to the lead agent. Tag others with @name.
+                Chat for human-facing board messages, coordination for durable non-chat memory, runtime for agent health and token drift.
               </p>
             </div>
             <button
@@ -4529,39 +4858,158 @@ export default function BoardDetailPage() {
               <X className="h-4 w-4" />
             </button>
           </div>
+          <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3 md:px-6">
+            {([
+              ["chat", "Chat"],
+              ["coordination", "Coordination"],
+              ["runtime", "Runtime"],
+            ] as Array<[BoardPanelTab, string]>).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setBoardPanelTab(value)}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition",
+                  boardPanelTab === value
+                    ? "border-slate-900 bg-slate-900 text-white"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="flex flex-1 flex-col overflow-hidden px-6 py-4">
             <div className="flex-1 space-y-4 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4">
-              {chatError ? (
-                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {chatError}
+              {boardPanelTab === "chat" ? (
+                <>
+                  {chatError ? (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {chatError}
+                    </div>
+                  ) : null}
+                  {chatMessages.length === 0 ? (
+                    <p className="text-sm text-slate-500">
+                      No messages yet. Start the conversation with your lead agent.
+                    </p>
+                  ) : (
+                    chatMessages.map((message) => (
+                      <ChatMessageCard
+                        key={message.id}
+                        message={message}
+                        fallbackSource={currentUserDisplayName}
+                      />
+                    ))
+                  )}
+                  <div ref={chatEndRef} />
+                </>
+              ) : null}
+              {boardPanelTab === "coordination" ? (
+                coordinationMessages.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No durable coordination entries yet.
+                  </p>
+                ) : (
+                  coordinationMessages.map((message) => (
+                    <ChatMessageCard
+                      key={message.id}
+                      message={message}
+                      fallbackSource={currentUserDisplayName}
+                    />
+                  ))
+                )
+              ) : null}
+              {boardPanelTab === "runtime" ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Team shape
+                      </p>
+                      <p className="mt-2 text-sm text-slate-900">
+                        expected {runtimeIntegrity?.expected_roles?.length ?? 0} · actual{" "}
+                        {runtimeIntegrity?.actual_roles?.length ?? 0} · healthy{" "}
+                        {runtimeIntegrity?.healthy_roles?.length ?? 0}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Worker capacity {runtimeIntegrity?.worker_capacity ?? 0}
+                        {" · "}
+                        active workers {runtimeIntegrity?.actual_worker_count ?? 0}
+                        {" · "}
+                        healthy workers {runtimeIntegrity?.healthy_worker_count ?? 0}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Drift and blockers
+                      </p>
+                      <p className="mt-2 text-sm text-slate-900">
+                        missing roles {missingRoleCount} · blocked agents {blockedAgentCount}
+                      </p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        auth drift {authDriftCount} · template drift {templateDriftCount}
+                      </p>
+                    </div>
+                  </div>
+                  {runtimeIntegrity?.missing_roles?.length ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      Missing roles: {runtimeIntegrity.missing_roles.join(", ")}
+                    </div>
+                  ) : null}
+                  {runtimeIntegrity?.stale_roles?.length ? (
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                      Stale roles: {runtimeIntegrity.stale_roles.join(", ")}
+                    </div>
+                  ) : null}
+                  {runtimeAgentStates.length ? (
+                    <div className="space-y-3">
+                      {runtimeAgentStates.map((agent) => (
+                        <RuntimeAgentCard key={agent.agent_id} agent={agent} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">
+                      No runtime agent state available yet.
+                    </p>
+                  )}
+                  {runtimeMessages.length ? (
+                    <div className="space-y-3">
+                      {runtimeMessages.map((message) => (
+                        <ChatMessageCard
+                          key={message.id}
+                          message={message}
+                          fallbackSource={currentUserDisplayName}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                  {orderedRuntimeEvents.length ? (
+                    <div className="space-y-3">
+                      {orderedRuntimeEvents.map((event) => (
+                        <RuntimeEventCard key={event.id} event={event} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">
+                      No runtime events yet.
+                    </p>
+                  )}
                 </div>
               ) : null}
-              {chatMessages.length === 0 ? (
-                <p className="text-sm text-slate-500">
-                  No messages yet. Start the conversation with your lead agent.
-                </p>
-              ) : (
-                chatMessages.map((message) => (
-                  <ChatMessageCard
-                    key={message.id}
-                    message={message}
-                    fallbackSource={currentUserDisplayName}
-                  />
-                ))
-              )}
-              <div ref={chatEndRef} />
             </div>
-            <BoardChatComposer
-              isSending={isChatSending}
-              onSend={handleSendChat}
-              disabled={!canWrite}
-              mentionSuggestions={boardChatMentionSuggestions}
-              placeholder={
-                canWrite
-                  ? "Message the board lead. Tag agents with @name."
-                  : "Read-only access. Chat is disabled."
-              }
-            />
+            {boardPanelTab === "chat" ? (
+              <BoardChatComposer
+                isSending={isChatSending}
+                onSend={handleSendChat}
+                disabled={!canWrite}
+                mentionSuggestions={boardChatMentionSuggestions}
+                placeholder={
+                  canWrite
+                    ? "Message the board lead. Tag agents with @name."
+                    : "Read-only access. Chat is disabled."
+                }
+              />
+            ) : null}
           </div>
         </div>
       </aside>

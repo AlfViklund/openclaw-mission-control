@@ -63,6 +63,11 @@ def _agent_update_params(
 AGENT_UPDATE_PARAMS_DEP = Depends(_agent_update_params)
 
 
+def _require_user_actor(actor: ActorContext) -> None:
+    if actor.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+
 async def _reset_and_wake_repaired_agent_session(*, agent: object, gateway: object) -> None:
     from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
     from app.services.openclaw.gateway_rpc import OpenClawGatewayError, ensure_session, openclaw_call, send_message
@@ -204,7 +209,6 @@ async def heartbeat_agent(
     the agent already has a running pipeline run (in which case the agent
     should skip heavy work cycles and stay in presence-only mode).
     """
-    from uuid import UUID
     from app.models.agents import Agent
     from app.models.runs import Run
     from sqlmodel import col, select
@@ -288,8 +292,7 @@ async def get_agent_work_snapshot(
                 return await get_work_snapshot(session, target_id)
 
     # User-based access: verify board-level permissions
-    from app.api.deps import require_user
-    require_user(actor)
+    _require_user_actor(actor)
 
     from app.models.agents import Agent
     target = await Agent.objects.by_id(target_id).first(session)
@@ -324,7 +327,7 @@ async def get_board_work_snapshots(
     from app.models.agents import Agent
     from sqlmodel import col
 
-    require_user(actor)
+    _require_user_actor(actor)
     bid = UUID(board_id)
     agents = await Agent.objects.filter(col(Agent.board_id) == bid).all(session)
     from app.services.agent_work import get_work_snapshot
@@ -503,13 +506,20 @@ async def repair_agent_auth_sync(
 
             return re.sub(pattern, repl, text)
         if key == "TOOLS.md":
-            pattern = r"(AUTH_TOKEN\s*[:=]\s*`?)[^`\s]+(`?)"
+            pattern = r"^(\s*[-*]?\s*`?)AUTH_TOKEN\s*[:=]\s*`?[^`\s]+`?\s*$"
             if "AUTH_TOKEN" not in text:
                 return text.rstrip() + f"\nAUTH_TOKEN={token}\n"
-            def repl(match: re.Match[str]) -> str:
-                return f"{match.group(1)}{token}{match.group(2)}"
-
-            return re.sub(pattern, repl, text)
+            updated_lines: list[str] = []
+            replaced = False
+            for line in text.splitlines():
+                if re.match(pattern, line):
+                    updated_lines.append(f"AUTH_TOKEN={token}")
+                    replaced = True
+                    continue
+                updated_lines.append(line)
+            if not replaced:
+                updated_lines.append(f"AUTH_TOKEN={token}")
+            return "\n".join(updated_lines) + ("\n" if text.endswith("\n") else "")
         if key == "AGENTS.md":
             updated_lines: list[str] = []
             for line in text.splitlines():

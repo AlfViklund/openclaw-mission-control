@@ -224,7 +224,14 @@ def _payload_preview_with_limit(
 
 def _guard_board_access(agent_ctx: AgentAuthContext, board: Board) -> None:
     allowed = not (agent_ctx.agent.board_id and agent_ctx.agent.board_id != board.id)
-    OpenClawAuthorizationPolicy.require_board_write_access(allowed=allowed)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "board_scope_mismatch",
+                "message": "Authenticated agent is scoped to a different board.",
+            },
+        )
 
 
 def _require_board_lead(agent_ctx: AgentAuthContext) -> Agent:
@@ -238,7 +245,14 @@ def _guard_task_access(agent_ctx: AgentAuthContext, task: Task) -> None:
     allowed = not (
         agent_ctx.agent.board_id and task.board_id and agent_ctx.agent.board_id != task.board_id
     )
-    OpenClawAuthorizationPolicy.require_board_write_access(allowed=allowed)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "board_scope_mismatch",
+                "message": "Authenticated agent is scoped to a different board than this task.",
+            },
+        )
 
 
 @router.get(

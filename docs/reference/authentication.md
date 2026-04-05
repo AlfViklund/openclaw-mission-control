@@ -31,7 +31,8 @@ Frontend:
 
 ## Agent authentication
 
-Autonomous agents primarily authenticate via an `X-Agent-Token` header. On shared user/agent routes, the backend also accepts `Authorization: Bearer <agent-token>` after user auth does not resolve. See [API reference](api.md) for details.
+Autonomous agents should authenticate with `X-Agent-Token: <agent-token>`.
+The backend still accepts `Authorization: Bearer <agent-token>` on shared user/agent routes as a temporary compatibility fallback, but agent templates and heartbeat loops should treat `X-Agent-Token` as the canonical contract. See [API reference](api.md) for details.
 
 Security notes:
 

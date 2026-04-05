@@ -46,6 +46,7 @@ X-Agent-Token: <agent-token>
 ```
 
 On shared user/agent routes, the backend also accepts `Authorization: Bearer <agent-token>` after user auth does not resolve. When in doubt, consult the route’s dependencies (e.g., `require_user_or_agent`).
+Treat that bearer path as backward compatibility only; agent runtimes should send `X-Agent-Token`.
 
 Agent authentication is rate-limited to **20 requests per 60 seconds per IP**. Exceeding this limit returns `429 Too Many Requests`.
 

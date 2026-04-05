@@ -142,6 +142,27 @@ def _resolve_agent_token(
     return None
 
 
+def _header_source(agent_token: str | None, authorization: str | None) -> str:
+    if agent_token:
+        return "x-agent-token"
+    if authorization:
+        return "authorization"
+    return "none"
+
+
+def _auth_error_detail(
+    *,
+    code: str,
+    message: str,
+    header_source: str,
+) -> dict[str, str]:
+    return {
+        "code": code,
+        "message": message,
+        "header_source": header_source,
+    }
+
+
 async def _touch_agent_presence(
     request: Request,
     session: AsyncSession,
@@ -191,7 +212,14 @@ async def get_agent_auth_context(
             bool(agent_token),
             bool(authorization),
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_auth_error_detail(
+                code="missing_x_agent_token",
+                message="X-Agent-Token header is required for agent routes.",
+                header_source=_header_source(agent_token, authorization),
+            ),
+        )
     ctx = await _find_agent_for_token(session, resolved)
     if ctx is None:
         logger.warning(
@@ -199,7 +227,14 @@ async def get_agent_auth_context(
             request.url.path,
             resolved[:6],
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_auth_error_detail(
+                code="invalid_agent_token",
+                message="Agent token is invalid, expired, or no longer active.",
+                header_source=_header_source(agent_token, authorization),
+            ),
+        )
     await _touch_agent_presence(request, session, ctx.agent)
     return ctx
 

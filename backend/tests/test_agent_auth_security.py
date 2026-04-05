@@ -122,12 +122,47 @@ async def test_required_agent_auth_invalid_token_logs_short_prefix_only(
         )
 
     assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == {
+        "code": "invalid_agent_token",
+        "message": "Agent token is invalid, expired, or no longer active.",
+        "header_source": "x-agent-token",
+    }
     assert logged == [
         (
             "agent auth invalid token path=%s token_prefix=%s",
             ("/api/v1/agent/boards", "invali"),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_required_agent_auth_missing_x_agent_token_returns_structured_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = _RecordingLimiter()
+    request = SimpleNamespace(
+        headers={"Authorization": "Bearer agent-secret"},
+        client=SimpleNamespace(host="203.0.113.31"),
+        url=SimpleNamespace(path="/api/v1/agent/boards"),
+        method="POST",
+    )
+
+    monkeypatch.setattr(agent_auth, "agent_auth_limiter", limiter)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await agent_auth.get_agent_auth_context(
+            request=request,  # type: ignore[arg-type]
+            agent_token=None,
+            authorization=None,
+            session=SimpleNamespace(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == {
+        "code": "missing_x_agent_token",
+        "message": "X-Agent-Token header is required for agent routes.",
+        "header_source": "none",
+    }
 
 
 @pytest.mark.asyncio

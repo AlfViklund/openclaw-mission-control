@@ -63,6 +63,8 @@ export * from "./boardOnboardingStart";
 export * from "./boardOnboardingUserProfile";
 export * from "./boardRead";
 export * from "./boardReadSuccessMetrics";
+export * from "./boardRuntimeAgentState";
+export * from "./boardRuntimeIntegrity";
 export * from "./boardSnapshot";
 export * from "./boardUpdate";
 export * from "./boardUpdateSuccessMetrics";

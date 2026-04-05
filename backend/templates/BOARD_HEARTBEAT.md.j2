@@ -221,7 +221,7 @@ If no wake conditions are true:
 ### Cheap Heartbeat Example
 ```bash
 curl -s -X POST "{{ base_url }}/api/v1/agents/heartbeat" \
-  -H "Authorization: Bearer {{ auth_token }}" \
+  -H "X-Agent-Token: {{ auth_token }}" \
   -H "Content-Type: application/json" \
   -d '{"status": "idle"}'
 ```

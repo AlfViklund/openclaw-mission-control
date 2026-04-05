@@ -27,6 +27,7 @@ from fastapi import Depends, HTTPException, Request, status
 from app.core.agent_auth import get_agent_auth_context_optional
 from app.core.auth import AuthContext, get_auth_context, get_auth_context_optional
 from app.db.session import get_session
+from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.organizations import Organization
 from app.models.tasks import Task
@@ -226,3 +227,61 @@ async def get_task_or_404(
     if task is None or task.board_id != board.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return task
+
+
+async def resolve_actor_task_execution_agent(
+    session: AsyncSession,
+    *,
+    actor: ActorContext,
+    task: Task,
+    requested_agent_id: UUID | None,
+) -> UUID | None:
+    """Validate task execution scope and normalize the effective agent id.
+
+    Human users may target any agent on the same board as the task.
+    Board agents may execute only on their own board; non-leads may execute only
+    as themselves, while leads may target teammates on the same board.
+    """
+    effective_agent_id = requested_agent_id
+
+    if actor.actor_type == "agent":
+        agent = actor.agent
+        if agent is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        if task.board_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agent execution is only allowed for board tasks.",
+            )
+        if agent.board_id and agent.board_id != task.board_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agent cannot execute work for a different board.",
+            )
+        if effective_agent_id is None and not agent.is_board_lead:
+            effective_agent_id = agent.id
+
+    if effective_agent_id is None:
+        return None
+
+    target_agent = await Agent.objects.by_id(effective_agent_id).first(session)
+    if target_agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    if task.board_id and target_agent.board_id != task.board_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Target agent must belong to the same board as the task.",
+        )
+
+    if actor.actor_type == "agent":
+        actor_agent = actor.agent
+        if actor_agent is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        if not actor_agent.is_board_lead and target_agent.id != actor_agent.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only board leads can execute work for other agents.",
+            )
+
+    return target_agent.id

@@ -58,6 +58,16 @@ def test_openapi_agent_role_tags_are_exposed() -> None:
     )
     assert "agent-worker" in _op_tags(
         schema,
+        path="/api/v1/runs",
+        method="post",
+    )
+    assert "agent-worker" in _op_tags(
+        schema,
+        path="/api/v1/pipeline/tasks/{task_id}/execute",
+        method="post",
+    )
+    assert "agent-worker" in _op_tags(
+        schema,
         path="/api/v1/boards/{board_id}/group-memory",
         method="get",
     )
@@ -141,6 +151,8 @@ def test_openapi_agent_tool_endpoints_include_llm_hints() -> None:
         ("/api/v1/agent/boards/{board_id}/gateway/main/ask-user", "post"),
         ("/api/v1/agent/gateway/boards/{board_id}/lead/message", "post"),
         ("/api/v1/agent/gateway/leads/broadcast", "post"),
+        ("/api/v1/runs", "post"),
+        ("/api/v1/pipeline/tasks/{task_id}/execute", "post"),
     ]
     for path, method in expected_paths:
         op = schema["paths"][path][method]

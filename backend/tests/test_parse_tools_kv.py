@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from app.services.openclaw.provisioning import _template_env
 from app.services.openclaw.constants import parse_tools_kv
 
 
@@ -64,3 +65,22 @@ def test_parse_signed_token_format() -> None:
 def test_parse_empty_content() -> None:
     assert parse_tools_kv("") == {}
     assert parse_tools_kv("\n\n") == {}
+
+
+def test_rendered_tools_template_is_machine_safe() -> None:
+    rendered = _template_env().get_template("BOARD_TOOLS.md.j2").render(
+        base_url="http://127.0.0.1:8000",
+        auth_token="agt1.agent-id.1.signature",
+        agent_name="Lead Agent",
+        agent_id="agent-id",
+        board_id="board-id",
+        workspace_root="~/.openclaw",
+        workspace_path="~/.openclaw/workspace-lead-board-id",
+        is_board_lead="true",
+        is_main_agent="false",
+    )
+    lines = [line.strip() for line in rendered.splitlines() if line.strip()]
+
+    assert "AUTH_TOKEN=agt1.agent-id.1.signature" in lines
+    assert all("`AUTH_TOKEN=" not in line for line in lines)
+    assert all(not line.startswith("- `AUTH_TOKEN=") for line in lines)
