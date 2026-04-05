@@ -18,11 +18,13 @@ from app.schemas.board_onboarding import (
     BoardOnboardingAutomationPolicy,
     BoardOnboardingPlanningPolicy,
     BoardOnboardingQaPolicy,
+    BoardOnboardingTeamPlan,
 )
 from app.services.agent_provisioning import (
     AgentProvisioningService,
     TeamProvisionResult,
 )
+from app.services.agent_presets import AGENT_ROLE_PRESETS
 from app.services.board_automation import (
     BoardAutomationSyncResult,
     sync_board_automation_policy,
@@ -142,6 +144,32 @@ def _require_approval_for_done_from_qa(
     return True
 
 
+def _worker_capacity_from_team_plan(
+    team_plan: BoardOnboardingTeamPlan | None,
+) -> int:
+    """Derive worker-agent capacity from the onboarding team plan.
+
+    ``Board.max_agents`` counts worker agents only and excludes the lead.
+    Keep the existing default floor of 1 for lead-only boards while raising
+    capacity when onboarding provisions multiple worker roles up front.
+    """
+    if team_plan is None:
+        return 1
+    if team_plan.provision_mode == "selected_roles":
+        selected_roles = team_plan.roles or []
+    elif team_plan.provision_mode == "full_team":
+        selected_roles = list(AGENT_ROLE_PRESETS.keys())
+    else:
+        selected_roles = []
+
+    worker_roles = {
+        role
+        for role in selected_roles
+        if role in AGENT_ROLE_PRESETS and not AGENT_ROLE_PRESETS[role]["is_board_lead"]
+    }
+    return max(1, len(worker_roles))
+
+
 async def _start_planner_bootstrap(
     session: AsyncSession,
     board: Board,
@@ -204,6 +232,7 @@ async def bootstrap_board_from_onboarding(
             board.automation_config = config
 
     board.require_approval_for_done = _require_approval_for_done_from_qa(qa_policy)
+    board.max_agents = _worker_capacity_from_team_plan(team_plan)
 
     gateway_dispatch = GatewayDispatchService(session)
     gateway = None

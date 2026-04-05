@@ -979,7 +979,10 @@ class AgentLifecycleService(OpenClawDBService):
     @classmethod
     def with_computed_status(cls, agent: Agent) -> Agent:
         now = utcnow()
-        if agent.status in {"deleting", "updating"}:
+        if agent.status in {"deleting", "updating", "offline"}:
+            return agent
+        if agent.last_provision_error and agent.last_seen_at is None:
+            agent.status = "offline"
             return agent
         if agent.last_seen_at is None:
             agent.status = "provisioning"

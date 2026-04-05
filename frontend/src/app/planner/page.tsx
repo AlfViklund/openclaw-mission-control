@@ -86,9 +86,11 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 const STATUS_CONFIG: Record<string, { icon: typeof CheckCircle; color: string; label: string }> = {
+  generating: { icon: Loader2, color: "text-blue-500", label: "Generating" },
   draft: { icon: Clock, color: "text-amber-500", label: "Draft" },
   applied: { icon: CheckCircle, color: "text-green-500", label: "Applied" },
   rejected: { icon: XCircle, color: "text-red-500", label: "Rejected" },
+  failed: { icon: AlertTriangle, color: "text-red-500", label: "Failed" },
 };
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
@@ -319,6 +321,11 @@ export default function PlannerPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const selectedOutputId = selectedOutput?.id ?? null;
+  const hasGeneratingOutputs = useMemo(
+    () => plannerOutputs.some((output) => output.status === "generating"),
+    [plannerOutputs],
+  );
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -356,9 +363,31 @@ export default function PlannerPage() {
     if (!isSignedIn) return;
     const intervalId = window.setInterval(() => {
       void loadData();
-    }, 30000);
+    }, hasGeneratingOutputs ? 5000 : 30000);
     return () => window.clearInterval(intervalId);
-  }, [isSignedIn, loadData]);
+  }, [hasGeneratingOutputs, isSignedIn, loadData]);
+
+  useEffect(() => {
+    if (plannerOutputs.length === 0) {
+      if (selectedOutputId !== null) {
+        setSelectedOutput(null);
+      }
+      return;
+    }
+
+    if (selectedOutputId === null) {
+      setSelectedOutput(plannerOutputs[0]);
+      return;
+    }
+
+    const refreshed = plannerOutputs.find((output) => output.id === selectedOutputId);
+    if (refreshed) {
+      setSelectedOutput(refreshed);
+      return;
+    }
+
+    setSelectedOutput(plannerOutputs[0]);
+  }, [plannerOutputs, selectedOutputId]);
 
   const handleGenerate = async (force = false) => {
     if (!selectedArtifact) return;
@@ -370,8 +399,8 @@ export default function PlannerPage() {
         : await generateBacklog(selectedArtifact);
       setShowGenerateDialog(false);
       setSelectedArtifact("");
-      await loadData();
       setSelectedOutput(output);
+      await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
     } finally {
@@ -385,8 +414,8 @@ export default function PlannerPage() {
     setError(null);
     try {
       const output = await regenerateBacklog(selectedOutput.artifact_id);
-      await loadData();
       setSelectedOutput(output);
+      await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Regeneration failed");
     } finally {
@@ -428,7 +457,12 @@ export default function PlannerPage() {
     return buildFlowElements(selectedOutput.tasks, selectedOutput.epics);
   }, [selectedOutput]);
 
-  const selectedStatusConfig = selectedOutput ? STATUS_CONFIG[selectedOutput.status] || STATUS_CONFIG.draft : null;
+  const selectedStatusConfig = selectedOutput
+    ? STATUS_CONFIG[selectedOutput.status] || STATUS_CONFIG.draft
+    : null;
+  const selectedSpec = selectedOutput
+    ? artifacts.find((artifact) => artifact.id === selectedOutput.artifact_id)
+    : null;
 
   return (
     <>
@@ -455,12 +489,14 @@ export default function PlannerPage() {
             <button
               onClick={() => setShowGenerateDialog(true)}
               className={buttonVariants({ size: "md", variant: "primary" })}
-              disabled={artifacts.length === 0 || !selectedBoardId}
+              disabled={artifacts.length === 0 || !selectedBoardId || isGenerating}
             >
               <GitBranch className="mr-2 h-4 w-4" />
               Generate Backlog
             </button>
-            {selectedOutput?.status === "draft" && (
+            {selectedOutput &&
+              selectedOutput.status !== "applied" &&
+              selectedOutput.status !== "generating" && (
               <button
                 onClick={handleRegenerateSelected}
                 className={buttonVariants({ size: "md", variant: "outline" })}
@@ -507,7 +543,13 @@ export default function PlannerPage() {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <StatusIcon className={cn("h-4 w-4", statusColor)} />
+                        <StatusIcon
+                          className={cn(
+                            "h-4 w-4",
+                            statusColor,
+                            output.status === "generating" && "animate-spin",
+                          )}
+                        />
                         <span className="text-sm font-medium text-slate-800 truncate">
                           {spec?.filename || "Unknown spec"}
                         </span>
@@ -517,11 +559,16 @@ export default function PlannerPage() {
                       </span>
                     </div>
                     <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-400">
-                      <span>{output.tasks.length} tasks</span>
-                      <span>{output.epics.length} epics</span>
-                      <span>{new Date(output.created_at).toLocaleDateString()}</span>
-                    </div>
-                  </button>
+                        <span>{output.tasks.length} tasks</span>
+                        <span>{output.epics.length} epics</span>
+                        <span>{new Date(output.created_at).toLocaleDateString()}</span>
+                      </div>
+                      {output.status === "generating" && (
+                        <p className="mt-2 text-[11px] text-slate-500">
+                          Lead agent is drafting the backlog. The page refreshes automatically.
+                        </p>
+                      )}
+                    </button>
                 );
               })
             )}
@@ -529,7 +576,49 @@ export default function PlannerPage() {
 
           {/* Right: DAG visualization or empty state */}
           <div className="lg:col-span-2">
-            {selectedOutput && selectedOutput.tasks.length > 0 ? (
+            {selectedOutput?.status === "generating" ? (
+              <div className="rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-8 shadow-sm h-full flex flex-col justify-center">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-800">
+                      Generating delivery backlog
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {selectedSpec?.filename || "Selected spec"} is being analyzed by the lead
+                      agent. You can stay on this page or switch tabs; the result will appear
+                      automatically.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-blue-100 bg-white/80 p-4">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-blue-600">
+                      Step 1
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      Parse the specification into epics and delivery streams.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-blue-100 bg-white/80 p-4">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-blue-600">
+                      Step 2
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      Build concrete tasks for engineering, QA, docs, and ops.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-blue-100 bg-white/80 p-4">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-blue-600">
+                      Step 3
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      Return a board-ready backlog with dependencies and assignee hints.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : selectedOutput && selectedOutput.tasks.length > 0 ? (
               <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                 <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -592,6 +681,29 @@ export default function PlannerPage() {
                   </ReactFlow>
                 </div>
               </div>
+            ) : selectedOutput?.status === "failed" ? (
+              <div className="rounded-xl border border-red-200 bg-red-50/60 p-8 shadow-sm h-full flex flex-col justify-center">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="h-8 w-8 text-red-500" />
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-800">
+                      Generation failed
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      The planner started, but the lead agent did not produce a valid backlog.
+                      Review the error and run regeneration after the agent/runtime issue is fixed.
+                    </p>
+                  </div>
+                </div>
+                {selectedOutput.error_message && (
+                  <div className="mt-4 rounded-xl border border-red-200 bg-white p-4">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-red-600">
+                      Error
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">{selectedOutput.error_message}</p>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center h-full flex flex-col items-center justify-center">
                 <GitBranch className="h-12 w-12 text-slate-300" />
@@ -618,7 +730,7 @@ export default function PlannerPage() {
           <DialogHeader>
             <DialogTitle>Generate Backlog</DialogTitle>
             <DialogDescription>
-              Select a specification artifact to generate a structured backlog.
+              Select a specification artifact to start a background backlog generation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -668,16 +780,19 @@ export default function PlannerPage() {
                     {isGenerating ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Generating...
+                        Starting...
                       </>
                     ) : (
                       <>
                         <GitBranch className="mr-2 h-4 w-4" />
-                        Generate
+                        Start Generation
                       </>
                     )}
                   </button>
                 </div>
+                <p className="text-xs text-slate-500">
+                  Generation runs in the background. You do not need to keep this dialog open.
+                </p>
               </>
             )}
           </div>
@@ -689,17 +804,19 @@ export default function PlannerPage() {
         <DialogContent className="sm:max-w-3xl max-h-[85vh]">
           <DialogHeader>
             <DialogTitle>
-              {selectedOutput ? (() => {
-                const spec = artifacts.find(a => a.id === selectedOutput.artifact_id);
-                return spec?.filename || "Planner Output";
-              })() : "Planner Output"}
+              {selectedSpec?.filename || "Planner Output"}
             </DialogTitle>
             <DialogDescription>
               {selectedOutput && (
                 <div className="flex items-center gap-3 mt-1">
                   {selectedStatusConfig && (
                     <span className={cn("flex items-center gap-1 text-xs", selectedStatusConfig.color)}>
-                      <selectedStatusConfig.icon className="h-3 w-3" />
+                      <selectedStatusConfig.icon
+                        className={cn(
+                          "h-3 w-3",
+                          selectedOutput.status === "generating" && "animate-spin",
+                        )}
+                      />
                       {selectedStatusConfig.label}
                     </span>
                   )}
@@ -711,6 +828,18 @@ export default function PlannerPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="overflow-auto max-h-[65vh]">
+            {selectedOutput?.status === "generating" && (
+              <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 flex items-start gap-3">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-slate-800">Generation in progress</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    The lead agent is still preparing the backlog. This dialog will show the
+                    resulting tasks after the next automatic refresh.
+                  </p>
+                </div>
+              </div>
+            )}
             {selectedOutput?.error_message && (
               <div className="mb-4 rounded-lg bg-amber-50 border border-amber-200 p-3 flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0" />
@@ -762,6 +891,11 @@ export default function PlannerPage() {
                 </div>
               );
             })}
+            {selectedOutput && selectedOutput.epics.length === 0 && selectedOutput.status !== "generating" && (
+              <div className="rounded-lg border border-dashed border-slate-300 p-6 text-center">
+                <p className="text-sm text-slate-500">No backlog content is available for this output yet.</p>
+              </div>
+            )}
           </div>
           {selectedOutput?.status === "draft" && !selectedOutput.error_message && (
             <div className="flex justify-end gap-2 pt-3 border-t">

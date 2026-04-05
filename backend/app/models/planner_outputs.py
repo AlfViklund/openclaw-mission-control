@@ -11,7 +11,9 @@ from sqlmodel import Field
 from app.core.time import utcnow
 from app.models.base import QueryModel
 
-PLANNER_STATUSES = frozenset({"draft", "applied", "rejected"})
+PLANNER_STATUSES = frozenset(
+    {"generating", "draft", "applied", "rejected", "failed"}
+)
 
 
 class PlannerOutput(QueryModel, table=True):

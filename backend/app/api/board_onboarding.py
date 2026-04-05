@@ -106,6 +106,32 @@ def _parse_draft_team_plan(draft_goal: object) -> BoardOnboardingTeamPlan | None
         return None
 
 
+def _resolve_confirmed_goal_fields(
+    *,
+    board: Board,
+    payload: BoardOnboardingConfirm,
+    draft: BoardOnboardingAgentComplete | None,
+    human_readable_objective: str | None,
+) -> tuple[str, dict[str, object] | None]:
+    """Resolve board_type and success_metrics for wizard-based confirms.
+
+    The onboarding wizard does not ask for explicit goal metrics, so a board
+    should not stay in an invalid implicit ``goal`` state after confirmation.
+    Preserve an explicit goal board only when onboarding has complete goal data.
+    """
+    draft_board_type = getattr(draft, "board_type", None) if draft else None
+    draft_success_metrics = getattr(draft, "success_metrics", None) if draft else None
+
+    confirmed_board_type = payload.board_type or draft_board_type or board.board_type
+    success_metrics = payload.success_metrics or draft_success_metrics
+
+    if confirmed_board_type == "goal":
+        if human_readable_objective and success_metrics:
+            return "goal", success_metrics
+        return "general", None
+    return confirmed_board_type or "general", success_metrics
+
+
 def _parse_draft_planning_policy(
     draft_goal: object,
 ) -> BoardOnboardingPlanningPolicy | None:
@@ -1057,8 +1083,18 @@ async def confirm_onboarding(
         human_readable_objective = context.description
     elif payload.objective:
         human_readable_objective = payload.objective
+    elif draft and draft.objective:
+        human_readable_objective = draft.objective
     if human_readable_objective:
         board.objective = human_readable_objective
+
+    resolved_board_type, resolved_success_metrics = _resolve_confirmed_goal_fields(
+        board=board,
+        payload=payload,
+        draft=draft,
+        human_readable_objective=human_readable_objective,
+    )
+    board.board_type = resolved_board_type
 
     if (
         project_info
@@ -1068,10 +1104,7 @@ async def confirm_onboarding(
         board.target_date = payload.target_date
     elif payload.target_date:
         board.target_date = payload.target_date
-    if payload.board_type is not None:
-        board.board_type = payload.board_type
-    if payload.success_metrics is not None:
-        board.success_metrics = payload.success_metrics
+    board.success_metrics = resolved_success_metrics
     board.goal_confirmed = True
     board.goal_source = "lead_agent_onboarding"
 

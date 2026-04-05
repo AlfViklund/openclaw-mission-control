@@ -14,11 +14,13 @@ def _fake_onboarding(status: str, messages: list | None = None):
 import json
 import pytest
 
+from app.models.boards import Board
 from app.schemas.board_onboarding import (
     AUTOMATION_PROFILE_DEFAULTS,
     QA_STRICTNESS_DEFAULTS,
     BoardOnboardingAgentComplete,
     BoardOnboardingAutomationPolicy,
+    BoardOnboardingConfirm,
     BoardOnboardingContext,
     BoardOnboardingDraftUpdate,
     BoardOnboardingLeadAgentDraft,
@@ -152,6 +154,98 @@ class TestRequireApprovalFromQa:
             )
             is False
         )
+
+
+class TestWorkerCapacityFromTeamPlan:
+    """Tests for onboarding-derived worker capacity."""
+
+    def test_lead_only_keeps_default_worker_floor(self) -> None:
+        from app.services.board_bootstrap import _worker_capacity_from_team_plan
+
+        capacity = _worker_capacity_from_team_plan(
+            BoardOnboardingTeamPlan(provision_mode="lead_only")
+        )
+        assert capacity == 1
+
+    def test_selected_roles_counts_only_unique_worker_roles(self) -> None:
+        from app.services.board_bootstrap import _worker_capacity_from_team_plan
+
+        capacity = _worker_capacity_from_team_plan(
+            BoardOnboardingTeamPlan(
+                provision_mode="selected_roles",
+                roles=[
+                    "board_lead",
+                    "developer",
+                    "developer",
+                    "qa_engineer",
+                    "unknown",
+                ],
+            )
+        )
+        assert capacity == 2
+
+    def test_full_team_counts_all_worker_presets(self) -> None:
+        from app.services.board_bootstrap import _worker_capacity_from_team_plan
+
+        capacity = _worker_capacity_from_team_plan(
+            BoardOnboardingTeamPlan(provision_mode="full_team")
+        )
+        assert capacity == 4
+
+
+class TestBootstrapWorkerCapacity:
+    """Tests that bootstrap syncs board worker capacity from team selection."""
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_updates_board_max_agents_from_selected_roles(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services import board_bootstrap
+
+        board = Board(
+            id=uuid4(),
+            organization_id=uuid4(),
+            name="CardFlow",
+            slug="cardflow",
+            description="Board for onboarding",
+            board_type="general",
+            max_agents=1,
+        )
+        draft = BoardOnboardingAgentComplete(
+            status="complete",
+            board_type="general",
+            team_plan=BoardOnboardingTeamPlan(
+                provision_mode="selected_roles",
+                roles=["board_lead", "developer", "qa_engineer"],
+            ),
+        )
+
+        class _NoGatewayDispatch:
+            def __init__(self, _session: object) -> None:
+                pass
+
+            async def require_gateway_config_for_board(
+                self,
+                _board: Board,
+            ) -> tuple[object, object]:
+                raise RuntimeError("no gateway for unit test")
+
+        monkeypatch.setattr(
+            board_bootstrap,
+            "GatewayDispatchService",
+            _NoGatewayDispatch,
+        )
+
+        result = await board_bootstrap.bootstrap_board_from_onboarding(
+            session=object(),  # type: ignore[arg-type]
+            board=board,
+            draft=draft,
+            user=None,
+        )
+
+        assert board.max_agents == 2
+        assert result.team_status == "not_requested"
 
 
 class TestAgentCompleteSchemaExtended:
@@ -1154,6 +1248,59 @@ class TestConfirmContract:
 
         with pytest.raises(ValidationError):
             BoardOnboardingConfirm(board_type="goal")
+
+
+class TestConfirmGoalResolution:
+    """Tests for resolving board_type/success_metrics during wizard confirm."""
+
+    def test_confirm_falls_back_to_general_without_goal_metrics(self) -> None:
+        from app.api.board_onboarding import _resolve_confirmed_goal_fields
+
+        board = Board(
+            id=uuid4(),
+            organization_id=uuid4(),
+            name="CardFlow",
+            slug="cardflow",
+            description="Board for onboarding",
+            board_type="goal",
+        )
+        resolved_type, resolved_metrics = _resolve_confirmed_goal_fields(
+            board=board,
+            payload=BoardOnboardingConfirm(),
+            draft=None,
+            human_readable_objective="Ship the first version",
+        )
+
+        assert resolved_type == "general"
+        assert resolved_metrics is None
+
+    def test_confirm_preserves_explicit_goal_with_metrics(self) -> None:
+        from app.api.board_onboarding import _resolve_confirmed_goal_fields
+
+        board = Board(
+            id=uuid4(),
+            organization_id=uuid4(),
+            name="CardFlow",
+            slug="cardflow",
+            description="Board for onboarding",
+            board_type="general",
+        )
+        draft = BoardOnboardingAgentComplete(
+            status="complete",
+            board_type="goal",
+            objective="Ship onboarding",
+            success_metrics={"activation_rate": 0.3},
+        )
+
+        resolved_type, resolved_metrics = _resolve_confirmed_goal_fields(
+            board=board,
+            payload=BoardOnboardingConfirm(),
+            draft=draft,
+            human_readable_objective="Ship onboarding",
+        )
+
+        assert resolved_type == "goal"
+        assert resolved_metrics == {"activation_rate": 0.3}
 
 
 class TestRefineStateComputation:

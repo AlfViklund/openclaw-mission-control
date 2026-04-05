@@ -16,7 +16,10 @@ from uuid import UUID
 
 from sqlmodel import col, select
 
+from app.core.logging import get_logger
 from app.core.time import utcnow
+from app.db.session import async_session_maker
+from app.models.agents import Agent
 from app.models.artifacts import Artifact
 from app.models.boards import Board
 from app.models.planner_outputs import PlannerOutput
@@ -27,7 +30,17 @@ from app.services.planner_dag import compute_parallelism_groups, validate_dag
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
 
-PLANNER_SYSTEM_PROMPT = """You are a project planner. Your job is to analyze a project specification document and break it down into a structured backlog.
+logger = get_logger(__name__)
+
+PLANNER_ACTIVE_STATUSES = frozenset({"generating", "draft"})
+PLANNER_ROLE_TO_AGENT_ROLE = {
+    "dev": "developer",
+    "qa": "qa",
+    "docs": "docs",
+    "ops": "ops",
+}
+
+PLANNER_SYSTEM_PROMPT = """You are a staff-level product planning lead. Analyze the specification and produce an execution-ready backlog for a multi-agent software delivery team.
 
 Output ONLY valid JSON with this exact structure:
 {
@@ -60,7 +73,21 @@ Rules:
 - estimate should be one of: small, medium, large, xlarge
 - Break the spec into epics, then tasks within each epic
 - Include acceptance criteria for each task
-- Be thorough but practical - aim for actionable tasks
+- Produce a backlog that is immediately useful for delivery, not just analysis
+- Cover the full execution path needed to ship:
+  - planning/architecture decisions
+  - implementation work
+  - quality validation and test coverage
+  - documentation and handoff material
+  - release/operations readiness when relevant
+- Always include at least one documentation or handoff task unless the spec is clearly a docs-only request
+- Use suggested_agent_role intentionally:
+  - dev for product/backend/frontend/integration work and technical design
+  - qa for test strategy, acceptance validation, regressions, e2e, and verification
+  - docs for README, ADR, changelog, runbook, API docs, onboarding, support docs
+  - ops for deployment, observability, security, infrastructure, migration, rollback, and runtime safeguards
+- Make tasks concrete enough that a Lead can assign them directly to Developer, QA, Technical Writer, and Ops agents
+- Prefer fewer strong tasks over many vague tasks, but do not omit necessary delivery work
 """
 
 
@@ -101,7 +128,7 @@ async def generate_backlog_from_text(
     created_by: UUID | None = None,
     force: bool = False,
 ) -> PlannerOutput:
-    """Generate a backlog from raw spec text.
+    """Queue backlog generation from raw spec text.
 
     Args:
         force: If True, delete existing draft and regenerate.
@@ -110,92 +137,199 @@ async def generate_backlog_from_text(
     if not board:
         raise ValueError(f"Board {board_id} not found")
 
-    existing = await session.exec(
+    existing_query = await session.exec(
         select(PlannerOutput).where(
             col(PlannerOutput.artifact_id) == artifact_id,
-            col(PlannerOutput.status) == "draft",
+            col(PlannerOutput.status).in_(tuple(PLANNER_ACTIVE_STATUSES)),
         )
-    ).first()
-    if existing:
-        if force:
-            await session.delete(existing)
-            await session.commit()
-        else:
-            return existing
+        .order_by(col(PlannerOutput.created_at).desc())
+    )
+    existing_outputs = list(existing_query.all())
+    generating = next(
+        (output for output in existing_outputs if output.status == "generating"),
+        None,
+    )
+    if generating is not None:
+        return generating
+
+    existing_draft = next(
+        (output for output in existing_outputs if output.status == "draft"),
+        None,
+    )
+    if existing_draft is not None:
+        if not force:
+            return existing_draft
+        for output in existing_outputs:
+            if output.status == "draft":
+                await session.delete(output)
+        await session.commit()
 
     planner_output = PlannerOutput(
         board_id=board_id,
         artifact_id=artifact_id,
-        status="draft",
+        status="generating",
         created_by=created_by,
+        epics=[],
+        tasks=[],
+        parallelism_groups=[],
     )
-
-    prompt = (
-        f"Analyze the following project specification and break it down into a structured backlog. "
-        f"Maximum {max_tasks} tasks.\n\n"
-        f"--- SPECIFICATION ---\n\n{spec_text}"
-    )
-
-    try:
-        response_text = await _call_llm_via_gateway(
-            session=session,
-            board=board,
-            system_prompt=PLANNER_SYSTEM_PROMPT,
-            user_prompt=prompt,
-        )
-    except Exception as exc:
-        planner_output.error_message = f"LLM generation failed: {exc}"
-        planner_output.epics = []
-        planner_output.tasks = []
-        session.add(planner_output)
-        await session.commit()
-        await session.refresh(planner_output)
-        return planner_output
-
-    parsed = _extract_json_from_response(response_text)
-    if not parsed:
-        planner_output.error_message = "Failed to parse LLM response as JSON"
-        planner_output.epics = []
-        planner_output.tasks = []
-        session.add(planner_output)
-        await session.commit()
-        await session.refresh(planner_output)
-        return planner_output
-
-    epics = parsed.get("epics", [])
-    tasks = parsed.get("tasks", [])
-
-    if not tasks:
-        planner_output.error_message = "No tasks generated from specification"
-        planner_output.epics = epics
-        planner_output.tasks = tasks
-        session.add(planner_output)
-        await session.commit()
-        await session.refresh(planner_output)
-        return planner_output
-
-    dag_error = validate_dag(tasks)
-    if dag_error:
-        planner_output.error_message = f"DAG validation failed: {dag_error}"
-        planner_output.epics = epics
-        planner_output.tasks = tasks
-        session.add(planner_output)
-        await session.commit()
-        await session.refresh(planner_output)
-        return planner_output
-
-    parallelism_groups = compute_parallelism_groups(tasks)
-
-    planner_output.epics = epics
-    planner_output.tasks = tasks
-    planner_output.parallelism_groups = parallelism_groups
-    planner_output.status = "draft"
-    planner_output.error_message = None
-
     session.add(planner_output)
     await session.commit()
     await session.refresh(planner_output)
+
+    _launch_planner_generation(
+        planner_output_id=planner_output.id,
+        board_id=board.id,
+        spec_text=spec_text,
+        max_tasks=max_tasks,
+    )
     return planner_output
+
+
+def _launch_planner_generation(
+    *,
+    planner_output_id: UUID,
+    board_id: UUID,
+    spec_text: str,
+    max_tasks: int,
+) -> None:
+    """Spawn background planner generation without blocking the request."""
+
+    task = asyncio.create_task(
+        _run_planner_generation(
+            planner_output_id=planner_output_id,
+            board_id=board_id,
+            spec_text=spec_text,
+            max_tasks=max_tasks,
+        )
+    )
+
+    def _log_task_result(done_task: asyncio.Task[None]) -> None:
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception(
+                "Planner background generation crashed",
+                extra={"planner_output_id": str(planner_output_id)},
+            )
+
+    task.add_done_callback(_log_task_result)
+
+
+async def _run_planner_generation(
+    *,
+    planner_output_id: UUID,
+    board_id: UUID,
+    spec_text: str,
+    max_tasks: int,
+) -> None:
+    """Generate and persist planner output using a fresh DB session."""
+
+    async with async_session_maker() as session:
+        planner_output = await PlannerOutput.objects.by_id(planner_output_id).first(
+            session
+        )
+        if planner_output is None:
+            logger.warning(
+                "Planner output disappeared before generation completed",
+                extra={"planner_output_id": str(planner_output_id)},
+            )
+            return
+
+        board = await Board.objects.by_id(board_id).first(session)
+        if board is None:
+            await _mark_planner_output_failed(
+                session,
+                planner_output,
+                error_message=f"Board {board_id} not found",
+            )
+            return
+
+        prompt = (
+            "Analyze the following project specification and break it down into a "
+            f"structured backlog. Maximum {max_tasks} tasks.\n\n"
+            f"--- SPECIFICATION ---\n\n{spec_text}"
+        )
+
+        try:
+            response_text = await _call_llm_via_gateway(
+                session=session,
+                board=board,
+                system_prompt=PLANNER_SYSTEM_PROMPT,
+                user_prompt=prompt,
+            )
+        except Exception as exc:
+            await _mark_planner_output_failed(
+                session,
+                planner_output,
+                error_message=f"LLM generation failed: {exc}",
+            )
+            return
+
+        parsed = _extract_json_from_response(response_text)
+        if not parsed:
+            await _mark_planner_output_failed(
+                session,
+                planner_output,
+                error_message="Failed to parse LLM response as JSON",
+            )
+            return
+
+        epics = parsed.get("epics", [])
+        tasks = parsed.get("tasks", [])
+
+        if not tasks:
+            await _mark_planner_output_failed(
+                session,
+                planner_output,
+                error_message="No tasks generated from specification",
+                epics=epics,
+                tasks=tasks,
+            )
+            return
+
+        dag_error = validate_dag(tasks)
+        if dag_error:
+            await _mark_planner_output_failed(
+                session,
+                planner_output,
+                error_message=f"DAG validation failed: {dag_error}",
+                epics=epics,
+                tasks=tasks,
+            )
+            return
+
+        planner_output.epics = epics
+        planner_output.tasks = tasks
+        planner_output.parallelism_groups = compute_parallelism_groups(tasks)
+        planner_output.status = "draft"
+        planner_output.error_message = None
+        session.add(planner_output)
+        await session.commit()
+
+
+async def _mark_planner_output_failed(
+    session: AsyncSession,
+    planner_output: PlannerOutput,
+    *,
+    error_message: str,
+    epics: list[dict] | None = None,
+    tasks: list[dict] | None = None,
+) -> None:
+    """Persist planner failure state for UI polling and operator review."""
+
+    planner_output.status = "failed"
+    planner_output.error_message = error_message
+    planner_output.epics = epics or []
+    planner_output.tasks = tasks or []
+    planner_output.parallelism_groups = (
+        compute_parallelism_groups(tasks or [])
+        if tasks
+        else []
+    )
+
+    session.add(planner_output)
+    await session.commit()
 
 
 async def generate_backlog(
@@ -378,9 +512,18 @@ async def apply_planner_output(
     if planner_output.status == "applied":
         raise ValueError("Planner output has already been applied")
 
+    role_agents, lead_agent = await _resolve_board_agents_for_planner(
+        session,
+        board_id=planner_output.board_id,
+    )
     id_map: dict[str, UUID] = {}
 
     for task_data in tasks:
+        assignee = _select_planner_task_assignee(
+            task_data=task_data,
+            role_agents=role_agents,
+            lead_agent=lead_agent,
+        )
         task = Task(
             board_id=planner_output.board_id,
             title=task_data.get("title", "Untitled"),
@@ -392,6 +535,7 @@ async def apply_planner_output(
             suggested_agent_role=task_data.get("suggested_agent_role"),
             planner_task_id=task_data.get("id"),
             epic_id=task_data.get("epic_id"),
+            assigned_agent_id=assignee.id if assignee is not None else None,
             auto_created=True,
             auto_reason="planner_output",
         )
@@ -405,6 +549,7 @@ async def apply_planner_output(
         for dep_id in task_data.get("depends_on", []):
             if dep_id in id_map:
                 dep = TaskDependency(
+                    board_id=planner_output.board_id,
                     task_id=new_id,
                     depends_on_task_id=id_map[dep_id],
                 )
@@ -438,3 +583,89 @@ async def apply_planner_output(
     await session.commit()
     await session.refresh(planner_output)
     return planner_output
+
+
+def _normalize_role_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return normalized or None
+
+
+def _planner_role_for_agent(agent: Agent) -> str | None:
+    if agent.is_board_lead:
+        return "lead"
+
+    raw_role: str | None = None
+    if isinstance(agent.identity_profile, dict):
+        identity_role = agent.identity_profile.get("role")
+        if isinstance(identity_role, str):
+            raw_role = identity_role
+    if raw_role is None:
+        raw_role = agent.name
+
+    normalized = _normalize_role_name(raw_role)
+    if normalized is None:
+        return None
+    if "developer" in normalized or normalized == "dev":
+        return "developer"
+    if "qa" in normalized or "quality" in normalized:
+        return "qa"
+    if "writer" in normalized or "docs" in normalized or "documentation" in normalized:
+        return "docs"
+    if "ops" in normalized or "guardian" in normalized or "operations" in normalized:
+        return "ops"
+    return None
+
+
+def _agent_is_assignable(agent: Agent) -> bool:
+    return agent.status not in {"offline", "provisioning"}
+
+
+def _agent_priority(agent: Agent) -> tuple[int, str]:
+    status_rank = 0 if agent.status == "online" else 1
+    return (status_rank, agent.name.lower())
+
+
+async def _resolve_board_agents_for_planner(
+    session: AsyncSession,
+    *,
+    board_id: UUID,
+) -> tuple[dict[str, list[Agent]], Agent | None]:
+    agents = await Agent.objects.filter_by(board_id=board_id).all(session)
+    lead_agent = next((agent for agent in agents if agent.is_board_lead), None)
+
+    grouped: dict[str, list[Agent]] = {
+        "developer": [],
+        "qa": [],
+        "docs": [],
+        "ops": [],
+    }
+    for agent in agents:
+        if not _agent_is_assignable(agent):
+            continue
+        planner_role = _planner_role_for_agent(agent)
+        if planner_role in grouped:
+            grouped[planner_role].append(agent)
+    for role_name in grouped:
+        grouped[role_name].sort(key=_agent_priority)
+    return grouped, lead_agent
+
+
+def _select_planner_task_assignee(
+    *,
+    task_data: dict[str, Any],
+    role_agents: dict[str, list[Agent]],
+    lead_agent: Agent | None,
+) -> Agent | None:
+    planner_role = _normalize_role_name(task_data.get("suggested_agent_role"))
+    mapped_role = (
+        PLANNER_ROLE_TO_AGENT_ROLE.get(planner_role)
+        if planner_role is not None
+        else None
+    )
+    if mapped_role:
+        candidates = role_agents.get(mapped_role, [])
+        if candidates:
+            return candidates[0]
+    return lead_agent

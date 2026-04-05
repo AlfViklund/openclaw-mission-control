@@ -23,6 +23,7 @@ from app.schemas.planner import (
 )
 from app.schemas.common import OkResponse
 from app.services.planner import apply_planner_output, generate_backlog
+from app.services.artifacts import get_artifact_by_id
 from app.services.planner_crud import (
     delete_planner_output,
     get_planner_output_by_id,
@@ -42,7 +43,7 @@ USER_DEP = AUTH_DEP
 
 
 @router.post(
-    "/generate", response_model=PlannerOutputRead, status_code=status.HTTP_201_CREATED
+    "/generate", response_model=PlannerOutputRead, status_code=status.HTTP_202_ACCEPTED
 )
 async def generate_backlog_endpoint(
     payload: PlannerGenerateRequest,
@@ -52,10 +53,8 @@ async def generate_backlog_endpoint(
     session: AsyncSession = SESSION_DEP,
     user: AuthContext = USER_DEP,
 ) -> PlannerOutput:
-    """Generate a backlog from a spec artifact."""
-    from app.models.artifacts import Artifact
-
-    artifact = await Artifact.objects.by_id(payload.artifact_id).first(session)
+    """Queue background backlog generation from a spec artifact."""
+    artifact = await get_artifact_by_id(session, payload.artifact_id)
     if not artifact:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found"

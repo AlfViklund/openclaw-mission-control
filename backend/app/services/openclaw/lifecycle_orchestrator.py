@@ -143,6 +143,7 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                 wakeup_verb=wakeup_verb,
             )
         except OpenClawGatewayError as exc:
+            locked.status = "offline"
             locked.last_provision_error = str(exc)
             locked.updated_at = utcnow()
             rollback_pending_token(locked, str(exc))
@@ -156,6 +157,7 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                 ) from exc
             return locked
         except (OSError, RuntimeError, ValueError) as exc:
+            locked.status = "offline"
             locked.last_provision_error = str(exc)
             locked.updated_at = utcnow()
             rollback_pending_token(locked, str(exc))

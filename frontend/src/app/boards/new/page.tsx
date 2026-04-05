@@ -141,6 +141,7 @@ export default function NewBoardPage() {
         name: trimmedName,
         slug: slugify(trimmedName),
         description: trimmedDescription,
+        board_type: "general",
         gateway_id: resolvedGatewayId,
         board_group_id: boardGroupId === "none" ? null : boardGroupId,
       },
