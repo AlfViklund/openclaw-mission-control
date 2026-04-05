@@ -1577,7 +1577,7 @@ class AgentLifecycleService(OpenClawDBService):
     ) -> AgentRead:
         if status_value:
             agent.status = status_value
-        elif agent.status == "provisioning":
+        elif agent.status in {"provisioning", "updating"}:
             agent.status = "online"
         agent.last_seen_at = utcnow()
         # Successful check-in ends the current wake escalation cycle.
