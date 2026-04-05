@@ -71,6 +71,7 @@ class ProvisionOptions:
 
 _ROLE_SOUL_MAX_CHARS = 24_000
 _ROLE_SOUL_WORD_RE = re.compile(r"[a-z0-9]+")
+_GATEWAY_HEARTBEAT_ALLOWED_KEYS = frozenset({"every", "target", "includeReasoning"})
 
 
 def _is_missing_session_error(exc: OpenClawGatewayError) -> bool:
@@ -112,6 +113,15 @@ def _heartbeat_config(agent: Agent) -> dict[str, Any]:
     if isinstance(agent.heartbeat_config, dict):
         merged.update(agent.heartbeat_config)
     return merged
+
+
+def _gateway_heartbeat_payload(heartbeat: dict[str, Any]) -> dict[str, Any]:
+    """Return only heartbeat keys supported by the gateway runtime config."""
+    return {
+        key: value
+        for key, value in heartbeat.items()
+        if key in _GATEWAY_HEARTBEAT_ALLOWED_KEYS
+    }
 
 
 def _tools_exec_host_patch(config_data: dict[str, Any]) -> dict[str, Any] | None:
@@ -728,7 +738,8 @@ def _heartbeat_entry_map(
     entries: list[tuple[str, str, dict[str, Any]]],
 ) -> dict[str, tuple[str, dict[str, Any]]]:
     return {
-        agent_id: (workspace_path, heartbeat) for agent_id, workspace_path, heartbeat in entries
+        agent_id: (workspace_path, _gateway_heartbeat_payload(heartbeat))
+        for agent_id, workspace_path, heartbeat in entries
     }
 
 
