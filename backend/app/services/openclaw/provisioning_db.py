@@ -50,7 +50,7 @@ from app.schemas.common import OkResponse
 from app.schemas.gateways import GatewayTemplatesSyncError, GatewayTemplatesSyncResult
 from app.services.activity_log import record_activity
 from app.services.openclaw.constants import (
-    _TOOLS_KV_RE,
+    parse_tools_kv,
     DEFAULT_HEARTBEAT_CONFIG,
     OFFLINE_AFTER,
 )
@@ -448,16 +448,8 @@ class _SyncContext:
 
 
 def _parse_tools_md(content: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = _TOOLS_KV_RE.match(line)
-        if not match:
-            continue
-        values[match.group("key")] = match.group("value").strip()
-    return values
+    """Parse KEY=VALUE pairs from TOOLS.md content (legacy helper)."""
+    return parse_tools_kv(content)
 
 
 async def _get_agent_file(

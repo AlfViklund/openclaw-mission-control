@@ -154,6 +154,11 @@ async def test_provision_main_agent_uses_dedicated_openclaw_agent_id(monkeypatch
     async def _fake_set_agent_files(self, **kwargs):
         return None
 
+    async def _fake_get_agent_file_payload(self, agent_id, name):
+        if name == "TOOLS.md":
+            return "- `AUTH_TOKEN=secret-token`\n- `AGENT_NAME=Acme Gateway Agent`"
+        return None
+
     monkeypatch.setattr(
         agent_provisioning.OpenClawGatewayControlPlane,
         "ensure_agent_session",
@@ -174,6 +179,11 @@ async def test_provision_main_agent_uses_dedicated_openclaw_agent_id(monkeypatch
         agent_provisioning.BaseAgentLifecycleManager,
         "_set_agent_files",
         _fake_set_agent_files,
+    )
+    monkeypatch.setattr(
+        agent_provisioning.OpenClawGatewayControlPlane,
+        "get_agent_file_payload",
+        _fake_get_agent_file_payload,
     )
 
     await agent_provisioning.OpenClawGatewayProvisioner().apply_agent_lifecycle(

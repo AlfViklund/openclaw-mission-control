@@ -131,6 +131,26 @@ _TOOLS_KV_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+
+def parse_tools_kv(content: str) -> dict[str, str]:
+    """Parse KEY=VALUE pairs from TOOLS.md / HEARTBEAT.md content.
+
+    Supports:
+    - plain ``KEY=VALUE``
+    - markdown bullet ``- KEY=VALUE``
+    - markdown bullet with backticks ``- `KEY=VALUE` ``
+    """
+    values: dict[str, str] = {}
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _TOOLS_KV_RE.match(line)
+        if not match:
+            continue
+        values[match.group("key")] = match.group("value").strip()
+    return values
 _NON_TRANSIENT_GATEWAY_ERROR_MARKERS = ("unsupported file",)
 _TRANSIENT_GATEWAY_ERROR_MARKERS = (
     "connect call failed",

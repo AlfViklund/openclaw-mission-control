@@ -369,9 +369,11 @@ async def repair_agent_auth_sync(
 ) -> AgentAuthRepairResponse:
     """Repair agent auth sync for a drifted agent.
 
-    For legacy agents: begins staged migration to signed tokens.
-    For signed agents: triggers staged reprovision with current token.
-    Resets session and wakes the agent.
+    Healing/idempotent operation — resets to a known good state:
+    - legacy_hash: rollback any stale pending, start fresh migration,
+      reprovision with new pending token, reset + wake
+    - signed: rollback any stale pending, reprovision with current active
+      token (does NOT bump version), reset + wake
     """
     from app.models.agents import Agent
     from app.models.gateways import Gateway
@@ -379,8 +381,8 @@ async def repair_agent_auth_sync(
     from app.services.openclaw.constants import DEFAULT_HEARTBEAT_CONFIG
     from app.services.openclaw.db_agent_state import (
         begin_signed_migration,
-        begin_signed_rotation,
         current_agent_runtime_token,
+        rollback_pending_token,
     )
     from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
     from app.services.openclaw.gateway_resolver import (
@@ -408,15 +410,14 @@ async def repair_agent_auth_sync(
         )
 
     if agent.agent_auth_mode == "legacy_hash":
-        if agent.pending_agent_token_version is None:
-            begin_signed_migration(agent)
-            session.add(agent)
-            await session.flush()
+        rollback_pending_token(agent, "repair: starting fresh migration")
+        begin_signed_migration(agent)
+        session.add(agent)
+        await session.flush()
     elif agent.agent_auth_mode == "signed":
-        if agent.pending_agent_token_version is None:
-            begin_signed_rotation(agent)
-            session.add(agent)
-            await session.flush()
+        rollback_pending_token(agent, "repair: reverting to active token")
+        session.add(agent)
+        await session.flush()
 
     if agent.heartbeat_config is None:
         agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
@@ -524,7 +525,6 @@ async def rotate_agent_auth_token(
         )
 
     begin_signed_rotation(agent)
-    agent.updated_at = utcnow()
     session.add(agent)
     await session.flush()
 
@@ -562,7 +562,6 @@ async def rotate_agent_auth_token(
             raise_gateway_errors=True,
         )
     except HTTPException as exc:
-        from app.services.openclaw.db_agent_state import rollback_pending_token
         rollback_pending_token(agent, str(exc.detail))
         agent.updated_at = utcnow()
         session.add(agent)

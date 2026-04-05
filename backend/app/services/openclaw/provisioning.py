@@ -962,17 +962,21 @@ class BaseAgentLifecycleManager(ABC):
     ) -> None:
         """Verify that TOOLS.md on the gateway contains the expected AUTH_TOKEN.
 
-        Raises RuntimeError on actual token mismatch. Silently skips when
-        the file cannot be read (gateway unreachable, etc) — this is a
-        best-effort safety check, not a hard requirement.
+        STRICT mode — any failure raises RuntimeError to fail the lifecycle:
+        - TOOLS.md unreadable → fail
+        - AUTH_TOKEN not found → fail
+        - AUTH_TOKEN mismatch → fail
+
+        On failure the lifecycle orchestrator will rollback pending state
+        and NOT send wakeup.
         """
         try:
             payload = await self._control_plane.get_agent_file_payload(
                 agent_id=agent_id,
                 name="TOOLS.md",
             )
-        except OpenClawGatewayError:
-            return
+        except OpenClawGatewayError as exc:
+            raise RuntimeError(f"Failed to read TOOLS.md for token verification: {exc}") from exc
 
         content: str | None = None
         if isinstance(payload, str):
@@ -989,21 +993,17 @@ class BaseAgentLifecycleManager(ABC):
                         content = nested
 
         if content is None:
-            return
+            raise RuntimeError("TOOLS.md returned no content during token verification")
 
-        from app.services.openclaw.constants import _TOOLS_KV_RE
-        values: dict[str, str] = {}
-        for raw in content.splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            match = _TOOLS_KV_RE.match(line)
-            if not match:
-                continue
-            values[match.group("key")] = match.group("value").strip()
+        from app.services.openclaw.constants import parse_tools_kv
+        values = parse_tools_kv(content)
 
         actual_token = values.get("AUTH_TOKEN", "").strip()
-        if actual_token and actual_token != expected_token:
+        if not actual_token:
+            raise RuntimeError(
+                "AUTH_TOKEN not found in TOOLS.md after provisioning"
+            )
+        if actual_token != expected_token:
             raise RuntimeError(
                 f"Token readback mismatch: expected {expected_token[:12]}..., "
                 f"got {actual_token[:12]}..."

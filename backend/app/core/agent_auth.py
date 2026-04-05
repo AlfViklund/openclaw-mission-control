@@ -21,6 +21,7 @@ Auth variants:
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
@@ -70,24 +71,20 @@ async def _find_agent_for_token(session: AsyncSession, token: str) -> AgentAuthC
             return None
 
         secret = settings.agent_auth_secret
-        active_valid = (
-            issue_signed_agent_token(
-                agent_id=agent.id,
-                version=agent.agent_token_version,
-                secret=secret,
-            )
-            == token
+        expected_active = issue_signed_agent_token(
+            agent_id=agent.id,
+            version=agent.agent_token_version,
+            secret=secret,
         )
+        active_valid = hmac.compare_digest(expected_active, token)
 
         if agent.pending_agent_token_version is not None:
-            pending_valid = (
-                issue_signed_agent_token(
-                    agent_id=agent.id,
-                    version=agent.pending_agent_token_version,
-                    secret=secret,
-                )
-                == token
+            expected_pending = issue_signed_agent_token(
+                agent_id=agent.id,
+                version=agent.pending_agent_token_version,
+                secret=secret,
             )
+            pending_valid = hmac.compare_digest(expected_pending, token)
             if pending_valid:
                 return AgentAuthContext(
                     actor_type="agent",
