@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import platform as _platform
 import ssl
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter, time
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -32,6 +34,7 @@ PROTOCOL_VERSION = 3
 # Resolved once at import time; matches the value written by the openclaw CLI
 # during pairing ("linux", "darwin", or "windows").
 _HOST_PLATFORM: str = _platform.system().lower()
+DEFAULT_PAIRED_DEVICES_PATH = Path.home() / ".openclaw" / "devices" / "paired.json"
 logger = get_logger(__name__)
 GATEWAY_OPERATOR_SCOPES = (
     "operator.read",
@@ -178,6 +181,33 @@ class GatewayConfig:
     token: str | None = None
     allow_insecure_tls: bool = False
     disable_device_pairing: bool = False
+
+
+def _paired_devices_path() -> Path:
+    raw = os.getenv("OPENCLAW_GATEWAY_PAIRED_DEVICES_PATH", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DEFAULT_PAIRED_DEVICES_PATH
+
+
+def _resolve_client_platform() -> str:
+    override = os.getenv("OPENCLAW_GATEWAY_CLIENT_PLATFORM", "").strip()
+    if override:
+        return override.lower()
+
+    try:
+        identity = load_or_create_device_identity()
+        payload = json.loads(_paired_devices_path().read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            entry = payload.get(identity.device_id)
+            if isinstance(entry, dict):
+                paired_platform = str(entry.get("platform") or "").strip()
+                if paired_platform:
+                    return paired_platform.lower()
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        pass
+
+    return _HOST_PLATFORM
 
 
 def _build_gateway_url(config: GatewayConfig) -> str:
@@ -338,7 +368,7 @@ def _build_connect_params(
         "client": {
             "id": CONTROL_UI_CLIENT_ID if use_control_ui else DEFAULT_GATEWAY_CLIENT_ID,
             "version": "1.0.0",
-            "platform": _HOST_PLATFORM,
+            "platform": _resolve_client_platform(),
             "mode": CONTROL_UI_CLIENT_MODE if use_control_ui else DEFAULT_GATEWAY_CLIENT_MODE,
         },
     }

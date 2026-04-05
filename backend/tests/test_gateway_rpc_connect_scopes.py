@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,7 @@ from app.services.openclaw.gateway_rpc import (
     OpenClawGatewayError,
     _build_connect_params,
     _build_control_ui_origin,
+    _resolve_client_platform,
     openclaw_call,
 )
 
@@ -85,6 +88,40 @@ def test_build_connect_params_uses_control_ui_when_pairing_disabled() -> None:
     assert params["client"]["mode"] == CONTROL_UI_CLIENT_MODE
     assert params["client"]["platform"] == platform.system().lower()
     assert "device" not in params
+
+
+def test_resolve_client_platform_prefers_paired_device_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    paired_path = tmp_path / "paired.json"
+    paired_path.write_text(
+        json.dumps(
+            {
+                "device-123": {
+                    "deviceId": "device-123",
+                    "platform": "darwin",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PAIRED_DEVICES_PATH", str(paired_path))
+    monkeypatch.setattr(
+        gateway_rpc,
+        "load_or_create_device_identity",
+        lambda: SimpleNamespace(device_id="device-123"),
+    )
+
+    assert _resolve_client_platform() == "darwin"
+
+
+def test_resolve_client_platform_honors_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_GATEWAY_CLIENT_PLATFORM", "darwin")
+
+    assert _resolve_client_platform() == "darwin"
 
 
 def test_build_connect_params_passes_nonce_to_device_payload(

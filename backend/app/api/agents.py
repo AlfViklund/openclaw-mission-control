@@ -438,6 +438,7 @@ async def repair_agent_auth_sync(
     workspace_dir = Path.home() / ".openclaw" / f"workspace-gateway-{gateway.id}"
     heartbeat_path = workspace_dir / "HEARTBEAT.md"
     tools_path = workspace_dir / "TOOLS.md"
+    agents_path = workspace_dir / "AGENTS.md"
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def _replace_token(text: str, key: str, token: str) -> str:
@@ -445,20 +446,44 @@ async def repair_agent_auth_sync(
             pattern = r"(X-Agent-Token:\s*`?)[^`\s]+(`?)"
             if "X-Agent-Token" not in text:
                 return text.rstrip() + f"\nX-Agent-Token: {token}\n"
-        else:
+            def repl(match: re.Match[str]) -> str:
+                return f"{match.group(1)}{token}{match.group(2)}"
+
+            return re.sub(pattern, repl, text)
+        if key == "TOOLS.md":
             pattern = r"(AUTH_TOKEN\s*[:=]\s*`?)[^`\s]+(`?)"
             if "AUTH_TOKEN" not in text:
                 return text.rstrip() + f"\nAUTH_TOKEN={token}\n"
+            def repl(match: re.Match[str]) -> str:
+                return f"{match.group(1)}{token}{match.group(2)}"
 
-        def repl(match: re.Match[str]) -> str:
-            return f"{match.group(1)}{token}{match.group(2)}"
+            return re.sub(pattern, repl, text)
+        if key == "AGENTS.md":
+            updated_lines: list[str] = []
+            for line in text.splitlines():
+                stripped = line.lstrip()
+                indent = line[: len(line) - len(stripped)]
+                if stripped.startswith("- `AUTH_TOKEN`:"):
+                    updated_lines.append(f"{indent}- `AUTH_TOKEN`: {token}")
+                    continue
+                if stripped.startswith("- Always include header:"):
+                    updated_lines.append(f"{indent}- Always include header: `X-Agent-Token: {token}`")
+                    continue
+                if stripped.startswith('-H "X-Agent-Token:'):
+                    trailer = " \\" if stripped.endswith("\\") else ""
+                    updated_lines.append(f'{indent}-H "X-Agent-Token: {token}"{trailer}')
+                    continue
+                updated_lines.append(line)
+            return "\n".join(updated_lines) + ("\n" if text.endswith("\n") else "")
 
-        return re.sub(pattern, repl, text)
+        return text
 
     live_heartbeat_text = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
     live_tools_text = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
+    live_agents_text = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
     live_heartbeat_token = ""
     live_tools_token = ""
+    live_agents_token = ""
 
     heartbeat_match = re.search(r"X-Agent-Token:\s*`?([^`\s]+)`?", live_heartbeat_text)
     if heartbeat_match:
@@ -466,14 +491,28 @@ async def repair_agent_auth_sync(
     tools_match = re.search(r"AUTH_TOKEN\s*[:=]\s*`?([^`\s]+)`?", live_tools_text)
     if tools_match:
         live_tools_token = tools_match.group(1).strip()
+    agents_match = re.search(r"X-Agent-Token:\s*`?([^`\s]+)`?", live_agents_text)
+    if agents_match:
+        live_agents_token = agents_match.group(1).strip()
 
-    if live_heartbeat_token != raw_token or live_tools_token != raw_token:
+    if (
+        live_heartbeat_token != raw_token
+        or live_tools_token != raw_token
+        or live_agents_token != raw_token
+    ):
         heartbeat_path.write_text(_replace_token(live_heartbeat_text, "HEARTBEAT.md", raw_token), encoding="utf-8")
         tools_path.write_text(_replace_token(live_tools_text, "TOOLS.md", raw_token), encoding="utf-8")
+        if agents_path.exists():
+            agents_path.write_text(_replace_token(live_agents_text, "AGENTS.md", raw_token), encoding="utf-8")
 
     heartbeat_after = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
     tools_after = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
-    if raw_token not in heartbeat_after or raw_token not in tools_after:
+    agents_after = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
+    if (
+        raw_token not in heartbeat_after
+        or raw_token not in tools_after
+        or (agents_path.exists() and raw_token not in agents_after)
+    ):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Gateway update failed: live auth files were not updated",
