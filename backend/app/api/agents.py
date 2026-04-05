@@ -427,41 +427,70 @@ async def repair_agent_auth_sync(
         await session.flush()
 
     try:
-        raw_token = current_agent_runtime_token(agent)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Cannot resolve runtime token: {exc}",
-        ) from exc
+    raw_token = current_agent_runtime_token(agent)
 
-    if agent.agent_auth_mode == "signed" and agent.pending_agent_token_version is None:
-        agent.last_provision_error = None
-        agent.agent_auth_last_error = None
-        agent.agent_auth_last_synced_at = utcnow()
-        agent.updated_at = utcnow()
-        session.add(agent)
-        await session.commit()
-        await session.refresh(agent)
-        return AgentAuthRepairResponse(
-            agent_id=agent.id,
-            agent_auth_mode=agent.agent_auth_mode,
-            agent_token_version=agent.agent_token_version,
-            pending_agent_token_version=agent.pending_agent_token_version,
-            status=agent.status,
-            agent_auth_last_error=agent.agent_auth_last_error,
+    from pathlib import Path
+    import re
+
+    workspace_dir = Path.home() / ".openclaw" / f"workspace-gateway-{gateway.id}"
+    heartbeat_path = workspace_dir / "HEARTBEAT.md"
+    tools_path = workspace_dir / "TOOLS.md"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    def _replace_token(text: str, key: str, token: str) -> str:
+        if key == "HEARTBEAT.md":
+            pattern = r"(X-Agent-Token:\s*`?)[^`\s]+(`?)"
+            if "X-Agent-Token" not in text:
+                return text.rstrip() + f"\nX-Agent-Token: {token}\n"
+        else:
+            pattern = r"(AUTH_TOKEN\s*[:=]\s*`?)[^`\s]+(`?)"
+            if "AUTH_TOKEN" not in text:
+                return text.rstrip() + f"\nAUTH_TOKEN={token}\n"
+
+        def repl(match: re.Match[str]) -> str:
+            return f"{match.group(1)}{token}{match.group(2)}"
+
+        return re.sub(pattern, repl, text)
+
+    live_heartbeat_text = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
+    live_tools_text = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
+    live_heartbeat_token = ""
+    live_tools_token = ""
+
+    heartbeat_match = re.search(r"X-Agent-Token:\s*`?([^`\s]+)`?", live_heartbeat_text)
+    if heartbeat_match:
+        live_heartbeat_token = heartbeat_match.group(1).strip()
+    tools_match = re.search(r"AUTH_TOKEN\s*[:=]\s*`?([^`\s]+)`?", live_tools_text)
+    if tools_match:
+        live_tools_token = tools_match.group(1).strip()
+
+    if live_heartbeat_token != raw_token or live_tools_token != raw_token:
+        heartbeat_path.write_text(_replace_token(live_heartbeat_text, "HEARTBEAT.md", raw_token), encoding="utf-8")
+        tools_path.write_text(_replace_token(live_tools_text, "TOOLS.md", raw_token), encoding="utf-8")
+
+    heartbeat_after = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
+    tools_after = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
+    if raw_token not in heartbeat_after or raw_token not in tools_after:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gateway update failed: live auth files were not updated",
         )
 
-    # Re-stage the token migration and recover with a direct file-sync path.
-    if agent.agent_auth_mode == "legacy_hash":
-        rollback_pending_token(agent, "repair: starting fresh migration")
-        begin_signed_migration(agent)
-        session.add(agent)
-        await session.flush()
-    elif agent.agent_auth_mode == "signed":
-        rollback_pending_token(agent, "repair: reverting to active token")
-        session.add(agent)
-        await session.flush()
-
+    agent.last_provision_error = None
+    agent.agent_auth_last_error = None
+    agent.agent_auth_last_synced_at = utcnow()
+    agent.updated_at = utcnow()
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return AgentAuthRepairResponse(
+        agent_id=agent.id,
+        agent_auth_mode=agent.agent_auth_mode,
+        agent_token_version=agent.agent_token_version,
+        pending_agent_token_version=agent.pending_agent_token_version,
+        status=agent.status,
+        agent_auth_last_error=agent.agent_auth_last_error,
+    )
     provisioner = OpenClawGatewayProvisioner()
     try:
         from app.models.users import User
