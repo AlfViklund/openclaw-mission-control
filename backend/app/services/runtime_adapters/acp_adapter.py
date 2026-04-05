@@ -96,7 +96,7 @@ class ACPAdapter(RuntimeAdapter):
             from app.services.openclaw.gateway_rpc import openclaw_call
             await openclaw_call(
                 "chat.abort",
-                {"session_key": self._session_key},
+                {"sessionKey": self._session_key},
                 config=self._gateway_config,
             )
             self._active_runs[run_id]["status"] = "canceled"
@@ -125,7 +125,7 @@ class ACPAdapter(RuntimeAdapter):
             try:
                 history = await openclaw_call(
                     "chat.history",
-                    {"session_key": self._session_key, "limit": 20},
+                    {"sessionKey": self._session_key, "limit": 20},
                     config=self._gateway_config,
                 )
                 messages = history.get("messages", []) if isinstance(history, dict) else []

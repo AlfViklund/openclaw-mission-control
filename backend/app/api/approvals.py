@@ -317,7 +317,7 @@ async def list_approvals(
                 msg = "Expected Approval items from approvals pagination query."
                 raise TypeError(msg)
             approvals.append(item)
-    return await _approval_reads(session, approvals)
+        return await _approval_reads(session, approvals)
 
     return await paginate(session, statement.statement, transformer=_transform)
 

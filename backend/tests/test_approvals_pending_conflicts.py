@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import approvals as approvals_api
+from app.models.approvals import Approval
 from app.models.boards import Board
 from app.models.organizations import Organization
 from app.models.tasks import Task
@@ -178,5 +180,47 @@ async def test_update_approval_rejects_reopening_to_pending_with_existing_pendin
                     "approval_id": str(pending.id),
                 },
             ]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_approvals_uses_paginate_transformer() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            board, task_ids = await _seed_board_with_tasks(session, task_count=1)
+            task_id = task_ids[0]
+            created = await approvals_api.create_approval(
+                payload=ApprovalCreate(
+                    action_type="task.execute",
+                    task_id=task_id,
+                    payload={"reason": "Needs approval."},
+                    confidence=75,
+                    status="pending",
+                ),
+                board=board,
+                session=session,
+            )
+
+            async def _fake_paginate(_session, _statement, transformer=None):
+                assert transformer is not None
+                return await transformer([await session.get(Approval, created.id)])
+
+            original_paginate = approvals_api.paginate
+            approvals_api.paginate = _fake_paginate
+            try:
+                result = await approvals_api.list_approvals(
+                    status_filter=None,
+                    board=board,
+                    session=session,
+                    _actor=SimpleNamespace(),
+                )
+            finally:
+                approvals_api.paginate = original_paginate
+
+            assert len(result) == 1
+            assert result[0].id == created.id
+            assert result[0].task_titles == [f"task-{task_id}"]
     finally:
         await engine.dispose()

@@ -16,6 +16,7 @@ from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.organizations import Organization
 from app.models.planner_outputs import PlannerOutput
+from app.models.tags import Tag
 from app.models.tasks import Task
 
 
@@ -124,6 +125,62 @@ class TestWaitForAgentResponse:
 
         assert result == "actual response"
 
+    @pytest.mark.asyncio
+    async def test_handles_structured_assistant_blocks_without_marker(self) -> None:
+        from app.services.planner import _wait_for_agent_response
+
+        async def fake_openclaw_call(method, params=None, config=None):
+            return {
+                "total": 4,
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "..."},
+                            {"type": "text", "text": "Structured planner response"},
+                        ],
+                    },
+                ],
+            }
+
+        with patch("app.services.openclaw.gateway_rpc.openclaw_call", fake_openclaw_call):
+            result = await _wait_for_agent_response(
+                session_key="test-session",
+                config=None,
+                history_cursor=1,
+                request_marker="[PLANNER_RESPONSE:missing]",
+                timeout=10,
+            )
+
+        assert result == "Structured planner response"
+
+    @pytest.mark.asyncio
+    async def test_handles_history_payload_shape(self) -> None:
+        from app.services.planner import _wait_for_agent_response
+
+        async def fake_openclaw_call(method, params=None, config=None):
+            assert params == {"sessionKey": "test-session", "limit": 20}
+            return {
+                "history": [
+                    {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Reply from history field"}],
+                    },
+                ]
+            }
+
+        with patch("app.services.openclaw.gateway_rpc.openclaw_call", fake_openclaw_call):
+            result = await _wait_for_agent_response(
+                session_key="test-session",
+                config=None,
+                history_cursor=1,
+                timeout=10,
+            )
+
+        assert result == "Reply from history field"
+
 
 class TestPlannerGenerationLifecycle:
     @pytest.mark.asyncio
@@ -180,7 +237,15 @@ class TestPlannerGenerationLifecycle:
             )
 
             assert output.status == "generating"
+            assert output.pipeline_phase == "queued"
             assert output.tasks == []
+            assert [phase["key"] for phase in output.phase_statuses] == [
+                "digest",
+                "dossier",
+                "epics",
+                "tasks",
+                "ready",
+            ]
             assert queued == [
                 {
                     "planner_output_id": output.id,
@@ -189,6 +254,76 @@ class TestPlannerGenerationLifecycle:
                     "max_tasks": 12,
                 }
             ]
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_generate_backlog_from_text_force_replaces_existing_generating(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services.planner import generate_backlog_from_text
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            board = Board(
+                organization_id=organization.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            artifact_id = uuid4()
+            existing = PlannerOutput(
+                board_id=board.id,
+                artifact_id=artifact_id,
+                status="generating",
+                pipeline_phase="digest",
+                epics=[],
+                tasks=[],
+                documents=[],
+                phase_statuses=[],
+                parallelism_groups=[],
+            )
+            session.add(organization)
+            session.add(board)
+            session.add(existing)
+            await session.commit()
+
+            queued: list[UUID] = []
+
+            def _fake_launch(
+                *,
+                planner_output_id: UUID,
+                board_id: object,
+                spec_text: str,
+                max_tasks: int,
+            ) -> None:
+                queued.append(planner_output_id)
+
+            monkeypatch.setattr(
+                "app.services.planner._launch_planner_generation",
+                _fake_launch,
+            )
+
+            output = await generate_backlog_from_text(
+                session,
+                artifact_id=artifact_id,
+                board_id=board.id,
+                spec_text="# Spec",
+                max_tasks=12,
+                force=True,
+            )
+
+            await session.refresh(output)
+            assert output.id != existing.id
+            assert output.status == "generating"
+            assert queued == [output.id]
+
+            still_there = await session.get(PlannerOutput, existing.id)
+            assert still_there is None
         finally:
             await session.close()
             await engine.dispose()
@@ -251,6 +386,7 @@ class TestPlannerGenerationLifecycle:
                         "title": "Implement feature",
                         "suggested_agent_role": "dev",
                         "depends_on": [],
+                        "tags": ["backend"],
                     },
                     {
                         "id": "task_2",
@@ -287,6 +423,8 @@ class TestPlannerGenerationLifecycle:
             assert tasks_by_title["Implement feature"].assigned_agent_id == developer.id
             assert tasks_by_title["Write README"].assigned_agent_id == writer.id
             assert tasks_by_title["Coordinate release"].assigned_agent_id == lead.id
+            tags = await Tag.objects.filter_by(organization_id=organization.id).all(session)
+            assert [tag.slug for tag in tags] == ["backend"]
         finally:
             await session.close()
             await engine.dispose()

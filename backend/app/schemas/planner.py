@@ -60,9 +60,12 @@ class PlannerOutputRead(SQLModel):
     board_id: UUID
     artifact_id: UUID
     status: str
+    pipeline_phase: str
     json_schema_version: int
     epics: list[dict]
     tasks: list[dict]
+    documents: list[dict]
+    phase_statuses: list[dict]
     parallelism_groups: list[dict]
     error_message: str | None = None
     created_at: datetime

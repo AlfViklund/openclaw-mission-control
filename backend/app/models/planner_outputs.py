@@ -28,10 +28,13 @@ class PlannerOutput(QueryModel, table=True):
     )
 
     status: str = Field(default="draft", index=True)
+    pipeline_phase: str = Field(default="queued", index=True)
     json_schema_version: int = Field(default=1)
 
     epics: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     tasks: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    documents: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    phase_statuses: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
 
     # Computed parallelism levels (which tasks can run simultaneously)
     parallelism_groups: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
