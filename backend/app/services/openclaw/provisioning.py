@@ -1263,6 +1263,184 @@ class OpenClawGatewayProvisioner:
             deliver=deliver_wakeup,
         )
 
+    async def sync_existing_agent_workspace(
+        self,
+        *,
+        agent: Agent,
+        gateway: Gateway,
+        board: Board | None,
+        auth_token: str,
+        user: User | None,
+        action: str = "update",
+        force_bootstrap: bool = False,
+        overwrite: bool = False,
+        reset_session: bool = False,
+        wake: bool = True,
+        deliver_wakeup: bool = True,
+        wakeup_verb: str | None = None,
+        file_names_override: set[str] | None = None,
+    ) -> None:
+        """Sync an already-registered agent workspace without create/update RPCs.
+
+        This is a recovery path for token sync repairs when gateway-side
+        `agents.create`/`agents.update` is blocked, but file writes and wakeups
+        are still possible.
+        """
+
+        if not gateway.url:
+            msg = "Gateway url is required"
+            raise ValueError(msg)
+
+        if board is None and getattr(agent, "board_id", None) is not None:
+            msg = "board is required for board-scoped agent lifecycle"
+            raise ValueError(msg)
+
+        if board is None:
+            session_key = (
+                agent.openclaw_session_id or GatewayAgentIdentity.session_key(gateway) or ""
+            ).strip()
+            if not session_key:
+                msg = "gateway main agent session_key is required"
+                raise ValueError(msg)
+            manager_type: type[BaseAgentLifecycleManager] = GatewayMainAgentLifecycleManager
+        else:
+            session_key = _session_key(agent)
+            manager_type = BoardAgentLifecycleManager
+
+        control_plane = _control_plane_for_gateway(gateway)
+        manager = manager_type(gateway, control_plane)
+        agent.openclaw_session_id = session_key
+
+        context = manager._build_context(
+            agent=agent,
+            auth_token=auth_token,
+            user=user,
+            board=board,
+        )
+        context = await manager._augment_context(agent=agent, context=context)
+        file_names = file_names_override or manager._file_names(agent)
+
+        # If the live auth-bearing files already match the current signed token,
+        # we can skip the write path entirely and just reset/wake the session.
+        # This avoids gateway pairing flakes on repair-only syncs.
+        if file_names.issubset({"HEARTBEAT.md", "TOOLS.md"}):
+            try:
+                from app.services.openclaw.constants import parse_tools_kv
+
+                heartbeat_payload = await control_plane.get_agent_file_payload(
+                    agent_id=manager._agent_id(agent),
+                    name="HEARTBEAT.md",
+                )
+                tools_payload = await control_plane.get_agent_file_payload(
+                    agent_id=manager._agent_id(agent),
+                    name="TOOLS.md",
+                )
+
+                def _payload_text(payload: object) -> str:
+                    if isinstance(payload, str):
+                        return payload
+                    if isinstance(payload, dict):
+                        content = payload.get("content")
+                        if isinstance(content, str):
+                            return content
+                        nested = payload.get("file")
+                        if isinstance(nested, dict):
+                            nested_content = nested.get("content")
+                            if isinstance(nested_content, str):
+                                return nested_content
+                    return ""
+
+                heartbeat_text = _payload_text(heartbeat_payload)
+                tools_text = _payload_text(tools_payload)
+                heartbeat_match = re.search(
+                    r"X-Agent-Token:\s*`?([^`\s]+)`?", heartbeat_text
+                )
+                heartbeat_token = heartbeat_match.group(1).strip() if heartbeat_match else ""
+                tools_token = parse_tools_kv(tools_text).get("AUTH_TOKEN", "").strip()
+                if heartbeat_token == auth_token and tools_token == auth_token:
+                    if reset_session:
+                        try:
+                            await control_plane.reset_agent_session(session_key)
+                        except OpenClawGatewayError as exc:
+                            if not _is_missing_session_error(exc):
+                                raise
+
+                    if wake:
+                        client_config = GatewayClientConfig(
+                            url=gateway.url,
+                            token=gateway.token,
+                            allow_insecure_tls=gateway.allow_insecure_tls,
+                            disable_device_pairing=gateway.disable_device_pairing,
+                        )
+                        await ensure_session(session_key, config=client_config, label=agent.name)
+                        verb = wakeup_verb or ("provisioned" if action == "provision" else "updated")
+                        await send_message(
+                            _wakeup_text(agent, verb=verb),
+                            session_key=session_key,
+                            config=client_config,
+                            deliver=deliver_wakeup,
+                        )
+                    return
+            except Exception:
+                pass
+
+        # Recovery path intentionally avoids list_agent_files(): the gateway may
+        # still reject the listing call with stale pairing state even though it
+        # accepts file writes once the correct token is restored.
+        existing_files: dict[str, dict[str, Any]] = {}
+        include_bootstrap = _should_include_bootstrap(
+            action=action,
+            force_bootstrap=force_bootstrap,
+            existing_files=existing_files,
+        )
+        rendered = _render_agent_files(
+            context,
+            agent,
+            file_names,
+            include_bootstrap=include_bootstrap,
+            template_overrides=manager._template_overrides(agent),
+        )
+
+        await manager._set_agent_files(
+            agent=agent,
+            agent_id=manager._agent_id(agent),
+            rendered=rendered,
+            desired_file_names=set(rendered.keys()),
+            existing_files=existing_files,
+            action=action,
+            overwrite=overwrite,
+        )
+
+        await manager._verify_token_readback(
+            agent_id=manager._agent_id(agent),
+            expected_token=auth_token,
+        )
+
+        if reset_session:
+            try:
+                await control_plane.reset_agent_session(session_key)
+            except OpenClawGatewayError as exc:
+                if not _is_missing_session_error(exc):
+                    raise
+
+        if not wake:
+            return
+
+        client_config = GatewayClientConfig(
+            url=gateway.url,
+            token=gateway.token,
+            allow_insecure_tls=gateway.allow_insecure_tls,
+            disable_device_pairing=gateway.disable_device_pairing,
+        )
+        await ensure_session(session_key, config=client_config, label=agent.name)
+        verb = wakeup_verb or ("provisioned" if action == "provision" else "updated")
+        await send_message(
+            _wakeup_text(agent, verb=verb),
+            session_key=session_key,
+            config=client_config,
+            deliver=deliver_wakeup,
+        )
+
     async def delete_agent_lifecycle(
         self,
         *,

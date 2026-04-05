@@ -16,8 +16,19 @@ This file defines the main agent heartbeat. You are not tied to any board.
 
 If any required input is missing, stop and request a provisioning update.
 
+## Heartbeat Endpoint
+Main-agent heartbeat check-ins must use `POST {{ base_url }}/api/v1/agent/heartbeat`.
+Always send the token in `X-Agent-Token: {{ auth_token }}`.
+
+```bash
+curl -fsS -X POST "{{ base_url }}/api/v1/agent/heartbeat" \
+  -H "X-Agent-Token: {{ auth_token }}" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"idle"}'
+```
+
 ## API source of truth (OpenAPI)
-Use OpenAPI role tags for main-agent endpoints.
+Use OpenAPI role tags for non-heartbeat main-agent endpoints.
 
 ```bash
 curl -s "{{ base_url }}/openapi.json" -o /tmp/openapi.json
