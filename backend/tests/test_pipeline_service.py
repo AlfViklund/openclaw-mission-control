@@ -358,6 +358,24 @@ class TestStageOrder:
         assert NORMAL_STAGE_ORDER == ["plan", "build"]
 
 
+class TestEffectiveStageRun:
+    def test_prefers_success_over_later_canceled_duplicate(self) -> None:
+        succeeded = SimpleNamespace(status="succeeded")
+        canceled = SimpleNamespace(status="canceled")
+
+        selected = PipelineService._effective_stage_run([canceled, succeeded])
+
+        assert selected is succeeded
+
+    def test_prefers_active_run_over_prior_success(self) -> None:
+        running = SimpleNamespace(status="running")
+        succeeded = SimpleNamespace(status="succeeded")
+
+        selected = PipelineService._effective_stage_run([running, succeeded])
+
+        assert selected is running
+
+
 class TestRuntimeFailureClassification:
     def test_transient_rate_limit_is_retryable_quota_exhausted(self) -> None:
         failure_kind, retryable = _classify_run_failure(

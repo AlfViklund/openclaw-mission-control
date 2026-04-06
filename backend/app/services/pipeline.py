@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 NORMAL_STAGE_ORDER = ["plan", "build"]
 ALL_STAGE_ORDER = ["plan", "build"]
 
+ACTIVE_RUN_STATUSES = {"running", "queued"}
+
 STAGE_TO_TASK_STATUS = {
     "plan": "in_progress",
     "build": "in_progress",
@@ -903,12 +905,25 @@ class PipelineService:
     async def _latest_runs_by_stage(self, task_id: UUID) -> dict[str, Run | None]:
         latest: dict[str, Run | None] = {}
         for stage_name in ALL_STAGE_ORDER:
-            latest[stage_name] = await (
+            runs = await (
                 Run.objects.filter_by(task_id=task_id, stage=stage_name)
                 .order_by(desc(col(Run.created_at)))
-                .first(self._session)
+                .all(self._session)
             )
+            latest[stage_name] = self._effective_stage_run(runs)
         return latest
+
+    @staticmethod
+    def _effective_stage_run(runs: list[Run]) -> Run | None:
+        if not runs:
+            return None
+        for run in runs:
+            if run.status in ACTIVE_RUN_STATUSES:
+                return run
+        for run in runs:
+            if run.status == "succeeded":
+                return run
+        return runs[0]
 
     def _next_required_stage_from_runs(
         self,
