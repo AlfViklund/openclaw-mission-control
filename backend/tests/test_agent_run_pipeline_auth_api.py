@@ -52,6 +52,10 @@ async def test_agent_create_run_defaults_to_self(
             )
         ),
     )
+    monkeypatch.setattr(
+        "app.api.runs.get_active_task_stage_run",
+        AsyncMock(return_value=None),
+    )
 
     async def _fake_create_run(_session, **kwargs):
         created.update(kwargs)
@@ -71,6 +75,55 @@ async def test_agent_create_run_defaults_to_self(
 
     assert result == run
     assert created["agent_id"] == actor.agent.id
+
+
+@pytest.mark.asyncio
+async def test_agent_create_run_returns_existing_active_task_stage_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = uuid4()
+    actor = _agent_actor(board_id=board_id)
+    task_id = uuid4()
+    task = Task(id=task_id, board_id=board_id, title="Task")
+    existing_run = SimpleNamespace(
+        id=uuid4(),
+        task_id=task_id,
+        agent_id=actor.agent.id,
+        stage="build",
+        runtime="acp",
+        status="queued",
+    )
+
+    monkeypatch.setattr(
+        "app.api.runs.Task.objects",
+        SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=task))),
+    )
+    monkeypatch.setattr(
+        "app.api.deps.Agent.objects",
+        SimpleNamespace(
+            by_id=lambda _id: SimpleNamespace(
+                first=AsyncMock(return_value=actor.agent if _id == actor.agent.id else None)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.runs.get_active_task_stage_run",
+        AsyncMock(return_value=existing_run),
+    )
+    create_run_mock = AsyncMock()
+    start_run_mock = AsyncMock()
+    monkeypatch.setattr("app.api.runs.create_run", create_run_mock)
+    monkeypatch.setattr("app.api.runs.start_run", start_run_mock)
+
+    result = await create_and_start_run(
+        payload=RunCreate(task_id=task_id, stage="build"),
+        session=object(),  # type: ignore[arg-type]
+        _actor=actor,
+    )
+
+    assert result == existing_run
+    create_run_mock.assert_not_awaited()
+    start_run_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

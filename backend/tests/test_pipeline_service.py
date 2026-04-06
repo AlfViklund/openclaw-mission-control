@@ -143,6 +143,9 @@ class TestAutoRunNextStage:
         ), patch(
             "app.services.pipeline.create_run",
             AsyncMock(return_value=build_run),
+        ), patch(
+            "app.services.pipeline.get_active_task_stage_run",
+            AsyncMock(return_value=None),
         ) as create_run_mock, patch.object(
             PipelineService,
             "_drain_board_queue",
@@ -197,6 +200,9 @@ class TestAutoRunNextStage:
             "app.services.pipeline.create_run",
             AsyncMock(return_value=queued_run),
         ), patch(
+            "app.services.pipeline.get_active_task_stage_run",
+            AsyncMock(return_value=None),
+        ), patch(
             "app.services.pipeline.get_running_board_run",
             AsyncMock(return_value=active_run),
         ), patch(
@@ -212,6 +218,60 @@ class TestAutoRunNextStage:
         mark_queued_mock.assert_awaited_once()
         assert result["status"] == "queued"
         assert result["queue_position"] == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_stage_reuses_existing_active_task_stage_run(self) -> None:
+        session = _make_session()
+        task = SimpleNamespace(id=uuid4(), board_id=uuid4(), status="inbox", assigned_agent_id=uuid4(), in_progress_at=None, review_mode=None)
+        board = SimpleNamespace(id=task.board_id, gateway_id=None, is_paused=False, execution_policy={"auto_run_next_stage": True})
+        agent = SimpleNamespace(id=task.assigned_agent_id, gateway_id=uuid4())
+        queued_run = SimpleNamespace(
+            id=uuid4(),
+            task_id=task.id,
+            agent_id=agent.id,
+            runtime="opencode_cli",
+            stage="plan",
+            status="queued",
+            model=None,
+            run_metadata={"queue_reason": "board_has_active_run"},
+        )
+
+        with patch(
+            "app.services.pipeline.validate_pipeline_stage",
+            AsyncMock(return_value=SimpleNamespace(blockers=[], warnings=[])),
+        ), patch(
+            "app.models.tasks.Task.objects",
+            new_callable=lambda: SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=task))),
+        ), patch(
+            "app.models.boards.Board.objects",
+            new_callable=lambda: SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=board))),
+        ), patch(
+            "app.models.agents.Agent.objects",
+            new_callable=lambda: SimpleNamespace(
+                by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=agent)),
+                filter_by=lambda **_kw: SimpleNamespace(first=AsyncMock(return_value=agent)),
+            ),
+        ), patch(
+            "app.services.pipeline.get_active_task_stage_run",
+            AsyncMock(return_value=queued_run),
+        ), patch(
+            "app.services.pipeline.get_board_id_for_run",
+            AsyncMock(return_value=board.id),
+        ), patch(
+            "app.services.pipeline.get_board_run_queue_position",
+            AsyncMock(return_value=1),
+        ), patch(
+            "app.services.pipeline.create_run",
+            AsyncMock(),
+        ) as create_run_mock:
+            svc = PipelineService(session)
+            result = await svc.execute_stage(task.id, stage="plan", runtime="opencode_cli", agent_id=agent.id)
+
+        create_run_mock.assert_not_awaited()
+        assert result["run_id"] == str(queued_run.id)
+        assert result["status"] == "queued"
+        assert result["queue_position"] == 1
+        assert result["queue_reason"] == "board_has_active_run"
 
     @pytest.mark.asyncio
     async def test_stops_for_pending_build_approval(self) -> None:

@@ -43,6 +43,7 @@ from app.services.runs import (
     claim_next_queued_board_run,
     complete_run,
     create_run,
+    get_active_task_stage_run,
     get_board_id_for_run,
     get_board_run_queue_position,
     get_running_board_run,
@@ -362,6 +363,36 @@ class PipelineService:
             if gateway is not None:
                 workspace_path = gateway_workspace_path(agent, gateway.workspace_root)
 
+        existing_active_run = await get_active_task_stage_run(
+            self._session,
+            task_id=task_id,
+            stage=stage,
+        )
+        if existing_active_run is not None:
+            queue_position = None
+            queue_reason = None
+            if existing_active_run.status == "queued":
+                board_id = await get_board_id_for_run(self._session, existing_active_run)
+                if board_id is not None:
+                    queue_position = await get_board_run_queue_position(
+                        self._session,
+                        board_id=board_id,
+                        run_id=existing_active_run.id,
+                    )
+                queue_reason = (existing_active_run.run_metadata or {}).get("queue_reason")
+            return {
+                "run_id": str(existing_active_run.id),
+                "status": existing_active_run.status,
+                "stage": existing_active_run.stage,
+                "runtime": existing_active_run.runtime,
+                "queue_position": queue_position,
+                "queue_reason": queue_reason,
+                "warnings": [
+                    {"stage": w.stage, "message": w.message, "severity": w.severity}
+                    for w in (validation.warnings if validation is not None else [])
+                ],
+            }
+
         run = await create_run(
             self._session,
             task_id=task_id,
@@ -604,6 +635,19 @@ class PipelineService:
                     "stage": "build",
                     "reason": "manual_execute_required",
                 }
+        existing_active_run = await get_active_task_stage_run(
+            self._session,
+            task_id=run.task_id,
+            stage=next_stage,
+        )
+        if existing_active_run is not None:
+            return {
+                "run_id": str(existing_active_run.id),
+                "stage": next_stage,
+                "auto_triggered": False,
+                "status": existing_active_run.status,
+                "reason": "stage_already_active",
+            }
         next_run = await create_run(
             self._session,
             task_id=run.task_id,

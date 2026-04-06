@@ -19,6 +19,7 @@ from app.schemas.runs import RunCreate, RunEvidenceRead, RunRead, RunUpdate
 from app.services.runs import (
     cancel_run,
     create_run,
+    get_active_task_stage_run,
     get_run_by_id,
     start_run,
     update_run,
@@ -85,6 +86,14 @@ async def create_and_start_run(
         task=task,
         requested_agent_id=payload.agent_id,
     )
+
+    existing_active_run = await get_active_task_stage_run(
+        session,
+        task_id=payload.task_id,
+        stage=payload.stage,
+    )
+    if existing_active_run is not None:
+        return existing_active_run
 
     run = await create_run(
         session,

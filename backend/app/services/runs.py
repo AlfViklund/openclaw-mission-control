@@ -54,6 +54,47 @@ async def create_run(
     return run
 
 
+async def get_active_task_stage_run(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    stage: str,
+) -> Run | None:
+    """Return the canonical active run for a task-stage pair, if any.
+
+    Active means ``queued`` or ``running``. Prefer a currently running run;
+    otherwise keep the oldest queued entry as the canonical queue record.
+    """
+    running = (
+        await session.exec(
+            select(Run)
+            .where(
+                col(Run.task_id) == task_id,
+                col(Run.stage) == stage,
+                col(Run.status) == "running",
+            )
+            .order_by(col(Run.started_at).desc(), col(Run.created_at).desc())
+            .limit(1)
+        )
+    ).first()
+    if running is not None:
+        return running
+
+    queued = (
+        await session.exec(
+            select(Run)
+            .where(
+                col(Run.task_id) == task_id,
+                col(Run.stage) == stage,
+                col(Run.status) == "queued",
+            )
+            .order_by(col(Run.created_at))
+            .limit(1)
+        )
+    ).first()
+    return queued
+
+
 async def get_run_by_id(session: AsyncSession, run_id: UUID) -> Run | None:
     """Fetch a single run by its ID."""
     return await Run.objects.by_id(run_id).first(session)
