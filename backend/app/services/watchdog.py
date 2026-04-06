@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -10,6 +11,7 @@ from uuid import UUID
 from sqlmodel import col, select
 
 from app.core.time import utcnow
+from app.db.session import async_session_maker
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.runs import Run
@@ -28,6 +30,83 @@ MAX_RETRY_ATTEMPTS = 3
 ESCALATION_OFFLINE_MINUTES = 15
 ESCALATION_BLOCKED_MINUTES = 60
 ORPHANED_RUNTIME_NAMES = frozenset({"opencode_cli"})
+
+
+async def _board_ids_for_task_ids(session: AsyncSession, task_ids: set[UUID]) -> set[UUID]:
+    if not task_ids:
+        return set()
+    rows = (
+        await session.exec(
+            select(Task.board_id).where(
+                col(Task.id).in_(task_ids),
+                col(Task.board_id).is_not(None),
+            )
+        )
+    ).all()
+    return {board_id for board_id in rows if board_id is not None}
+
+
+async def _queued_board_ids_without_running(session: AsyncSession) -> set[UUID]:
+    queued_board_ids = (
+        await session.exec(
+            select(Task.board_id)
+            .join(Run, col(Task.id) == col(Run.task_id))
+            .where(
+                col(Run.status) == "queued",
+                col(Task.board_id).is_not(None),
+            )
+        )
+    ).all()
+    running_board_ids = (
+        await session.exec(
+            select(Task.board_id)
+            .join(Run, col(Task.id) == col(Run.task_id))
+            .where(
+                col(Run.status) == "running",
+                col(Task.board_id).is_not(None),
+            )
+        )
+    ).all()
+    return {board_id for board_id in queued_board_ids if board_id is not None} - {
+        board_id for board_id in running_board_ids if board_id is not None
+    }
+
+
+async def _drain_board_queue_once(board_id: UUID) -> None:
+    from app.services.pipeline import PipelineService
+
+    async with async_session_maker() as session:
+        try:
+            result = await PipelineService(session)._drain_board_queue(board_id)
+            logger.info(
+                "watchdog.queue_drain.completed",
+                extra={"board_id": str(board_id), "started": result is not None},
+            )
+        except Exception:
+            logger.exception(
+                "watchdog.queue_drain.failed",
+                extra={"board_id": str(board_id)},
+            )
+
+
+async def resume_affected_board_queues(
+    session: AsyncSession,
+    *,
+    task_ids: set[UUID],
+) -> set[UUID]:
+    """Resume board queues in the background after a blocking run is cleared."""
+    board_ids = await _board_ids_for_task_ids(session, task_ids)
+    for board_id in board_ids:
+        asyncio.create_task(_drain_board_queue_once(board_id))
+    return board_ids
+
+
+async def resume_idle_board_queues(session: AsyncSession) -> set[UUID]:
+    """Resume any queued board work when no active run currently owns the board."""
+    board_ids = await _queued_board_ids_without_running(session)
+    for board_id in board_ids:
+        asyncio.create_task(_drain_board_queue_once(board_id))
+    return board_ids
 
 
 async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
@@ -71,6 +150,7 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
     """Auto-retry runs that are stuck (running too long) or failed with retries left."""
     now = utcnow()
     retried = []
+    affected_task_ids: set[UUID] = set()
 
     stuck_runs = await Run.objects.filter_by(status="running").all(session)
     timed_out_ids: set[UUID] = set()
@@ -86,6 +166,7 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
                 "task_id": str(run.task_id),
                 "reason": "timeout",
             })
+            affected_task_ids.add(run.task_id)
 
     failed_runs = await Run.objects.filter_by(status="failed").all(session)
     for run in failed_runs:
@@ -113,9 +194,11 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
                     "task_id": str(run.task_id),
                     "reason": f"retry {retry_count + 1}/{MAX_RETRY_ATTEMPTS}",
                 })
+                affected_task_ids.add(run.task_id)
 
     if retried:
         await session.commit()
+        await resume_affected_board_queues(session, task_ids=affected_task_ids)
 
     return retried
 
@@ -124,6 +207,7 @@ async def recover_orphaned_running_runs(session: AsyncSession) -> list[dict]:
     """Fail local-runtime runs that cannot survive a backend process restart."""
     now = utcnow()
     recovered = []
+    affected_task_ids: set[UUID] = set()
 
     orphaned_runs = await Run.objects.filter(
         col(Run.status) == "running",
@@ -146,9 +230,11 @@ async def recover_orphaned_running_runs(session: AsyncSession) -> list[dict]:
                 "reason": "orphaned_after_backend_restart",
             }
         )
+        affected_task_ids.add(run.task_id)
 
     if recovered:
         await session.commit()
+        await resume_affected_board_queues(session, task_ids=affected_task_ids)
 
     return recovered
 
