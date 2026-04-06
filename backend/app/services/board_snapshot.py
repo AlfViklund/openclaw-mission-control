@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +32,11 @@ from app.schemas.view_models import (
 from app.services.approval_task_links import load_task_ids_by_approval, task_counts_for_board
 from app.services.agent_presets import AGENT_ROLE_PRESETS
 from app.services.agent_work import get_board_wake_reasons
+from app.services.pipeline_runtime_state import runtime_state_for_board
+from app.services.openclaw.error_classification import (
+    is_auth_sync_error,
+    is_session_recovery_error,
+)
 from app.services.openclaw.internal.agent_key import agent_key, slugify
 from app.services.openclaw.provisioning_db import AgentLifecycleService
 from app.services.tags import TagState, load_tag_state
@@ -231,12 +238,17 @@ def _runtime_blocker(
     wake_reason: str | None,
     last_provision_error: str | None,
     agent_auth_last_error: str | None,
+    pending_agent_token_version: int | None,
     workspace_exists: bool,
     template_sync_state: str,
 ) -> str | None:
-    if agent_auth_last_error:
+    if is_auth_sync_error(agent_auth_last_error) or is_auth_sync_error(last_provision_error):
         return "PlatformBlocked(Auth)"
+    if agent_auth_last_error:
+        return "PlatformBlocked(Provisioning)"
     if last_provision_error:
+        if pending_agent_token_version is not None and is_session_recovery_error(last_provision_error):
+            return "PlatformBlocked(Check-in)"
         return "PlatformBlocked(Provisioning)"
     if template_sync_state == "drifted":
         return "PlatformBlocked(Template)"
@@ -246,6 +258,32 @@ def _runtime_blocker(
         if status not in _HEALTHY_AGENT_STATUSES:
             return "PlatformBlocked(Check-in)"
     return None
+
+
+def _runtime_state_label(runtime_blocker: str | None, status: str, last_seen_at: datetime | None) -> str:
+    if runtime_blocker == "PlatformBlocked(Auth)":
+        return "blocked_auth"
+    if runtime_blocker == "PlatformBlocked(Template)":
+        return "blocked_template"
+    if runtime_blocker == "PlatformBlocked(Workspace)":
+        return "blocked_workspace"
+    if runtime_blocker == "PlatformBlocked(Provisioning)":
+        return "blocked_runtime"
+    if runtime_blocker == "PlatformBlocked(Check-in)":
+        return "missing_first_heartbeat" if last_seen_at is None else "blocked_runtime"
+    return "healthy"
+
+
+def _work_state_label(*, status: str, wake_reason: str | None, assigned_task_count: int) -> str:
+    if status == "review" or wake_reason == "review_queue":
+        return "review_queue"
+    if status == "in_progress" or wake_reason == "assigned_in_progress_task":
+        return "in_progress"
+    if wake_reason == "assigned_inbox_task":
+        return "assigned_inbox"
+    if assigned_task_count <= 0:
+        return "idle_no_work"
+    return "assigned_inbox"
 
 
 async def _build_runtime_integrity(
@@ -315,15 +353,31 @@ async def _build_runtime_integrity(
             wake_reason=wake_reason,
             last_provision_error=computed.last_provision_error,
             agent_auth_last_error=computed.agent_auth_last_error,
+            pending_agent_token_version=computed.pending_agent_token_version,
             workspace_exists=workspace_exists,
             template_sync_state=template_sync_state,
         )
+        assigned_task_count = task_counts_by_agent_id.get(computed.id, 0)
+        work_state = _work_state_label(
+            status=computed.status,
+            wake_reason=wake_reason,
+            assigned_task_count=assigned_task_count,
+        )
+        runtime_state = _runtime_state_label(
+            runtime_blocker,
+            computed.status,
+            computed.last_seen_at,
+        )
+        actionable_task_count = assigned_task_count if wake_reason == "assigned_inbox_task" else 0
         state = BoardRuntimeAgentState(
             agent_id=computed.id,
             name=computed.name,
             role_key=role_key,
             role_label=role_label,
+            role_presence="present",
             status=computed.status,
+            work_state=work_state,
+            runtime_state=runtime_state,
             agent_auth_mode=computed.agent_auth_mode,
             pending_agent_token_version=computed.pending_agent_token_version,
             wake_reason=wake_reason,
@@ -331,7 +385,8 @@ async def _build_runtime_integrity(
             last_provision_error=computed.last_provision_error,
             agent_auth_last_error=computed.agent_auth_last_error,
             agent_auth_last_synced_at=computed.agent_auth_last_synced_at,
-            assigned_task_count=task_counts_by_agent_id.get(computed.id, 0),
+            assigned_task_count=assigned_task_count,
+            actionable_task_count=actionable_task_count,
             has_active_run=computed.id in running_agent_ids,
             workspace_path=str(workspace_path) if workspace_path is not None else None,
             workspace_exists=workspace_exists,
@@ -342,7 +397,7 @@ async def _build_runtime_integrity(
 
         if computed.last_seen_at is None:
             missing_first_heartbeat_agent_ids.append(computed.id)
-        if computed.agent_auth_last_error:
+        if runtime_blocker == "PlatformBlocked(Auth)":
             auth_drift_agent_ids.append(computed.id)
         if template_sync_state == "drifted":
             template_drift_agent_ids.append(computed.id)
@@ -368,6 +423,72 @@ async def _build_runtime_integrity(
         and state.status in _HEALTHY_AGENT_STATUSES
         and state.runtime_blocker is None
     )
+    opencode_ready = shutil.which("opencode") is not None
+    blocked_tasks_due_to_runtime = 0
+    degraded_tasks_count = 0
+    last_cli_failure_kind: str | None = None
+    quota_state = "ready" if opencode_ready else "unavailable"
+    cooldown_until: datetime | None = None
+    cooldown_message: str | None = None
+    runtime_state = runtime_state_for_board(board)
+    if runtime_state.get("status") == "cooldown":
+        quota_state = "blocked"
+        if isinstance(runtime_state.get("cooldown_until"), str):
+            try:
+                cooldown_until = datetime.fromisoformat(
+                    runtime_state["cooldown_until"].replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except ValueError:
+                cooldown_until = None
+        cooldown_message = (
+            str(runtime_state.get("cooldown_message"))
+            if runtime_state.get("cooldown_message")
+            else None
+        )
+    elif runtime_state.get("status") in {"degraded", "unavailable"}:
+        quota_state = "degraded"
+        cooldown_message = (
+            str(runtime_state.get("cooldown_message"))
+            if runtime_state.get("cooldown_message")
+            else None
+        )
+    if tasks:
+        task_ids = [task.id for task in tasks]
+        latest_cli_failure = (
+            await session.exec(
+                select(Run)
+                .where(col(Run.task_id).in_(task_ids))
+                .where(col(Run.runtime) == "opencode_cli")
+                .where(col(Run.status) == "failed")
+                .order_by(col(Run.created_at).desc())
+                .limit(1)
+            )
+        ).first()
+        if latest_cli_failure is not None:
+            last_cli_failure_kind = latest_cli_failure.failure_kind
+            if latest_cli_failure.failure_kind == "quota_exhausted":
+                quota_state = "blocked"
+            elif latest_cli_failure.failure_kind:
+                quota_state = "degraded"
+
+        latest_runs = (
+            await session.exec(
+                select(Run)
+                .where(col(Run.task_id).in_(task_ids))
+                .where(col(Run.runtime) == "opencode_cli")
+                .order_by(col(Run.task_id), col(Run.created_at).desc())
+            )
+        ).all()
+        seen_task_ids: set = set()
+        for run in latest_runs:
+            if run.task_id in seen_task_ids:
+                continue
+            seen_task_ids.add(run.task_id)
+            if run.status == "failed" and run.failure_kind is not None:
+                blocked_tasks_due_to_runtime += 1
+        degraded_tasks_count = sum(
+            1 for task in tasks if getattr(task, "review_mode", None) == "degraded_pipeline"
+        )
 
     return BoardRuntimeIntegrity(
         provision_mode=team_plan.provision_mode if team_plan is not None else None,
@@ -385,6 +506,13 @@ async def _build_runtime_integrity(
         actual_worker_count=actual_worker_count,
         healthy_worker_count=healthy_worker_count,
         board_max_agents_counts_workers_only=True,
+        opencode_ready=opencode_ready,
+        quota_state=quota_state,
+        last_cli_failure_kind=last_cli_failure_kind,
+        blocked_tasks_due_to_runtime=blocked_tasks_due_to_runtime,
+        cooldown_until=cooldown_until,
+        cooldown_message=cooldown_message,
+        degraded_tasks_count=degraded_tasks_count,
         agents=agent_states,
     )
 

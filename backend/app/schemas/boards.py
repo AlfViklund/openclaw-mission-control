@@ -37,6 +37,8 @@ class BoardBase(SQLModel):
     is_paused: bool = False
     paused_reason: str | None = None
     max_agents: int = Field(default=1, ge=0)
+    execution_policy: dict[str, object] = Field(default_factory=dict)
+    execution_runtime_state: dict[str, object] | None = None
 
 
 class BoardCreate(BoardBase):
@@ -85,6 +87,8 @@ class BoardUpdate(SQLModel):
     paused_reason: str | None = None
     max_agents: int | None = Field(default=None, ge=0)
     automation_config: dict[str, object] | None = None
+    execution_policy: dict[str, object] | None = None
+    execution_runtime_state: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_gateway_id(self) -> Self:

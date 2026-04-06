@@ -11,6 +11,11 @@ from app.models.agents import Agent
 from app.models.approvals import Approval
 from app.models.runs import Run
 from app.models.tasks import Task
+from app.services.task_dependencies import (
+    blocked_by_dependency_ids,
+    dependency_ids_by_task_id,
+    dependency_status_by_id,
+)
 
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -97,14 +102,35 @@ async def get_work_snapshot(
     assigned_in_progress_task_id = None
     assigned_inbox_task_ids: list[str] = []
     review_tasks_count = 0
+    inbox_task_ids: list[UUID] = []
 
     for task in tasks:
         if task.status == "in_progress" and assigned_in_progress_task_id is None:
             assigned_in_progress_task_id = str(task.id)
         elif task.status == "inbox":
-            assigned_inbox_task_ids.append(str(task.id))
+            inbox_task_ids.append(task.id)
         elif task.status == "review":
             review_tasks_count += 1
+
+    if inbox_task_ids:
+        deps_by_task_id = await dependency_ids_by_task_id(
+            session,
+            board_id=board_id,
+            task_ids=inbox_task_ids,
+        )
+        dependency_ids = list({dep_id for values in deps_by_task_id.values() for dep_id in values})
+        dependency_statuses = await dependency_status_by_id(
+            session,
+            board_id=board_id,
+            dependency_ids=dependency_ids,
+        )
+        for task_id in inbox_task_ids:
+            blocked_by = blocked_by_dependency_ids(
+                dependency_ids=deps_by_task_id.get(task_id, []),
+                status_by_id=dependency_statuses,
+            )
+            if not blocked_by:
+                assigned_inbox_task_ids.append(str(task_id))
 
     # -- Pending approvals for this board --
     # For workers, only approvals explicitly assigned to them are relevant.

@@ -13,7 +13,7 @@ ClawDev — это операционная система для разрабо
 1. **Разбивает** спецификацию на эпики, задачи и зависимости (DAG)
 2. **Создаёт** канбан-доску с backlog
 3. **Провижинит** команду AI-агентов с ролями (Lead, Developer, QA, Writer, Ops)
-4. **Запускает** pipeline: plan → build → test → review → done
+4. **Запускает** pipeline: plan → build → review → done
 5. **Мониторит** здоровье агентов и автоматически восстанавливается при сбоях
 6. **Уведомляет** вас через Telegram о каждом важном событии
 
@@ -59,23 +59,17 @@ ClawDev — это операционная система для разрабо
 
 ### 🔗 Pipeline Orchestration
 
-Guarded pipeline исполнения: **plan → approval → build → test → review → done**
+Guarded pipeline исполнения: **plan → approval → build → review → done**
 
 - **Strict for agents** — агенты не могут нарушать порядок стадий
 - **Guarded for owner** — ручные переходы в `review/done` требуют явного override и причины
 - **Approval gate** — после успешного `plan` создаётся approval перед `build`
-- **Авто-цепочка** — `build → test` выполняется автоматически только после успешного прохождения gate
+- **Авто-цепочка** — после успешного `plan` система может автоматически продвинуться к `build`, если approval уже получен
 - **Pipeline Visualization** — визуальный прогресс-бар на каждой задаче
 
-### 🧪 QA Testing
+### 🧪 QA Validation
 
-Автоматическое тестирование через Playwright.
-
-- **Запуск e2e тестов** через API или UI
-- **Парсинг отчётов** — passed/failed/skipped, duration, ошибки, скриншоты
-- **Авто-публикация** тест-отчётов как артефактов
-- **Блокировка done** при провале тестов (через pipeline validation)
-- **Фильтрация** — запуск конкретных тестов через grep
+Проверка качества теперь ведётся через evidence-driven review: агент прикладывает результаты проверок, артефакты и известные риски, а lead решает выпускать задачу дальше или нет.
 
 ### 📱 Telegram Interface
 
@@ -93,7 +87,7 @@ Guarded pipeline исполнения: **plan → approval → build → test �
 | `/resume` | Возобновляет pipeline текущей доски |
 | `/plan` | Запустить генерацию backlog из последней спецификации |
 
-**Guarded pipeline**: переходы в `review`/`done` требуют успешного `test`-run или явного override с причиной.
+**Guarded pipeline**: переходы в `review`/`done` требуют успешного `build`-run или явного override с причиной.
 
 **Приём файлов** — просто отправьте документ в чат, и он автоматически загрузится как спецификация.
 
@@ -112,7 +106,7 @@ Guarded pipeline исполнения: **plan → approval → build → test �
 |------|--------|-----------|-----------|
 | **Board Lead** | 🎯 | 5m | Оркестрация проекта, управление backlog, координация команды |
 | **Developer** | 🔧 | 10m | Реализация задач по плану, чистый код, evidence |
-| **QA Engineer** | 🧪 | 10m | Тестирование, поиск багов, Playwright e2e |
+| **QA Engineer** | 🧪 | 10m | Тестирование, поиск багов, проверка acceptance criteria |
 | **Technical Writer** | 📝 | 15m | Документация, ADR, changelog, README |
 | **Ops Guardian** | 🛡️ | 3m | Мониторинг здоровья, восстановление, безопасность |
 
@@ -166,7 +160,7 @@ Guarded pipeline исполнения: **plan → approval → build → test �
 │  └────────────────────────────────────────────────────────┘ │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │        QA Service (Playwright) + Watchdog              │ │
+│  │        Evidence-driven Review + Watchdog               │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                              │
 │  PostgreSQL (данные) + Redis (очереди, FSM)                 │
@@ -228,7 +222,7 @@ AI проанализирует документ и создаст:
 
 - **В Telegram**: `/status` — общая сводка, `/task <id>` — детали задачи
 - **В UI**: канбан-доска показывает статус каждой задачи
-- **Pipeline Visualization**: на каждой задаче видно plan → build → test прогресс
+- **Pipeline Visualization**: на каждой задаче видно plan → build прогресс
 
 ### Шаг 6: Управляйте через Telegram
 
@@ -444,8 +438,6 @@ POST   /api/v1/pipeline/tasks/{id}/status-validate Валидация смены
 ### QA
 
 ```
-POST   /api/v1/qa/test                    Запустить Playwright тесты
-GET    /api/v1/qa/test/{id}/report        Просмотр отчёта
 ```
 
 ### Watchdog
@@ -484,7 +476,6 @@ openclaw-mission-control/
 │   │   │   ├── planner.py            # Backlog Planner
 │   │   │   ├── runs.py               # Run tracking
 │   │   │   ├── pipeline.py           # Pipeline orchestration
-│   │   │   ├── qa.py                 # QA Testing
 │   │   │   ├── watchdog.py           # Health monitoring
 │   │   │   └── agents.py             # Agent presets + provisioning
 │   │   ├── models/                   # SQLModel entities
@@ -510,7 +501,6 @@ openclaw-mission-control/
 │       ├── artifacts/                # Spec & Artifact Hub page
 │       ├── planner/                  # Backlog Planner + React Flow DAG
 │       ├── runs/                     # Run Evidence Store
-│       ├── qa/                       # QA Testing page
 │       ├── agent-roles/              # Team composition management
 │       └── watchdog/                 # Health monitoring dashboard
 ├── telegram-bot/                     # Telegram bot (aiogram)
@@ -609,7 +599,7 @@ make api-gen
 | 2. Planner Service | ✅ Завершено |
 | 3. Runtime Adapters | ✅ Завершено |
 | 4. Pipeline Orchestration | ✅ Завершено |
-| 5. QA Agent & Playwright | ✅ Завершено |
+| 5. QA Agent & Review Evidence | ✅ Завершено |
 | 6. Telegram Interface | ✅ Завершено |
 | 7. Agent Role Templates | ✅ Завершено |
 | 8. Reliability & Watchdog | ✅ Завершено |

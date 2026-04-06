@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
 
 class RunCreate(SQLModel):
@@ -44,6 +44,9 @@ class RunRead(SQLModel):
     evidence_paths: list[dict]
     summary: str | None = None
     error_message: str | None = None
+    failure_kind: str | None = None
+    retryable: bool = False
+    run_metadata: dict = Field(default_factory=dict)
     created_at: datetime
 
 

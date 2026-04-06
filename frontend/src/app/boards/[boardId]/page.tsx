@@ -36,6 +36,7 @@ import {
 } from "@/components/molecules/DependencyBanner";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { BoardChatComposer } from "@/components/BoardChatComposer";
+import { PipelineVisualization } from "@/components/pipeline/PipelineVisualization";
 import { TaskCustomFieldsEditor } from "./TaskCustomFieldsEditor";
 import { Button } from "@/components/ui/button";
 import {
@@ -97,7 +98,6 @@ import type {
   AgentRead,
   ApprovalRead,
   BoardGroupSnapshot,
-  BoardRuntimeAgentState,
   BoardRuntimeIntegrity,
   BoardMemoryRead,
   BoardRead,
@@ -162,9 +162,24 @@ type Task = Omit<
   approvals_count: number;
   approvals_pending_count: number;
   custom_field_values?: TaskCustomFieldValues | null;
+  review_mode?: string | null;
+  execution_summary?: {
+    runtime_blocker_code?: string | null;
+    runtime_blocker?: string | null;
+    recommended_action?: string | null;
+    execution_mode?: string | null;
+    degraded_allowed?: boolean;
+  } | null;
 };
 
-type Agent = AgentRead & { status: string; wake_reason?: string | null };
+type Agent = AgentRead & {
+  status: string;
+  wake_reason?: string | null;
+  runtime_blocker?: string | null;
+  runtime_state?: string | null;
+  work_state?: string | null;
+  actionable_task_count?: number;
+};
 
 type TaskComment = TaskCommentRead;
 
@@ -216,6 +231,24 @@ type ExecutionCoverage = {
   last_expansion_run?: ExecutionCoverageRun | null;
 };
 
+type RuntimeIntegrity = BoardRuntimeIntegrity & {
+  agents?: RuntimeAgentState[];
+  opencode_ready?: boolean;
+  quota_state?: string | null;
+  last_cli_failure_kind?: string | null;
+  blocked_tasks_due_to_runtime?: number;
+  cooldown_until?: string | null;
+  cooldown_message?: string | null;
+  degraded_tasks_count?: number;
+};
+
+type RuntimeAgentState = NonNullable<BoardRuntimeIntegrity["agents"]>[number] & {
+  role_presence?: string | null;
+  work_state?: string | null;
+  runtime_state?: string | null;
+  actionable_task_count?: number;
+};
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 function getAuthToken(): string {
@@ -263,6 +296,18 @@ async function updateExecutionCoveragePolicy(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to update planner policy: ${text}`);
+  }
+}
+
+async function resetBoardExecutionRuntime(boardId: string): Promise<void> {
+  const token = getAuthToken();
+  const res = await fetch(`${BASE_URL}/api/v1/boards/${boardId}/execution-runtime/reset`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to reset runtime state: ${text}`);
   }
 }
 
@@ -424,6 +469,22 @@ const toLiveFeedFromBoardChat = (memory: BoardChatMessage): LiveFeedItem => {
 const normalizeAgentStatus = (value?: string | null): string => {
   const status = (value ?? "").trim().toLowerCase();
   return status || "offline";
+};
+
+const isBlockedAgent = (agent: Agent): boolean =>
+  Boolean(agent.runtime_blocker) ||
+  Boolean(agent.runtime_state && agent.runtime_state !== "healthy");
+
+const humanizeRuntimeState = (value?: string | null): string => {
+  const normalized = (value ?? "").trim();
+  if (!normalized || normalized === "healthy") return "healthy";
+  return normalized.replace(/_/g, " ");
+};
+
+const humanizeWorkState = (value?: string | null): string => {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return "idle no work";
+  return normalized.replace(/_/g, " ");
 };
 
 const humanizeAgentStatus = (value: string): string =>
@@ -819,7 +880,7 @@ RuntimeEventCard.displayName = "RuntimeEventCard";
 const RuntimeAgentCard = memo(function RuntimeAgentCard({
   agent,
 }: {
-  agent: BoardRuntimeAgentState;
+  agent: RuntimeAgentState;
 }) {
   const blocker = agent.runtime_blocker?.trim() || null;
   const statusTone = blocker
@@ -842,7 +903,9 @@ const RuntimeAgentCard = memo(function RuntimeAgentCard({
             statusTone,
           )}
         >
-          {humanizeAgentStatus(agent.status)}
+          {blocker
+            ? humanizeRuntimeState(agent.runtime_state ?? agent.runtime_blocker)
+            : humanizeAgentStatus(agent.status)}
         </span>
       </div>
       <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
@@ -850,8 +913,16 @@ const RuntimeAgentCard = memo(function RuntimeAgentCard({
           tasks: {agent.assigned_task_count ?? 0}
         </span>
         <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+          work: {humanizeWorkState(agent.work_state)}
+        </span>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
           wake: {agent.wake_reason ?? "idle_no_work"}
         </span>
+        {typeof agent.actionable_task_count === "number" ? (
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+            actionable: {agent.actionable_task_count}
+          </span>
+        ) : null}
         <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
           template: {agent.template_sync_state ?? "missing"}
         </span>
@@ -1195,7 +1266,7 @@ export default function BoardDetailPage() {
   const [runtimeMessages, setRuntimeMessages] = useState<BoardMemoryRead[]>([]);
   const [runtimeEvents, setRuntimeEvents] = useState<ActivityEventRead[]>([]);
   const [runtimeIntegrity, setRuntimeIntegrity] =
-    useState<BoardRuntimeIntegrity | null>(null);
+    useState<RuntimeIntegrity | null>(null);
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const chatMessagesRef = useRef<BoardChatMessage[]>([]);
@@ -1694,6 +1765,22 @@ export default function BoardDetailPage() {
     },
     [executionCoverage, loadExecutionCoverage],
   );
+
+  const handleResetExecutionRuntime = useCallback(async () => {
+    if (!boardId) return;
+    setIsExecutionActionRunning(true);
+    setExecutionCoverageError(null);
+    try {
+      await resetBoardExecutionRuntime(boardId);
+      await Promise.all([loadBoard(), loadExecutionCoverage()]);
+    } catch (err) {
+      setExecutionCoverageError(
+        err instanceof Error ? err.message : "Unable to reset runtime state.",
+      );
+    } finally {
+      setIsExecutionActionRunning(false);
+    }
+  }, [boardId, loadBoard, loadExecutionCoverage]);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -2730,7 +2817,17 @@ export default function BoardDetailPage() {
     });
   }, [runtimeEvents]);
 
-  const runtimeAgentStates = runtimeIntegrity?.agents ?? [];
+  const runtimeAgentStates = useMemo(
+    () => runtimeIntegrity?.agents ?? [],
+    [runtimeIntegrity?.agents],
+  );
+  const runtimeAgentStateById = useMemo(() => {
+    const map = new Map<string, (typeof runtimeAgentStates)[number]>();
+    runtimeAgentStates.forEach((agent) => {
+      map.set(agent.agent_id, agent);
+    });
+    return map;
+  }, [runtimeAgentStates]);
   const missingRoleCount = runtimeIntegrity?.missing_roles?.length ?? 0;
   const blockedAgentCount =
     runtimeIntegrity?.platform_blocked_agent_ids?.length ?? 0;
@@ -2919,23 +3016,42 @@ export default function BoardDetailPage() {
     return working;
   }, [tasks]);
 
+  const agentsWithRuntime = useMemo(
+    () =>
+      agents.map((agent) => {
+        const runtimeState = runtimeAgentStateById.get(agent.id);
+        if (!runtimeState) return agent;
+        return {
+          ...agent,
+          wake_reason: runtimeState.wake_reason ?? agent.wake_reason,
+          runtime_blocker: runtimeState.runtime_blocker ?? null,
+          runtime_state: runtimeState.runtime_state ?? null,
+          work_state: runtimeState.work_state ?? null,
+          actionable_task_count: runtimeState.actionable_task_count ?? 0,
+        };
+      }),
+    [agents, runtimeAgentStateById],
+  );
+
   const sortedAgents = useMemo(() => {
     const rank = (agent: Agent) => {
       if (workingAgentIds.has(agent.id)) return 0;
-      if (agent.status === "online") return 1;
-      if (agent.status === "provisioning") return 2;
-      return 3;
+      if (isBlockedAgent(agent)) return 1;
+      if (agent.status === "online") return 2;
+      if (agent.status === "idle") return 3;
+      if (agent.status === "provisioning") return 4;
+      return 5;
     };
-    return [...agents].sort((a, b) => {
+    return [...agentsWithRuntime].sort((a, b) => {
       const diff = rank(a) - rank(b);
       if (diff !== 0) return diff;
       return a.name.localeCompare(b.name);
     });
-  }, [agents, workingAgentIds]);
+  }, [agentsWithRuntime, workingAgentIds]);
 
   const boardLead = useMemo(
-    () => agents.find((agent) => agent.is_board_lead) ?? null,
-    [agents],
+    () => agentsWithRuntime.find((agent) => agent.is_board_lead) ?? null,
+    [agentsWithRuntime],
   );
   const isBoardLeadProvisioning = boardLead?.status === "provisioning";
 
@@ -3835,24 +3951,6 @@ export default function BoardDetailPage() {
                     >
                       Planner
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => router.push(`/boards/${boardId}/runs`)}
-                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
-                      title="Runs"
-                    >
-                      Runs
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => router.push(`/boards/${boardId}/qa`)}
-                      className="h-7 shrink-0 px-2 text-[11px] md:h-8 md:text-xs"
-                      title="QA"
-                    >
-                      QA
-                    </Button>
                   </div>
                   {isOrgAdmin ? (
                     <button
@@ -3907,22 +4005,34 @@ export default function BoardDetailPage() {
                 </span>
                 {(() => {
                   const onlineCount = sortedAgents.filter(
-                    (a) => a.status === "online",
+                    (a) => a.status === "online" && !isBlockedAgent(a),
                   ).length;
                   const idleCount = sortedAgents.filter(
-                    (a) => a.status === "idle",
+                    (a) => a.status === "idle" && !isBlockedAgent(a),
+                  ).length;
+                  const blockedCount = sortedAgents.filter((a) =>
+                    isBlockedAgent(a),
                   ).length;
                   const offlineCount = sortedAgents.filter(
-                    (a) => a.status === "offline",
+                    (a) => a.status === "offline" && !isBlockedAgent(a),
                   ).length;
-                  if (onlineCount === 0 && idleCount === 0 && offlineCount === 0)
+                  if (
+                    onlineCount === 0 &&
+                    idleCount === 0 &&
+                    blockedCount === 0 &&
+                    offlineCount === 0
+                  )
                     return null;
                   return (
                     <span className="text-xs text-slate-400">
                       ({onlineCount > 0 && `${onlineCount} online`}
                       {onlineCount > 0 && idleCount > 0 && ", "}
                       {idleCount > 0 && `${idleCount} idle`}
-                      {(onlineCount > 0 || idleCount > 0) && offlineCount > 0 && ", "}
+                      {(onlineCount > 0 || idleCount > 0) && blockedCount > 0 && ", "}
+                      {blockedCount > 0 && `${blockedCount} blocked`}
+                      {(onlineCount > 0 || idleCount > 0 || blockedCount > 0) &&
+                        offlineCount > 0 &&
+                        ", "}
                       {offlineCount > 0 && `${offlineCount} offline`})
                     </span>
                   );
@@ -4129,10 +4239,21 @@ export default function BoardDetailPage() {
                               {agent.name}
                             </p>
                             <p className="text-[11px] text-slate-500">
-                              {agentRoleLabel(agent)} · {agent.status}
+                              {agentRoleLabel(agent)} ·{" "}
+                              {isBlockedAgent(agent)
+                                ? `blocked (${humanizeRuntimeState(agent.runtime_state)})`
+                                : agent.status}
                             </p>
                             <p className="text-[10px] text-slate-400">
-                              {ago}{wakeReason ? ` · ${wakeReason}` : ""}
+                              {ago}
+                              {agent.work_state
+                                ? ` · ${humanizeWorkState(agent.work_state)}`
+                                : wakeReason
+                                  ? ` · ${wakeReason}`
+                                  : ""}
+                              {typeof agent.actionable_task_count === "number"
+                                ? ` · actionable ${agent.actionable_task_count}`
+                                : ""}
                             </p>
                           </div>
                         </button>
@@ -4557,6 +4678,29 @@ export default function BoardDetailPage() {
           </div>
           <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
             <div className="space-y-2">
+              {selectedTask && boardId ? (
+                <PipelineVisualization
+                  taskId={selectedTask.id}
+                  boardId={boardId}
+                  canWrite={canWrite}
+                  onTaskUpdated={(updatedTask) => {
+                    if (updatedTask.status) {
+                      setSelectedTask((prev) =>
+                        prev ? { ...prev, status: updatedTask.status as TaskStatus } : prev,
+                      );
+                      setTasks((prev) =>
+                        prev.map((task) =>
+                          task.id === selectedTask.id
+                            ? { ...task, status: updatedTask.status as TaskStatus }
+                            : task,
+                        ),
+                      );
+                    }
+                  }}
+                />
+              ) : null}
+            </div>
+            <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Description
               </p>
@@ -4949,6 +5093,47 @@ export default function BoardDetailPage() {
                       <p className="mt-2 text-xs text-slate-500">
                         auth drift {authDriftCount} · template drift {templateDriftCount}
                       </p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        OpenCode {runtimeIntegrity?.opencode_ready ? "ready" : "missing"} · quota{" "}
+                        {runtimeIntegrity?.quota_state ?? "unknown"} · blocked tasks{" "}
+                        {runtimeIntegrity?.blocked_tasks_due_to_runtime ?? 0}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Degraded review queue {runtimeIntegrity?.degraded_tasks_count ?? 0}
+                      </p>
+                      {runtimeIntegrity?.last_cli_failure_kind ? (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Last CLI failure: {runtimeIntegrity.last_cli_failure_kind.replace(/_/g, " ")}
+                        </p>
+                      ) : null}
+                      {runtimeIntegrity?.cooldown_message ? (
+                        <p className="mt-1 text-xs text-slate-500">
+                          {runtimeIntegrity.cooldown_message}
+                        </p>
+                      ) : null}
+                      {runtimeIntegrity?.cooldown_until ? (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Cooldown until {new Date(runtimeIntegrity.cooldown_until).toLocaleString()}
+                        </p>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void loadBoard()}
+                          disabled={isExecutionActionRunning}
+                        >
+                          Retry pipeline now
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleResetExecutionRuntime()}
+                          disabled={isExecutionActionRunning}
+                        >
+                          Reset cooldown timer
+                        </Button>
+                      </div>
                     </div>
                   </div>
                   {runtimeIntegrity?.missing_roles?.length ? (
@@ -4958,7 +5143,7 @@ export default function BoardDetailPage() {
                   ) : null}
                   {runtimeIntegrity?.stale_roles?.length ? (
                     <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                      Stale roles: {runtimeIntegrity.stale_roles.join(", ")}
+                      Blocked or unhealthy roles: {runtimeIntegrity.stale_roles.join(", ")}
                     </div>
                   ) : null}
                   {runtimeAgentStates.length ? (

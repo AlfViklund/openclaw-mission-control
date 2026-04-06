@@ -146,6 +146,16 @@ async def list_task_runs(
     return await paginate(session, statement.statement)
 
 
+@router.get("/tasks/{task_id}", response_model=DefaultLimitOffsetPage[RunRead])
+async def list_task_runs_compat(
+    task_id: UUID,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = USER_DEP,
+) -> DefaultLimitOffsetPage[RunRead]:
+    """Compatibility alias for task-scoped run history."""
+    return await list_task_runs(task_id=task_id, session=session, _actor=_actor)
+
+
 @router.get("/{run_id}", response_model=RunRead)
 async def get_run(
     run_id: UUID,

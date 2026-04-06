@@ -37,6 +37,7 @@ def _make_agent(*, status: str = "provisioning") -> Agent:
         status=status,
         agent_auth_mode="signed",
         agent_token_version=1,
+        pending_agent_token_version=2,
     )
 
 
@@ -79,6 +80,8 @@ async def test_lifecycle_gateway_error_marks_agent_offline(
 
     assert result.status == "offline"
     assert result.last_provision_error == "connection refused"
+    assert result.pending_agent_token_version is None
+    assert result.agent_auth_last_error is None
 
 
 def test_with_computed_status_marks_failed_unseen_agent_offline() -> None:

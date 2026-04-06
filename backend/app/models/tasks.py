@@ -44,6 +44,7 @@ class Task(TenantScoped, table=True):
     planner_epic_id: str | None = None
     materialized_from: str | None = Field(default=None, index=True)
     expansion_round: int | None = None
+    review_mode: str | None = Field(default=None, index=True)
 
     created_by_user_id: UUID | None = Field(
         default=None,

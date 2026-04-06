@@ -18,3 +18,12 @@ def test_agent_runtime_templates_use_x_agent_token_only() -> None:
         content = path.read_text(encoding="utf-8")
         assert "X-Agent-Token" in content
         assert "Authorization: Bearer {{ auth_token }}" not in content
+
+
+def test_worker_heartbeat_template_uses_canonical_agent_heartbeat_route() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    path = repo_root / "backend" / "templates" / "BOARD_HEARTBEAT.md.j2"
+    content = path.read_text(encoding="utf-8")
+
+    assert "/api/v1/agent/heartbeat" in content
+    assert "/api/v1/agents/heartbeat" not in content

@@ -145,7 +145,7 @@ jq -r '
 - If pre-flight fails due to 5xx/network, do not write memory or task updates.
 
 ## Cheap Heartbeat First
-1) Send a cheap heartbeat immediately via `POST /api/v1/agents/heartbeat`.
+1) Send a cheap heartbeat immediately via `POST /api/v1/agent/heartbeat`.
 2) Check work-snapshot to decide whether to enter heavy path:
 
 ```bash
@@ -180,11 +180,18 @@ Before execution:
 ### Board Lead Loop
 0) If the board is empty/quiet (no inbox, review, approvals, escalations, new specs), use idle mode and exit before any heavy context rebuild.
 1) Rebuild operating context from `AGENTS.md` and `MEMORY.md`.
-2) Enforce board-rule gates for status transitions and completion.
-3) Ensure approvals are resolved before external side effects and closure.
-4) Keep assignment/staffing healthy; create/retire specialists when needed.
-5) Unblock actively with concrete decisions and resequencing.
-6) Keep delivery status in `MEMORY.md` current (state, next step, evidence).
+2) Use board snapshot and `runtime_integrity.agents[*]` as the source of truth for who exists, who has work, and who is blocked. Do not infer "missing" from idle/blocked workers.
+3) If `review_tasks_count > 0`, process review queue before inbox planning.
+4) For each review task, read the task record and comments before deciding:
+   - `GET {{ base_url }}/api/v1/agent/boards/{{ board_id }}/tasks/{task_id}`
+   - `GET {{ base_url }}/api/v1/agent/boards/{{ board_id }}/tasks/{task_id}/comments`
+5) The comments endpoint is paginated. Read `items[*].message` and `items[*].completion_report`; do not assume the response is a raw array.
+6) Treat degraded review as a normal fallback for quota/cooldown/runtime outages when `completion_report` evidence exists.
+7) Enforce board-rule gates for status transitions and completion.
+8) Ensure approvals are resolved before external side effects and closure.
+9) Keep assignment/staffing healthy; create/retire specialists when needed.
+10) Unblock actively with concrete decisions and resequencing.
+11) Keep delivery status in `MEMORY.md` current (state, next step, evidence).
 
 ### Board Rule Snapshot
 - `require_review_before_done`: `{{ board_rule_require_review_before_done }}`
@@ -204,10 +211,12 @@ If the board has no inbox/review tasks, no pending approvals, and no escalation 
 ### Board Worker Loop
 1) Check in via heartbeat endpoint.
 2) Check for wake conditions before doing any expensive work.
-3) Continue one `in_progress` task; else pick one assigned `inbox` task; else enter idle mode.
-3) Refresh task context and plan for the active task.
-4) Execute and post only high-signal task comment updates.
-5) Move to `review` when deliverable and evidence are ready.
+3) Continue one `in_progress` task; else if there is assigned available `inbox` work, call `start-work` first and only then begin execution.
+4) Refresh task context, including task execution summary, before changing status or touching pipeline.
+5) If `execution_summary.use_start_work` is true, do not improvise with raw status changes; use `POST /api/v1/pipeline/tasks/{task_id}/start-work`.
+6) If runtime is healthy and a next stage exists, use `execute-next`.
+7) If runtime is in cooldown/degraded mode, avoid retry spam, keep working only if necessary, then post a `completion_report`.
+8) Use `request-review` when deliverable and evidence are ready. Do not raw-patch task status to `review` or `done`.
 
 ### Idle Mode
 If no wake conditions are true:
@@ -220,10 +229,9 @@ If no wake conditions are true:
 
 ### Cheap Heartbeat Example
 ```bash
-curl -s -X POST "{{ base_url }}/api/v1/agents/heartbeat" \
+curl -s -X POST "{{ base_url }}/api/v1/agent/heartbeat" \
   -H "X-Agent-Token: {{ auth_token }}" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "idle"}'
+  -H "Content-Type: application/json"
 ```
 {% endif %}
 

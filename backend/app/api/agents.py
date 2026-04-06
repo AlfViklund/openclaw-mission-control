@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -25,6 +26,7 @@ from app.schemas.agents import (
 from app.schemas.common import OkResponse
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.agent_presets import AGENT_ROLE_PRESETS
+from app.services.openclaw.error_classification import is_transient_gateway_error
 from app.services.agent_provisioning import AgentProvisioningService
 from app.services.openclaw.provisioning_db import AgentLifecycleService, AgentUpdateOptions
 from app.services.organizations import OrganizationContext
@@ -42,6 +44,8 @@ SESSION_DEP = Depends(get_session)
 ORG_ADMIN_DEP = Depends(require_org_admin)
 ACTOR_DEP = Depends(require_user_or_agent)
 AUTH_DEP = Depends(get_auth_context)
+_REPAIR_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+_GATEWAY_REPAIR_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +122,123 @@ async def _reset_and_wake_repaired_agent_session(*, agent: object, gateway: obje
         config=client_config,
         deliver=True,
     )
+
+
+def _gateway_repair_lock(gateway_id: object) -> asyncio.Lock:
+    key = str(gateway_id)
+    lock = _GATEWAY_REPAIR_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _GATEWAY_REPAIR_LOCKS[key] = lock
+    return lock
+
+
+def _prepare_agent_for_auth_repair(agent: object) -> None:
+    from app.services.openclaw.constants import DEFAULT_HEARTBEAT_CONFIG
+    from app.services.openclaw.db_agent_state import begin_signed_migration, discard_pending_token
+
+    discard_pending_token(agent)
+    if getattr(agent, "agent_auth_mode", None) == "legacy_hash":
+        begin_signed_migration(agent)
+    if getattr(agent, "heartbeat_config", None) is None:
+        agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
+    agent.last_provision_error = None
+    agent.agent_auth_last_error = None
+    agent.updated_at = utcnow()
+
+
+def _record_repair_session_failure(agent: object, error: str) -> None:
+    agent.status = "offline"
+    agent.last_provision_error = error
+    agent.agent_auth_last_error = None
+    agent.updated_at = utcnow()
+
+
+def _mark_repair_wake_dispatched(agent: object) -> object:
+    from app.services.openclaw.constants import CHECKIN_DEADLINE_AFTER_WAKE
+
+    now = utcnow()
+    agent.status = "online"
+    agent.checkin_deadline_at = now + CHECKIN_DEADLINE_AFTER_WAKE
+    agent.last_wake_sent_at = now
+    agent.wake_attempts = int(getattr(agent, "wake_attempts", 0) or 0) + 1
+    agent.updated_at = now
+    return agent.checkin_deadline_at
+
+
+async def _repair_agent_templates(
+    *,
+    session: AsyncSession,
+    agent: object,
+    gateway: object,
+    board: object,
+    auth_token: str,
+) -> object:
+    from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
+
+    orchestrator = AgentLifecycleOrchestrator(session)
+    return await orchestrator.run_lifecycle(
+        gateway=gateway,
+        agent_id=agent.id,
+        board=board,
+        user=None,
+        action="update",
+        auth_token=auth_token,
+        force_bootstrap=False,
+        reset_session=False,
+        wake=False,
+        deliver_wakeup=False,
+        wakeup_verb="updated",
+        clear_confirm_token=False,
+        raise_gateway_errors=True,
+    )
+
+
+async def _repair_agent_templates_with_retry(
+    *,
+    session: AsyncSession,
+    agent: object,
+    gateway: object,
+    board: object,
+) -> object:
+    lock = _gateway_repair_lock(getattr(gateway, "id", ""))
+    async with lock:
+        for attempt_index in range(len(_REPAIR_RETRY_DELAYS_SECONDS) + 1):
+            _prepare_agent_for_auth_repair(agent)
+            session.add(agent)
+            await session.commit()
+            await session.refresh(agent)
+
+            from app.services.openclaw.db_agent_state import current_agent_runtime_token
+
+            auth_token = current_agent_runtime_token(agent)
+            try:
+                repaired = await _repair_agent_templates(
+                    session=session,
+                    agent=agent,
+                    gateway=gateway,
+                    board=board,
+                    auth_token=auth_token,
+                )
+            except HTTPException as exc:
+                if attempt_index >= len(_REPAIR_RETRY_DELAYS_SECONDS) or not is_transient_gateway_error(str(exc.detail)):
+                    raise
+                await session.refresh(agent)
+                await asyncio.sleep(_REPAIR_RETRY_DELAYS_SECONDS[attempt_index])
+                continue
+
+            await session.refresh(repaired)
+            repaired.agent_auth_last_error = None
+            repaired.last_provision_error = None
+            repaired.agent_auth_last_synced_at = utcnow()
+            repaired.updated_at = utcnow()
+            session.add(repaired)
+            await session.commit()
+            await session.refresh(repaired)
+            return repaired
+
+    msg = "Repair retry loop exited unexpectedly"
+    raise RuntimeError(msg)
 
 
 @router.get("", response_model=DefaultLimitOffsetPage[AgentRead])
@@ -433,13 +554,6 @@ async def repair_agent_auth_sync(
     """
     from app.models.agents import Agent
     from app.models.gateways import Gateway
-
-    from app.services.openclaw.constants import DEFAULT_HEARTBEAT_CONFIG
-    from app.services.openclaw.db_agent_state import (
-        begin_signed_migration,
-        current_agent_runtime_token,
-        rollback_pending_token,
-    )
     from app.services.openclaw.gateway_resolver import (
         require_gateway_for_board,
     )
@@ -464,137 +578,23 @@ async def repair_agent_auth_sync(
             require_workspace_root=True,
         )
 
-    if agent.agent_auth_mode == "legacy_hash":
-        rollback_pending_token(agent, "repair: starting fresh migration")
-        begin_signed_migration(agent)
-        session.add(agent)
-        await session.flush()
-    elif agent.agent_auth_mode == "signed":
-        rollback_pending_token(agent, "repair: reverting to active token")
-        session.add(agent)
-        await session.flush()
-
-    if agent.heartbeat_config is None:
-        agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
-        session.add(agent)
-        await session.flush()
-
     try:
-        raw_token = current_agent_runtime_token(agent)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Cannot resolve runtime token: {exc}",
-        ) from exc
-
-    from pathlib import Path
-    import re
-
-    workspace_dir = Path.home() / ".openclaw" / f"workspace-gateway-{gateway.id}"
-    heartbeat_path = workspace_dir / "HEARTBEAT.md"
-    tools_path = workspace_dir / "TOOLS.md"
-    agents_path = workspace_dir / "AGENTS.md"
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-
-    def _replace_token(text: str, key: str, token: str) -> str:
-        if key == "HEARTBEAT.md":
-            pattern = r"(X-Agent-Token:\s*`?)[^`\s]+(`?)"
-            if "X-Agent-Token" not in text:
-                return text.rstrip() + f"\nX-Agent-Token: {token}\n"
-            def repl(match: re.Match[str]) -> str:
-                return f"{match.group(1)}{token}{match.group(2)}"
-
-            return re.sub(pattern, repl, text)
-        if key == "TOOLS.md":
-            pattern = r"^(\s*[-*]?\s*`?)AUTH_TOKEN\s*[:=]\s*`?[^`\s]+`?\s*$"
-            if "AUTH_TOKEN" not in text:
-                return text.rstrip() + f"\nAUTH_TOKEN={token}\n"
-            updated_lines: list[str] = []
-            replaced = False
-            for line in text.splitlines():
-                if re.match(pattern, line):
-                    updated_lines.append(f"AUTH_TOKEN={token}")
-                    replaced = True
-                    continue
-                updated_lines.append(line)
-            if not replaced:
-                updated_lines.append(f"AUTH_TOKEN={token}")
-            return "\n".join(updated_lines) + ("\n" if text.endswith("\n") else "")
-        if key == "AGENTS.md":
-            updated_lines: list[str] = []
-            for line in text.splitlines():
-                stripped = line.lstrip()
-                indent = line[: len(line) - len(stripped)]
-                if stripped.startswith("- `AUTH_TOKEN`:"):
-                    updated_lines.append(f"{indent}- `AUTH_TOKEN`: {token}")
-                    continue
-                if stripped.startswith("- Always include header:"):
-                    updated_lines.append(f"{indent}- Always include header: `X-Agent-Token: {token}`")
-                    continue
-                if stripped.startswith('-H "X-Agent-Token:'):
-                    trailer = " \\" if stripped.endswith("\\") else ""
-                    updated_lines.append(f'{indent}-H "X-Agent-Token: {token}"{trailer}')
-                    continue
-                updated_lines.append(line)
-            return "\n".join(updated_lines) + ("\n" if text.endswith("\n") else "")
-
-        return text
-
-    live_heartbeat_text = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
-    live_tools_text = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
-    live_agents_text = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
-    live_heartbeat_token = ""
-    live_tools_token = ""
-    live_agents_token = ""
-
-    heartbeat_match = re.search(r"X-Agent-Token:\s*`?([^`\s]+)`?", live_heartbeat_text)
-    if heartbeat_match:
-        live_heartbeat_token = heartbeat_match.group(1).strip()
-    tools_match = re.search(r"AUTH_TOKEN\s*[:=]\s*`?([^`\s]+)`?", live_tools_text)
-    if tools_match:
-        live_tools_token = tools_match.group(1).strip()
-    agents_match = re.search(r"X-Agent-Token:\s*`?([^`\s]+)`?", live_agents_text)
-    if agents_match:
-        live_agents_token = agents_match.group(1).strip()
-
-    if (
-        live_heartbeat_token != raw_token
-        or live_tools_token != raw_token
-        or live_agents_token != raw_token
-    ):
-        heartbeat_path.write_text(_replace_token(live_heartbeat_text, "HEARTBEAT.md", raw_token), encoding="utf-8")
-        tools_path.write_text(_replace_token(live_tools_text, "TOOLS.md", raw_token), encoding="utf-8")
-        if agents_path.exists():
-            agents_path.write_text(_replace_token(live_agents_text, "AGENTS.md", raw_token), encoding="utf-8")
-
-    heartbeat_after = heartbeat_path.read_text(encoding="utf-8") if heartbeat_path.exists() else ""
-    tools_after = tools_path.read_text(encoding="utf-8") if tools_path.exists() else ""
-    agents_after = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
-    if (
-        raw_token not in heartbeat_after
-        or raw_token not in tools_after
-        or (agents_path.exists() and raw_token not in agents_after)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Gateway update failed: live auth files were not updated",
+        agent = await _repair_agent_templates_with_retry(
+            session=session,
+            agent=agent,
+            gateway=gateway,
+            board=board,
         )
-
-    agent.last_provision_error = None
-    agent.agent_auth_last_error = None
-    agent.agent_auth_last_synced_at = utcnow()
-    agent.updated_at = utcnow()
-    session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
+    except HTTPException:
+        await session.refresh(agent)
+        raise
 
     try:
         await _reset_and_wake_repaired_agent_session(agent=agent, gateway=gateway)
     except HTTPException:
         raise
     except Exception as exc:
-        agent.agent_auth_last_error = str(exc)
-        agent.updated_at = utcnow()
+        _record_repair_session_failure(agent, str(exc))
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
@@ -603,6 +603,26 @@ async def repair_agent_auth_sync(
             detail=f"Gateway session recovery failed: {exc}",
         ) from exc
 
+    checkin_deadline_at = _mark_repair_wake_dispatched(agent)
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+
+    from app.services.openclaw.lifecycle_queue import (
+        QueuedAgentLifecycleReconcile,
+        enqueue_lifecycle_reconcile,
+    )
+
+    enqueue_lifecycle_reconcile(
+        QueuedAgentLifecycleReconcile(
+            agent_id=agent.id,
+            gateway_id=agent.gateway_id,
+            board_id=agent.board_id,
+            generation=agent.lifecycle_generation,
+            checkin_deadline_at=checkin_deadline_at,
+        )
+    )
+
     return AgentAuthRepairResponse(
         agent_id=agent.id,
         agent_auth_mode=agent.agent_auth_mode,
@@ -610,6 +630,7 @@ async def repair_agent_auth_sync(
         pending_agent_token_version=agent.pending_agent_token_version,
         status=agent.status,
         agent_auth_last_error=agent.agent_auth_last_error,
+        last_provision_error=agent.last_provision_error,
     )
 
 
@@ -632,7 +653,6 @@ async def rotate_agent_auth_token(
     from app.services.openclaw.db_agent_state import (
         begin_signed_rotation,
         current_agent_runtime_token,
-        rollback_pending_token,
     )
     from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
     from app.services.openclaw.gateway_resolver import (
@@ -703,11 +723,7 @@ async def rotate_agent_auth_token(
             clear_confirm_token=False,
             raise_gateway_errors=True,
         )
-    except HTTPException as exc:
-        rollback_pending_token(agent, str(exc.detail))
-        agent.updated_at = utcnow()
-        session.add(agent)
-        await session.commit()
+    except HTTPException:
         await session.refresh(agent)
         raise
 
@@ -719,4 +735,5 @@ async def rotate_agent_auth_token(
         pending_agent_token_version=agent.pending_agent_token_version,
         status=agent.status,
         agent_auth_last_error=agent.agent_auth_last_error,
+        last_provision_error=agent.last_provision_error,
     )

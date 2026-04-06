@@ -28,15 +28,15 @@ def _make_agent(**overrides: object) -> SimpleNamespace:
 
 def test_repair_signed_rolls_back_pending() -> None:
     agent = _make_agent(pending_agent_token_version=5)
-    db_agent_state.rollback_pending_token(agent, "repair: reverting to active token")
+    db_agent_state.discard_pending_token(agent)
     assert agent.pending_agent_token_version is None
     assert agent.agent_token_version == 3
-    assert agent.agent_auth_last_error == "repair: reverting to active token"
+    assert agent.agent_auth_last_error is None
 
 
 def test_repair_signed_does_not_bump_version() -> None:
     agent = _make_agent(agent_token_version=3, pending_agent_token_version=None)
-    db_agent_state.rollback_pending_token(agent, "repair: reverting to active token")
+    db_agent_state.discard_pending_token(agent)
     assert agent.agent_token_version == 3
     assert agent.pending_agent_token_version is None
 
@@ -47,7 +47,7 @@ def test_repair_legacy_rolls_back_then_starts_migration() -> None:
         pending_agent_token_version=99,
         agent_token_hash="pbkdf2_hash",
     )
-    db_agent_state.rollback_pending_token(agent, "repair: starting fresh migration")
+    db_agent_state.discard_pending_token(agent)
     assert agent.pending_agent_token_version is None
 
     db_agent_state.begin_signed_migration(agent)

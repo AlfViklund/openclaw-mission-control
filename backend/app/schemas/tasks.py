@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
+from app.schemas.pipeline import CompletionReportRead, PipelineTaskSummaryRead
 from app.schemas.common import NonEmptyStr
 from app.schemas.tags import TagRef
 from app.schemas.task_custom_fields import TaskCustomFieldValues
@@ -98,12 +99,28 @@ class TaskRead(TaskBase):
     planner_epic_id: str | None = None
     materialized_from: str | None = None
     expansion_round: int | None = None
+    review_mode: str | None = None
+    execution_summary: PipelineTaskSummaryRead | None = None
 
 
 class TaskCommentCreate(SQLModel):
     """Payload for creating a task comment."""
 
-    message: NonEmptyStr
+    message: NonEmptyStr | None = None
+    kind: str = "comment"
+    completion_report: CompletionReportRead | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> Self:
+        if self.kind == "completion_report":
+            if self.completion_report is None:
+                raise ValueError("completion_report is required when kind=completion_report")
+            if self.message is None:
+                self.message = self.completion_report.summary
+            return self
+        if self.message is None:
+            raise ValueError("message is required")
+        return self
 
 
 class TaskCommentRead(SQLModel):
@@ -111,6 +128,8 @@ class TaskCommentRead(SQLModel):
 
     id: UUID
     message: str | None
+    kind: str = "comment"
+    completion_report: CompletionReportRead | None = None
     agent_id: UUID | None
     task_id: UUID | None
     created_at: datetime

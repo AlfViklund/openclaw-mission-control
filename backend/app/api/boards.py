@@ -45,6 +45,7 @@ from app.services.board_automation import sync_board_automation_policy
 from app.services.board_lifecycle import delete_board as delete_board_service
 from app.services.board_snapshot import build_board_snapshot
 from app.services.planner import get_board_execution_coverage
+from app.services.pipeline_runtime_state import clear_runtime_state
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import GatewayConfig as GatewayClientConfig
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
@@ -525,6 +526,17 @@ async def get_board_execution_coverage_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+
+@router.post("/{board_id}/execution-runtime/reset", response_model=OkResponse)
+async def reset_board_execution_runtime(
+    session: AsyncSession = SESSION_DEP,
+    board: Board = BOARD_USER_WRITE_DEP,
+) -> OkResponse:
+    """Clear persisted runtime cooldown/degraded state for manual retry."""
+    clear_runtime_state(board)
+    await crud.save(session, board)
+    return OkResponse(ok=True)
 
 
 @router.get(

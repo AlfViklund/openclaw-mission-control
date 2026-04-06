@@ -912,6 +912,43 @@ async def create_task(
     )
 
 
+@router.get(
+    "/boards/{board_id}/tasks/{task_id}",
+    response_model=TaskRead,
+    tags=AGENT_BOARD_TAGS,
+    openapi_extra=_agent_board_openapi_hints(
+        intent="agent_task_read",
+        when_to_use=[
+            "Read one board task with execution summary before doing work.",
+            "Inspect the next required pipeline stage, latest failure, or runtime blocker.",
+        ],
+        routing_examples=[
+            {
+                "input": {
+                    "intent": "open my assigned task with execution summary",
+                    "required_privilege": "any_agent",
+                },
+                "decision": "agent_task_read",
+            }
+        ],
+    ),
+)
+async def get_task(
+    task: Task = TASK_DEP,
+    session: AsyncSession = SESSION_DEP,
+    agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
+) -> TaskRead:
+    """Read one board task visible to the authenticated agent."""
+    _guard_task_access(agent_ctx, task)
+    if task.board_id is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+    return await tasks_api._task_read_response(
+        session,
+        task=task,
+        board_id=task.board_id,
+    )
+
+
 @router.patch(
     "/boards/{board_id}/tasks/{task_id}",
     response_model=TaskRead,

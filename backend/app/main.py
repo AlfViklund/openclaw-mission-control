@@ -28,7 +28,6 @@ from app.api.metrics import router as metrics_router
 from app.api.organizations import router as organizations_router
 from app.api.planner import router as planner_router
 from app.api.pipeline import router as pipeline_router
-from app.api.qa import router as qa_router
 from app.api.runs import router as runs_router
 from app.api.watchdog import router as watchdog_router
 from app.api.skills_marketplace import router as skills_marketplace_router
@@ -131,10 +130,6 @@ OPENAPI_TAGS = [
     {
         "name": "pipeline",
         "description": "Pipeline orchestration, stage validation, and auto-trigger operations.",
-    },
-    {
-        "name": "qa",
-        "description": "QA test execution, Playwright reports, and test result management.",
     },
     {
         "name": "runs",
@@ -589,7 +584,6 @@ api_v1.include_router(approvals_router)
 api_v1.include_router(artifacts_router)
 api_v1.include_router(planner_router)
 api_v1.include_router(pipeline_router)
-api_v1.include_router(qa_router)
 api_v1.include_router(runs_router)
 api_v1.include_router(watchdog_router)
 api_v1.include_router(tasks_router)

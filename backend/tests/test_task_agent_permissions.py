@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.organizations import Organization
+from app.models.runs import Run
 from app.models.tasks import Task
 from app.schemas.tasks import TaskUpdate
 
@@ -30,6 +32,16 @@ async def _make_engine() -> AsyncEngine:
 
 async def _make_session(engine: AsyncEngine) -> AsyncSession:
     return AsyncSession(engine, expire_on_commit=False)
+
+
+def _successful_build_run(*, task_id, agent_id) -> Run:
+    return Run(
+        task_id=task_id,
+        agent_id=agent_id,
+        runtime="opencode_cli",
+        stage="build",
+        status="succeeded",
+    )
 
 
 @pytest.mark.asyncio
@@ -257,6 +269,89 @@ async def test_non_lead_agent_forbidden_when_task_assigned_to_other_agent() -> N
 
 
 @pytest.mark.asyncio
+async def test_agent_review_patch_returns_request_review_guidance() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            org_id = uuid4()
+            board_id = uuid4()
+            gateway_id = uuid4()
+            actor_id = uuid4()
+            task_id = uuid4()
+
+            session.add(Organization(id=org_id, name="org"))
+            session.add(
+                Gateway(
+                    id=gateway_id,
+                    organization_id=org_id,
+                    name="gateway",
+                    url="https://gateway.local",
+                    workspace_root="/tmp/workspace",
+                ),
+            )
+            session.add(
+                Board(
+                    id=board_id,
+                    organization_id=org_id,
+                    name="board",
+                    slug="board",
+                    gateway_id=gateway_id,
+                    execution_runtime_state={
+                        "runtime": "opencode_cli",
+                        "status": "cooldown",
+                        "failure_kind": "quota_exhausted",
+                        "cooldown_until": (utcnow() + timedelta(minutes=30)).isoformat(),
+                        "cooldown_message": "Provider cooldown in effect.",
+                        "updated_at": utcnow().isoformat(),
+                    },
+                ),
+            )
+            session.add(
+                Agent(
+                    id=actor_id,
+                    name="actor",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                ),
+            )
+            session.add(
+                Task(
+                    id=task_id,
+                    board_id=board_id,
+                    title="assigned task",
+                    description="",
+                    status="in_progress",
+                    assigned_agent_id=actor_id,
+                    in_progress_at=utcnow(),
+                ),
+            )
+            await session.commit()
+
+            task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
+            assert task is not None
+            actor = (await session.exec(select(Agent).where(col(Agent.id) == actor_id))).first()
+            assert actor is not None
+
+            with pytest.raises(HTTPException) as exc:
+                await tasks_api.update_task(
+                    payload=TaskUpdate(status="review"),
+                    task=task,
+                    session=session,
+                    actor=ActorContext(actor_type="agent", agent=actor),
+                )
+
+            assert exc.value.status_code == 409
+            detail = exc.value.detail
+            assert isinstance(detail, dict)
+            assert detail["code"] == "pipeline_guard_failed"
+            assert detail["use_request_review"] is True
+            assert detail["message"] == "No successful build run. Use request-review instead of a raw status change."
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_non_lead_agent_forbidden_for_lead_only_patch_fields() -> None:
     engine = await _make_engine()
     try:
@@ -389,6 +484,7 @@ async def test_non_lead_agent_moves_task_to_review_and_reassigns_to_lead() -> No
                     in_progress_at=in_progress_at,
                 ),
             )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
             await session.commit()
 
             task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
@@ -481,6 +577,7 @@ async def test_non_lead_agent_move_to_review_reassigns_to_lead_and_sends_review_
                     in_progress_at=utcnow(),
                 ),
             )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
             await session.commit()
 
             sent: dict[str, str] = {}
@@ -495,14 +592,12 @@ async def test_non_lead_agent_move_to_review_reassigns_to_lead_and_sends_review_
             async def _fake_send_agent_task_message(
                 *,
                 dispatch: Any,
-                session_key: str,
-                config: Any,
-                agent_name: str,
+                agent: Agent,
                 message: str,
-            ) -> None:
-                _ = dispatch, config
-                sent["session_key"] = session_key
-                sent["agent_name"] = agent_name
+            ) -> str | None:
+                _ = dispatch
+                sent["session_key"] = agent.openclaw_session_id or ""
+                sent["agent_name"] = agent.name
                 sent["message"] = message
                 return None
 
@@ -598,6 +693,7 @@ async def test_lead_moves_review_task_to_inbox_and_reassigns_last_worker_with_re
                     in_progress_at=utcnow(),
                 ),
             )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
             await session.commit()
 
             sent: list[dict[str, str]] = []
@@ -612,16 +708,14 @@ async def test_lead_moves_review_task_to_inbox_and_reassigns_last_worker_with_re
             async def _fake_send_agent_task_message(
                 *,
                 dispatch: Any,
-                session_key: str,
-                config: Any,
-                agent_name: str,
+                agent: Agent,
                 message: str,
-            ) -> None:
-                _ = dispatch, config
+            ) -> str | None:
+                _ = dispatch
                 sent.append(
                     {
-                        "session_key": session_key,
-                        "agent_name": agent_name,
+                        "session_key": agent.openclaw_session_id or "",
+                        "agent_name": agent.name,
                         "message": message,
                     },
                 )
@@ -821,6 +915,7 @@ async def test_non_lead_agent_moves_to_review_without_comment_when_rule_disabled
                     in_progress_at=utcnow(),
                 ),
             )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
             await session.commit()
 
             task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
@@ -894,6 +989,7 @@ async def test_non_lead_agent_moves_to_review_without_comment_or_recent_comment_
                     in_progress_at=utcnow(),
                 ),
             )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
             await session.commit()
 
             task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()

@@ -44,6 +44,9 @@ interface Run {
   evidence_paths: { type: string; path: string; size_bytes: number }[];
   summary: string | null;
   error_message: string | null;
+  failure_kind?: string | null;
+  retryable?: boolean;
+  run_metadata?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -97,21 +100,21 @@ async function fetchRuns(filters?: { task_id?: string; stage?: string; status?: 
   return data.items || [];
 }
 
-async function createRun(taskId: string, stage: string, runtime: string, model?: string): Promise<Run> {
+async function createRun(taskId: string, stage: string, runtime: string, model?: string): Promise<void> {
   const token = getAuthToken();
-  const res = await fetch(`${BASE_URL}/api/v1/runs`, {
+  const params = new URLSearchParams({ stage, runtime });
+  if (model) params.set("model", model);
+  const res = await fetch(`${BASE_URL}/api/v1/pipeline/tasks/${taskId}/execute?${params.toString()}`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ task_id: taskId, stage, runtime, model }),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Create run failed: ${res.status} ${text}`);
+    throw new Error(`Manual run failed: ${res.status} ${text}`);
   }
-  return res.json();
+  await res.json();
 }
 
 async function cancelRun(runId: string): Promise<Run> {
@@ -160,7 +163,7 @@ export default function RunsPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [createTaskId, setCreateTaskId] = useState("");
   const [createStage, setCreateStage] = useState("plan");
-  const [createRuntime, setCreateRuntime] = useState("acp");
+  const [createRuntime, setCreateRuntime] = useState("opencode_cli");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   const loadRuns = useCallback(async () => {
@@ -237,7 +240,7 @@ export default function RunsPage() {
           signUpForceRedirectUrl: "/runs",
         }}
         title="Run Evidence Store"
-        description={`Tracking ${runs.length} execution run${runs.length === 1 ? "" : "s"} across all tasks.`}
+        description={`Tracking ${runs.length} execution run${runs.length === 1 ? "" : "s"} across all tasks. Normal work should start from the task drawer; use this page for evidence, blockers, retries, and manual debug.`}
         headerActions={
           <div className="flex items-center gap-2">
             <select
@@ -252,15 +255,18 @@ export default function RunsPage() {
             </select>
             <button
               onClick={() => setShowCreateDialog(true)}
-              className={buttonVariants({ size: "md", variant: "primary" })}
+              className={buttonVariants({ size: "md", variant: "outline" })}
             >
               <Play className="mr-2 h-4 w-4" />
-              New Run
+              Manual Run
             </button>
           </div>
         }
         stickyHeader
       >
+        <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          Use task-level execution for normal work. This page is the evidence store and operator debug view for active, failed, and retried runs.
+        </div>
         {/* Filters */}
         <div className="flex flex-wrap gap-3 mb-4">
           <select
@@ -271,7 +277,6 @@ export default function RunsPage() {
             <option value="">All stages</option>
             <option value="plan">Plan</option>
             <option value="build">Build</option>
-            <option value="test">Test</option>
           </select>
           <select
             value={filterStatus}
@@ -313,7 +318,7 @@ export default function RunsPage() {
             <Terminal className="mx-auto h-12 w-12 text-slate-400" />
             <h3 className="mt-4 text-lg font-medium text-slate-700">No runs yet</h3>
             <p className="mt-2 text-sm text-slate-500">
-              Create a run to start tracking agent executions.
+              Start work from a task. Runs will appear here automatically, and manual runs stay available for debug.
             </p>
           </div>
         ) : (
@@ -373,9 +378,25 @@ export default function RunsPage() {
                   {run.error_message && (
                     <div className="mt-2 flex items-center gap-1 text-xs text-red-500">
                       <AlertTriangle className="h-3 w-3" />
+                      {run.failure_kind ? `${run.failure_kind.replace(/_/g, " ")} · ` : ""}
                       {run.error_message}
                     </div>
                   )}
+                  {run.retryable ? (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Retryable failure.
+                    </p>
+                  ) : null}
+                  {run.status === "queued" ? (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {(typeof run.run_metadata?.queue_position === "number"
+                        ? `Queue position ${run.run_metadata.queue_position} · `
+                        : "") +
+                        (typeof run.run_metadata?.queue_reason === "string"
+                          ? String(run.run_metadata.queue_reason).replace(/_/g, " ")
+                          : "Waiting for the active board run to finish.")}
+                    </p>
+                  ) : null}
                   {run.summary && (
                     <p className="mt-2 text-xs text-slate-500">{run.summary}</p>
                   )}
@@ -394,8 +415,10 @@ export default function RunsPage() {
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>New Run</DialogTitle>
-            <DialogDescription>Start a new agent execution run.</DialogDescription>
+            <DialogTitle>Manual Run</DialogTitle>
+            <DialogDescription>
+              Advanced debug path. Normal task execution should start from the task drawer.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -417,12 +440,11 @@ export default function RunsPage() {
                 <select
                   value={createStage}
                   onChange={(e) => setCreateStage(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="plan">Plan</option>
-                  <option value="build">Build</option>
-                  <option value="test">Test</option>
-                </select>
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="plan">Plan</option>
+                <option value="build">Build</option>
+              </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Runtime</label>
@@ -455,7 +477,7 @@ export default function RunsPage() {
                 ) : (
                   <Play className="mr-2 h-4 w-4" />
                 )}
-                Start Run
+                Start Manual Run
               </button>
             </div>
           </div>

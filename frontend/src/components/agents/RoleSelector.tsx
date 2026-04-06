@@ -25,7 +25,7 @@ const ROLES = [
     id: "qa_engineer",
     label: "QA Engineer",
     emoji: "🧪",
-    description: "Tests implementations, finds bugs, runs Playwright e2e tests.",
+    description: "Tests implementations, finds bugs, and validates acceptance criteria.",
     heartbeat: "10m",
     color: "border-green-400 bg-green-50",
     textColor: "text-green-700",

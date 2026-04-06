@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import time
@@ -15,6 +14,7 @@ from app.core.config import BACKEND_ROOT
 from app.services.runtime_adapters.base import RunResult, RuntimeAdapter, RuntimeAdapterError
 
 EVIDENCE_DIR = BACKEND_ROOT / "storage" / "evidence"
+KNOWN_MODEL_VARIANTS = frozenset({"low", "medium", "high"})
 
 
 class OpenCodeCLIAdapter(RuntimeAdapter):
@@ -46,18 +46,22 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
         run_id = str(uuid4())
         evidence_dir = EVIDENCE_DIR / run_id
         evidence_dir.mkdir(parents=True, exist_ok=True)
+        normalized_model, variant = self._normalize_model_and_variant(model)
 
         cmd = [
             "opencode", "run",
             "--agent", agent,
             "--format", "json",
         ]
-        if model:
-            cmd.extend(["--model", model])
+        if normalized_model:
+            cmd.extend(["--model", normalized_model])
+        if variant:
+            cmd.extend(["--variant", variant])
 
         self._active_runs[run_id] = {
             "started_at": time.time(),
-            "model": model,
+            "model": normalized_model,
+            "variant": variant,
             "status": "running",
             "agent": agent,
         }
@@ -77,25 +81,57 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
 
             events = self._parse_json_events(stdout_data)
             error_output = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+            event_error = self._extract_error(events)
 
             evidence = self._save_evidence(
                 run_id, evidence_dir, prompt, events, error_output,
             )
 
-            if proc.returncode == 0:
+            if proc.returncode == 0 and event_error is None:
                 self._active_runs[run_id]["status"] = "succeeded"
                 output = self._extract_output(events)
                 return RunResult(
                     success=True,
                     output=output,
                     evidence_paths=evidence,
-                    metadata={"model": model, "agent": agent, "run_id": run_id, "events": len(events)},
+                    metadata={
+                        "model": normalized_model,
+                        "variant": variant,
+                        "agent": agent,
+                        "run_id": run_id,
+                        "events": len(events),
+                    },
                 )
-            else:
-                self._active_runs[run_id]["status"] = "failed"
-                raise RuntimeAdapterError(
-                    f"OpenCode CLI exited with code {proc.returncode}: {error_output}"
+
+            self._active_runs[run_id]["status"] = "failed"
+            output = self._extract_output(events)
+            if event_error:
+                return RunResult(
+                    success=False,
+                    output=output,
+                    error=event_error,
+                    evidence_paths=evidence,
+                    metadata={
+                        "model": normalized_model,
+                        "variant": variant,
+                        "agent": agent,
+                        "run_id": run_id,
+                        "events": len(events),
+                    },
                 )
+            return RunResult(
+                success=False,
+                output=output,
+                error=f"OpenCode CLI exited with code {proc.returncode}: {error_output}",
+                evidence_paths=evidence,
+                metadata={
+                    "model": normalized_model,
+                    "variant": variant,
+                    "agent": agent,
+                    "run_id": run_id,
+                    "events": len(events),
+                },
+            )
 
         except FileNotFoundError:
             raise RuntimeAdapterError(
@@ -198,3 +234,29 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
                 if content:
                     return content
         return json.dumps(events[-1]) if events else ""
+
+    def _extract_error(self, events: list[dict]) -> str | None:
+        """Extract a terminal error message from OpenCode events."""
+        for event in reversed(events):
+            if event.get("type") != "error":
+                continue
+            error = event.get("error")
+            if isinstance(error, dict):
+                data = error.get("data")
+                if isinstance(data, dict) and isinstance(data.get("message"), str) and data["message"].strip():
+                    return data["message"].strip()
+                if isinstance(error.get("message"), str) and error["message"].strip():
+                    return error["message"].strip()
+            if isinstance(event.get("content"), str) and event["content"].strip():
+                return event["content"].strip()
+            return json.dumps(event)
+        return None
+
+    def _normalize_model_and_variant(self, model: str | None) -> tuple[str | None, str | None]:
+        """Split legacy `provider/model/variant` strings into model + variant flags."""
+        if not model:
+            return None, None
+        base_model, _, suffix = model.rpartition("/")
+        if base_model and suffix in KNOWN_MODEL_VARIANTS and "/" in base_model:
+            return base_model, suffix
+        return model, None

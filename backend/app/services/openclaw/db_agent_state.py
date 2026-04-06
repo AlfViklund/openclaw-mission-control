@@ -113,6 +113,13 @@ def begin_signed_rotation(agent: Agent) -> None:
     agent.updated_at = utcnow()
 
 
+def discard_pending_token(agent: Agent) -> None:
+    """Clear a staged pending token without recording an auth error."""
+
+    agent.pending_agent_token_version = None
+    agent.updated_at = utcnow()
+
+
 def promote_pending_token(agent: Agent) -> None:
     """Promote pending token to active after successful heartbeat.
 

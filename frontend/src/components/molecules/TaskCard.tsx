@@ -15,6 +15,9 @@ interface TaskCardProps {
   tags?: Array<{ id: string; name: string; color: string }>;
   isBlocked?: boolean;
   blockedByCount?: number;
+  reviewMode?: string | null;
+  runtimeBlocked?: boolean;
+  runtimeBlockedLabel?: string | null;
   onClick?: () => void;
   draggable?: boolean;
   isDragging?: boolean;
@@ -33,6 +36,9 @@ export function TaskCard({
   tags = [],
   isBlocked = false,
   blockedByCount = 0,
+  reviewMode,
+  runtimeBlocked = false,
+  runtimeBlockedLabel,
   onClick,
   draggable = false,
   isDragging = false,
@@ -42,10 +48,13 @@ export function TaskCard({
   const hasPendingApproval = approvalsPendingCount > 0;
   const needsLeadReview =
     status === "review" && !isBlocked && !hasPendingApproval;
+  const degradedReviewPending = reviewMode === "degraded_pipeline" && status === "review";
   const leftBarClassName = isBlocked
     ? "bg-rose-400"
     : hasPendingApproval
       ? "bg-amber-400"
+      : runtimeBlocked
+        ? "bg-amber-500"
       : needsLeadReview
         ? "bg-indigo-400"
         : null;
@@ -74,6 +83,7 @@ export function TaskCard({
         isDragging && "opacity-60 shadow-none",
         hasPendingApproval && "border-amber-200 bg-amber-50/40",
         isBlocked && "border-rose-200 bg-rose-50/50",
+        runtimeBlocked && "border-amber-200 bg-amber-50/40",
         needsLeadReview && "border-indigo-200 bg-indigo-50/30",
       )}
       draggable={draggable}
@@ -117,7 +127,13 @@ export function TaskCard({
           {needsLeadReview ? (
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
               <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-              Waiting for lead review
+              {degradedReviewPending ? "Degraded review pending" : "Waiting for lead review"}
+            </div>
+          ) : null}
+          {runtimeBlocked ? (
+            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              {runtimeBlockedLabel ?? "Pipeline cooldown"}
             </div>
           ) : null}
           {visibleTags.length ? (

@@ -42,13 +42,13 @@ AGENT_ROLE_PRESETS: dict[str, dict] = {
     },
     "qa_engineer": {
         "label": "QA Engineer",
-        "description": "Tests implementations, finds bugs, runs Playwright e2e tests, and ensures quality before delivery.",
+        "description": "Tests implementations, finds bugs, validates acceptance criteria, and ensures quality before delivery.",
         "emoji": "🧪",
         "identity_profile": {
             "role": "QA Engineer",
             "communication_style": "thorough, systematic, detail-oriented",
             "emoji": "🧪",
-            "purpose": "Test implementations, find bugs, run Playwright e2e tests, and ensure quality before delivery.",
+            "purpose": "Test implementations, find bugs, validate acceptance criteria, and ensure quality before delivery.",
             "autonomy_level": "medium",
         },
         "heartbeat_config": {

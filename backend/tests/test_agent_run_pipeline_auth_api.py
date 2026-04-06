@@ -11,6 +11,7 @@ from app.api.deps import ActorContext
 from app.api.pipeline import execute_pipeline_stage
 from app.api.runs import create_and_start_run
 from app.models.agents import Agent
+from app.models.boards import Board
 from app.models.tasks import Task
 from app.schemas.runs import RunCreate
 
@@ -119,6 +120,16 @@ async def test_agent_execute_pipeline_stage_defaults_to_self(
         SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=task))),
     )
     monkeypatch.setattr(
+        "app.models.boards.Board.objects",
+        SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=Board(
+            id=board_id,
+            organization_id=uuid4(),
+            name="Board",
+            slug="board",
+            description="desc",
+        )))),
+    )
+    monkeypatch.setattr(
         "app.api.deps.Agent.objects",
         SimpleNamespace(
             by_id=lambda _id: SimpleNamespace(
@@ -140,7 +151,7 @@ async def test_agent_execute_pipeline_stage_defaults_to_self(
     result = await execute_pipeline_stage(
         task_id=task.id,
         stage="build",
-        runtime="acp",
+        runtime=None,
         agent_id=None,
         model=None,
         session=object(),  # type: ignore[arg-type]
@@ -162,6 +173,43 @@ async def test_agent_execute_pipeline_stage_rejects_foreign_board(
         "app.api.pipeline.Task.objects",
         SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=task))),
     )
+    monkeypatch.setattr(
+        "app.models.boards.Board.objects",
+        SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=None))),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await execute_pipeline_stage(
+            task_id=task.id,
+            stage="build",
+            runtime=None,
+            agent_id=None,
+            model=None,
+            session=object(),  # type: ignore[arg-type]
+            _actor=actor,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Agent cannot execute work for a different board."
+
+
+@pytest.mark.asyncio
+async def test_agent_execute_pipeline_stage_rejects_runtime_override_outside_board_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = uuid4()
+    actor = _agent_actor(board_id=board_id)
+    task = Task(id=uuid4(), board_id=board_id, title="Task")
+    board = Board(id=board_id, organization_id=uuid4(), name="Board", slug="board", description="desc")
+
+    monkeypatch.setattr(
+        "app.api.pipeline.Task.objects",
+        SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=task))),
+    )
+    monkeypatch.setattr(
+        "app.models.boards.Board.objects",
+        SimpleNamespace(by_id=lambda _id: SimpleNamespace(first=AsyncMock(return_value=board))),
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await execute_pipeline_stage(
@@ -175,4 +223,4 @@ async def test_agent_execute_pipeline_stage_rejects_foreign_board(
         )
 
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "Agent cannot execute work for a different board."
+    assert exc_info.value.detail == "Board agents cannot override the board execution runtime policy."

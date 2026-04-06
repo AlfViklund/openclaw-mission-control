@@ -17,6 +17,7 @@ from app.models.approvals import Approval
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.organizations import Organization
+from app.models.runs import Run
 from app.models.tasks import Task
 from app.schemas.tasks import TaskRead, TaskUpdate
 
@@ -82,6 +83,15 @@ async def _seed_board_task_and_agent(
     session.add(board)
     session.add(task)
     session.add(agent)
+    session.add(
+        Run(
+            task_id=task.id,
+            agent_id=agent.id,
+            runtime="opencode_cli",
+            stage="build",
+            status="succeeded",
+        )
+    )
     await session.commit()
     return board, task, agent
 

@@ -60,7 +60,10 @@ class BoardRuntimeAgentState(SQLModel):
     name: str
     role_key: str
     role_label: str
+    role_presence: str = "present"
     status: str
+    work_state: str = "idle_no_work"
+    runtime_state: str = "healthy"
     agent_auth_mode: str | None = None
     pending_agent_token_version: int | None = None
     wake_reason: str | None = None
@@ -69,6 +72,7 @@ class BoardRuntimeAgentState(SQLModel):
     agent_auth_last_error: str | None = None
     agent_auth_last_synced_at: datetime | None = None
     assigned_task_count: int = 0
+    actionable_task_count: int = 0
     has_active_run: bool = False
     workspace_path: str | None = None
     workspace_exists: bool = False
@@ -94,6 +98,13 @@ class BoardRuntimeIntegrity(SQLModel):
     actual_worker_count: int = 0
     healthy_worker_count: int = 0
     board_max_agents_counts_workers_only: bool = True
+    opencode_ready: bool = False
+    quota_state: str | None = None
+    last_cli_failure_kind: str | None = None
+    blocked_tasks_due_to_runtime: int = 0
+    cooldown_until: datetime | None = None
+    cooldown_message: str | None = None
+    degraded_tasks_count: int = 0
     agents: list[BoardRuntimeAgentState] = Field(default_factory=list)
 
 

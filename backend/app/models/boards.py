@@ -51,5 +51,13 @@ class Board(TenantScoped, table=True):
         default=None,
         sa_column=Column(JSON),
     )
+    execution_policy: dict | None = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+    )
+    execution_runtime_state: dict | None = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+    )
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

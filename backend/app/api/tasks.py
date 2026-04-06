@@ -51,7 +51,13 @@ from app.schemas.task_custom_fields import (
     TaskCustomFieldValues,
     validate_custom_field_value,
 )
-from app.schemas.tasks import TaskCommentCreate, TaskCommentRead, TaskCreate, TaskRead, TaskUpdate
+from app.schemas.tasks import (
+    TaskCommentCreate,
+    TaskCommentRead,
+    TaskCreate,
+    TaskRead,
+    TaskUpdate,
+)
 from app.services.activity_log import record_activity
 from app.services.approval_task_links import (
     load_task_ids_by_approval,
@@ -63,6 +69,7 @@ from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
 from app.services.openclaw.provisioning_db import AgentLifecycleService
 from app.services.organizations import require_board_access
+from app.services.pipeline import get_pipeline_task_summary
 from app.services.tags import (
     TagState,
     load_tag_state,
@@ -127,6 +134,23 @@ def _comment_validation_error() -> HTTPException:
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail="Comment is required.",
     )
+
+
+def _completion_report_payload(event: ActivityEvent) -> dict[str, object] | None:
+    payload = event.payload_json
+    if not isinstance(payload, dict):
+        return None
+    completion_report = payload.get("completion_report")
+    return completion_report if isinstance(completion_report, dict) else None
+
+
+def _comment_kind(event: ActivityEvent) -> str:
+    payload = event.payload_json
+    if isinstance(payload, dict):
+        raw = payload.get("kind")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return "comment"
 
 
 def _task_update_forbidden_error(*, code: str, message: str) -> HTTPException:
@@ -568,7 +592,15 @@ async def _fetch_task_events(
 
 
 def _serialize_comment(event: ActivityEvent) -> dict[str, object]:
-    return TaskCommentRead.model_validate(event).model_dump(mode="json")
+    return TaskCommentRead(
+        id=event.id,
+        message=event.message,
+        kind=_comment_kind(event),
+        completion_report=_completion_report_payload(event),
+        agent_id=event.agent_id,
+        task_id=event.task_id,
+        created_at=event.created_at,
+    ).model_dump(mode="json")
 
 
 async def _send_agent_task_message(
@@ -599,7 +631,10 @@ def _assignment_notification_message(*, board: Board, task: Task, agent: Agent) 
             "Take action: review the deliverables now. "
             "Approve by moving to done or return to inbox with clear feedback."
         )
-        return "TASK READY FOR LEAD REVIEW\n" + "\n".join(details) + f"\n\n{action}"
+        prefix = "TASK READY FOR LEAD REVIEW"
+        if getattr(task, "review_mode", None) == "degraded_pipeline":
+            prefix += " (DEGRADED PIPELINE)"
+        return prefix + "\n" + "\n".join(details) + f"\n\n{action}"
     return (
         "TASK ASSIGNED\n"
         + "\n".join(details)
@@ -2009,20 +2044,40 @@ async def _enforce_guarded_pipeline_status_change(
     if target_status not in {"review", "done"}:
         return
 
-    has_test_success = await _has_successful_stage_run(
+    has_build_success = await _has_successful_stage_run(
         session,
         task_id=update.task.id,
-        stage="test",
+        stage="build",
     )
-    if has_test_success:
+    if has_build_success:
         return
+    summary = await get_pipeline_task_summary(session, task_id=update.task.id)
+    detail_payload = {
+        "code": "pipeline_guard_failed",
+        "next_required_stage": summary.next_required_stage,
+        "ready_for_review": summary.ready_for_review,
+        "latest_failed_stage": summary.latest_failed_stage,
+        "latest_failure_kind": summary.latest_failure_kind,
+        "runtime_blocker_code": summary.runtime_blocker_code,
+        "runtime_blocker": summary.runtime_blocker,
+        "execution_mode": summary.execution_mode,
+        "cooldown_until": summary.cooldown_until,
+        "cooldown_message": summary.cooldown_message,
+        "degraded_allowed": summary.degraded_allowed,
+        "use_request_review": True,
+        "missing_completion_evidence": (
+            summary.degraded_allowed and summary.latest_completion_report is None
+        ),
+        "recommended_action": summary.recommended_action,
+    }
 
     if update.actor.actor_type == "agent":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "pipeline_guard_failed",
-                "message": "No successful test run. Agents cannot force pipeline overrides.",
+            detail=detail_payload
+            | {
+                "message": "No successful build run. Use request-review instead of a raw status change.",
+                "use_start_work": summary.use_start_work,
                 "allow_force_override": False,
             },
         )
@@ -2030,9 +2085,10 @@ async def _enforce_guarded_pipeline_status_change(
     if not update.force_status_override:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "pipeline_guard_failed",
-                "message": "No successful test run. Normal transition blocked. Use force_status_override with override_reason.",
+            detail=detail_payload
+            | {
+                "message": "No successful build run. Normal transition blocked. Use request-review or force_status_override with override_reason.",
+                "use_start_work": summary.use_start_work,
                 "allow_force_override": True,
                 "required_reason": True,
             },
@@ -2070,6 +2126,7 @@ async def _task_read_response(
     )
     if task.status == "done":
         blocked_ids = []
+    execution_summary = await get_pipeline_task_summary(session, task_id=task.id)
     return TaskRead.model_validate(task, from_attributes=True).model_copy(
         update={
             "depends_on_task_ids": dep_ids,
@@ -2078,6 +2135,7 @@ async def _task_read_response(
             "blocked_by_task_ids": blocked_ids,
             "is_blocked": bool(blocked_ids),
             "custom_field_values": custom_field_values_by_task_id.get(task.id, {}),
+            "execution_summary": execution_summary,
         },
     )
 
@@ -2879,6 +2937,7 @@ async def create_task_comment(
         task_id=task.id,
         board_id=task.board_id,
         agent_id=_comment_actor_id(actor),
+        payload_json=payload.model_dump(mode="json", exclude_none=True),
     )
     session.add(event)
     await session.commit()

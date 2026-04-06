@@ -338,3 +338,4 @@ class AgentAuthRepairResponse(SQLModel):
     pending_agent_token_version: int | None = Field(description="Pending token version if migration/rotation in progress.")
     status: str = Field(description="Agent lifecycle status.")
     agent_auth_last_error: str | None = Field(description="Last auth error if any.")
+    last_provision_error: str | None = Field(description="Last lifecycle or wake recovery error if any.")

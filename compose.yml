@@ -57,6 +57,8 @@ services:
     volumes:
       - ./data/storage:/app/storage
       - /Users/arslek/.openclaw:/home/appuser/.openclaw
+      - /Users/arslek/.config:/home/appuser/.config
+      - /Users/arslek/.local:/home/appuser/.local
 
   frontend:
     build:
@@ -123,6 +125,8 @@ services:
     volumes:
       - ./data/storage:/app/storage
       - /Users/arslek/.openclaw:/home/appuser/.openclaw
+      - /Users/arslek/.config:/home/appuser/.config
+      - /Users/arslek/.local:/home/appuser/.local
 
   telegram-bot:
     build:

@@ -18,11 +18,13 @@ from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.services.openclaw.constants import CHECKIN_DEADLINE_AFTER_WAKE
 from app.services.openclaw.db_agent_state import (
+    discard_pending_token,
     mark_provision_complete,
     mark_provision_requested,
     current_agent_runtime_token,
     rollback_pending_token,
 )
+from app.services.openclaw.error_classification import is_auth_sync_error
 from app.services.openclaw.db_service import OpenClawDBService
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
 from app.services.openclaw.lifecycle_queue import (
@@ -143,24 +145,34 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
                 wakeup_verb=wakeup_verb,
             )
         except OpenClawGatewayError as exc:
+            error_message = str(exc)
             locked.status = "offline"
-            locked.last_provision_error = str(exc)
+            locked.last_provision_error = error_message
             locked.updated_at = utcnow()
-            rollback_pending_token(locked, str(exc))
+            if is_auth_sync_error(error_message):
+                rollback_pending_token(locked, error_message)
+            else:
+                discard_pending_token(locked)
+                locked.agent_auth_last_error = None
             self.session.add(locked)
             await self.session.commit()
             await self.session.refresh(locked)
             if raise_gateway_errors:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Gateway {action} failed: {exc}",
+                    detail=f"Gateway {action} failed: {error_message}",
                 ) from exc
             return locked
         except (OSError, RuntimeError, ValueError) as exc:
+            error_message = str(exc)
             locked.status = "offline"
-            locked.last_provision_error = str(exc)
+            locked.last_provision_error = error_message
             locked.updated_at = utcnow()
-            rollback_pending_token(locked, str(exc))
+            if is_auth_sync_error(error_message):
+                rollback_pending_token(locked, error_message)
+            else:
+                discard_pending_token(locked)
+                locked.agent_auth_last_error = None
             self.session.add(locked)
             await self.session.commit()
             await self.session.refresh(locked)

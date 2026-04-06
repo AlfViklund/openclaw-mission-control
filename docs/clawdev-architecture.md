@@ -17,8 +17,7 @@ ClawDev Mission Control extends OpenClaw Mission Control into a complete product
 | Artifact Hub | `backend/app/api/artifacts.py` | File upload, storage, preview, download |
 | Planner Service | `backend/app/api/planner.py` | Spec → backlog generation with DAG |
 | Run Store | `backend/app/api/runs.py` | Execution tracking and evidence |
-| Pipeline | `backend/app/api/pipeline.py` | Plan→build→test orchestration |
-| QA Service | `backend/app/api/qa.py` | Playwright test execution |
+| Pipeline | `backend/app/api/pipeline.py` | Plan→build orchestration and review readiness |
 | Watchdog | `backend/app/api/watchdog.py` | Health monitoring and auto-recovery |
 | Agent Roles | `backend/app/api/agents.py` | Role presets and team provisioning |
 
@@ -49,7 +48,6 @@ ClawDev Mission Control extends OpenClaw Mission Control into a complete product
 | Artifacts | `/artifacts` | Spec & artifact management |
 | Planner | `/planner` | Backlog generation with React Flow DAG |
 | Runs | `/runs` | Execution tracking |
-| QA Testing | `/qa` | Playwright test runner |
 | Agent Roles | `/agent-roles` | Team composition management |
 | Watchdog | `/watchdog` | Health monitoring panel |
 
@@ -70,7 +68,7 @@ ClawDev Mission Control extends OpenClaw Mission Control into a complete product
    ↓
 6. Team agents provisioned with role templates
    ↓
-7. Pipeline executes: plan → build → test → review → done
+7. Pipeline executes: plan → build → review → done
    ↓
 8. Watchdog monitors health, recovers from failures
    ↓
@@ -84,7 +82,7 @@ Task assigned to agent
    ↓
 Runtime adapter selected (ACP/CLI/OpenRouter)
    ↓
-Run created with stage (plan/build/test)
+Run created with stage (plan/build)
    ↓
 Pipeline validation (soft warnings)
    ↓

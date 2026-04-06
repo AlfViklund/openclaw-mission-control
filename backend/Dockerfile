@@ -7,10 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps (keep minimal)
+# System deps plus Node/npm for the OpenCode CLI runtime.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates git \
+  && apt-get install -y --no-install-recommends curl ca-certificates git nodejs npm \
   && rm -rf /var/lib/apt/lists/*
+
+# Install the OpenCode CLI used by pipeline runs.
+RUN npm install -g opencode-ai@1.3.14
 
 # Install uv (https://github.com/astral-sh/uv)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

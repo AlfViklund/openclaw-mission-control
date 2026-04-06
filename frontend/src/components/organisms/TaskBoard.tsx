@@ -29,6 +29,11 @@ type Task = {
   depends_on_task_ids?: string[];
   blocked_by_task_ids?: string[];
   is_blocked?: boolean;
+  review_mode?: string | null;
+  execution_summary?: {
+    runtime_blocker_code?: string | null;
+    recommended_action?: string | null;
+  } | null;
 };
 
 type TaskBoardProps = {
@@ -500,11 +505,20 @@ export const TaskBoard = memo(function TaskBoard({
                         assignee={task.assignee ?? undefined}
                         due={dueState.due}
                         isOverdue={dueState.isOverdue}
-                        approvalsPendingCount={task.approvals_pending_count}
-                        tags={task.tags}
-                        isBlocked={task.is_blocked}
-                        blockedByCount={task.blocked_by_task_ids?.length ?? 0}
-                        onClick={() => onTaskSelect?.(task)}
+                      approvalsPendingCount={task.approvals_pending_count}
+                      tags={task.tags}
+                      isBlocked={task.is_blocked}
+                      blockedByCount={task.blocked_by_task_ids?.length ?? 0}
+                      reviewMode={task.review_mode}
+                      runtimeBlocked={task.execution_summary?.runtime_blocker_code === "cooldown"}
+                      runtimeBlockedLabel={
+                        task.review_mode === "degraded_pipeline"
+                          ? "Degraded review pending"
+                          : task.execution_summary?.runtime_blocker_code === "cooldown"
+                            ? "Pipeline cooldown"
+                            : null
+                      }
+                      onClick={() => onTaskSelect?.(task)}
                         draggable={!readOnly && !task.is_blocked}
                         isDragging={draggingId === task.id}
                         onDragStart={

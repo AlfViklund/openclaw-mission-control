@@ -12,7 +12,7 @@ from app.core.time import utcnow
 from app.models.base import QueryModel
 
 RUN_RUNTIMES = frozenset({"acp", "opencode_cli", "openrouter"})
-RUN_STAGES = frozenset({"plan", "build", "test"})
+RUN_STAGES = frozenset({"plan", "build"})
 RUN_STATUSES = frozenset({"queued", "running", "failed", "succeeded", "canceled"})
 
 
@@ -40,6 +40,8 @@ class Run(QueryModel, table=True):
     summary: str | None = None
 
     error_message: str | None = None
+    failure_kind: str | None = Field(default=None, index=True)
+    retryable: bool = Field(default=False)
 
     run_metadata: dict = Field(
         default_factory=dict,

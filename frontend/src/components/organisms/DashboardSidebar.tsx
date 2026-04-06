@@ -18,7 +18,6 @@ import {
   FileText,
   GitBranch,
   Terminal,
-  Shield,
   Users,
   Eye,
 } from "lucide-react";
@@ -190,18 +189,6 @@ export function DashboardSidebar() {
               >
                 <Terminal className="h-4 w-4" />
                 Runs
-              </Link>
-              <Link
-                href="/qa"
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-                  pathname.startsWith("/qa")
-                    ? "bg-blue-100 text-blue-800 font-medium"
-                    : "hover:bg-slate-100",
-                )}
-              >
-                <Shield className="h-4 w-4" />
-                QA Testing
               </Link>
               <Link
                 href="/agent-roles"
