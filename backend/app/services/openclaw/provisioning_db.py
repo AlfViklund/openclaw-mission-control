@@ -57,7 +57,6 @@ from app.services.openclaw.constants import (
 from app.services.openclaw.db_agent_state import (
     current_agent_runtime_token,
     begin_signed_migration,
-    rollback_pending_token,
 )
 from app.services.openclaw.db_service import OpenClawDBService
 from app.services.openclaw.gateway_resolver import (
@@ -1696,20 +1695,30 @@ class AgentLifecycleService(OpenClawDBService):
                         ]
                     else:
                         agents = []
-                for agent in agents:
-                    updated_at = agent.updated_at or agent.last_seen_at or utcnow()
+                    payload_events: list[tuple[datetime, dict[str, object]]] = []
+                    for agent in agents:
+                        updated_at = agent.updated_at or agent.last_seen_at or utcnow()
+                        wake_reason = None
+                        if agent.board_id is not None:
+                            try:
+                                wake_reason = (
+                                    await get_work_snapshot(stream_session, agent.id)
+                                ).get("wake_reason")
+                            except ValueError:
+                                wake_reason = None
+                        payload_events.append(
+                            (
+                                updated_at,
+                                {
+                                    "agent": self.serialize_agent(
+                                        agent,
+                                        wake_reason=wake_reason,
+                                    )
+                                },
+                            )
+                        )
+                for updated_at, payload in payload_events:
                     last_seen = max(updated_at, last_seen)
-                    wake_reason = None
-                    if agent.board_id is not None:
-                        try:
-                            wake_reason = (
-                                await get_work_snapshot(stream_session, agent.id)
-                            ).get("wake_reason")
-                        except ValueError:
-                            wake_reason = None
-                    payload = {
-                        "agent": self.serialize_agent(agent, wake_reason=wake_reason)
-                    }
                     yield {"event": "agent", "data": json.dumps(payload)}
                 await asyncio.sleep(2)
 

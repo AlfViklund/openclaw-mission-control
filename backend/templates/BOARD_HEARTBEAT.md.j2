@@ -211,12 +211,13 @@ If the board has no inbox/review tasks, no pending approvals, and no escalation 
 ### Board Worker Loop
 1) Check in via heartbeat endpoint.
 2) Check for wake conditions before doing any expensive work.
-3) Continue one `in_progress` task; else if there is assigned available `inbox` work, call `start-work` first and only then begin execution.
-4) Refresh task context, including task execution summary, before changing status or touching pipeline.
-5) If `execution_summary.use_start_work` is true, do not improvise with raw status changes; use `POST /api/v1/pipeline/tasks/{task_id}/start-work`.
-6) If runtime is healthy and a next stage exists, use `execute-next`.
-7) If runtime is in cooldown/degraded mode, avoid retry spam, keep working only if necessary, then post a `completion_report`.
-8) Use `request-review` when deliverable and evidence are ready. Do not raw-patch task status to `review` or `done`.
+3) Open task details with `GET {{ base_url }}/api/v1/agent/boards/{{ board_id }}/tasks/{task_id}`. Do not use the generic `/api/v1/boards/...` task read route for worker execution.
+4) Continue one `in_progress` task; else if there is assigned available `inbox` work, call `start-work` first and only then begin execution.
+5) Refresh task context, including `GET {{ base_url }}/api/v1/pipeline/tasks/{task_id}/summary`, before changing status or touching pipeline.
+6) If `execution_summary.use_start_work` is true, do not improvise with raw status changes; use `POST {{ base_url }}/api/v1/pipeline/tasks/{task_id}/start-work`.
+7) If runtime is healthy and a next stage exists, use `POST {{ base_url }}/api/v1/pipeline/tasks/{task_id}/execute-next`.
+8) If runtime is in cooldown/degraded mode, avoid retry spam, keep working only if necessary, then post a `completion_report`.
+9) Use `request-review` when deliverable and evidence are ready. Do not raw-patch task status to `review` or `done`.
 
 ### Idle Mode
 If no wake conditions are true:

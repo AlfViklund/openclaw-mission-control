@@ -237,12 +237,19 @@ async def list_board_memory(
 async def stream_board_memory(
     request: Request,
     *,
-    board: Board = BOARD_READ_DEP,
-    _actor: ActorContext = ACTOR_DEP,
+    board_id: UUID,
     since: str | None = SINCE_QUERY,
     is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
     """Stream board memory events over server-sent events."""
+    async with async_session_maker() as session:
+        actor = await require_user_or_agent(request=request, session=session)
+        board = await get_board_for_actor_read(
+            board_id=board_id,
+            session=session,
+            actor=actor,
+        )
+        resolved_board_id = board.id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -254,13 +261,16 @@ async def stream_board_memory(
             async with async_session_maker() as session:
                 memories = await _fetch_memory_events(
                     session,
-                    board.id,
+                    resolved_board_id,
                     last_seen,
                     is_chat=is_chat,
                 )
-            for memory in memories:
-                last_seen = max(memory.created_at, last_seen)
-                payload = {"memory": _serialize_memory(memory)}
+                payload_events = [
+                    (memory.created_at, {"memory": _serialize_memory(memory)})
+                    for memory in memories
+                ]
+            for created_at, payload in payload_events:
+                last_seen = max(created_at, last_seen)
                 yield {"event": "memory", "data": json.dumps(payload)}
             await asyncio.sleep(STREAM_POLL_SECONDS)
 

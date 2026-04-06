@@ -10,10 +10,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.deps import ActorContext, require_org_admin, require_user_or_agent
+from app.api.deps import (
+    ActorContext,
+    require_org_admin,
+    require_org_member,
+    require_user_or_agent,
+)
 from app.core.auth import AuthContext, get_auth_context
 from app.core.time import utcnow
-from app.db.session import get_session
+from app.db.session import async_session_maker, get_session
 from app.models.boards import Board
 from app.schemas.agents import (
     AgentAuthRepairResponse,
@@ -262,17 +267,19 @@ async def stream_agents(
     request: Request,
     board_id: UUID | None = BOARD_ID_QUERY,
     since: str | None = SINCE_QUERY,
-    session: AsyncSession = SESSION_DEP,
-    ctx: OrganizationContext = ORG_ADMIN_DEP,
 ) -> EventSourceResponse:
     """Stream agent updates as SSE events."""
-    service = AgentLifecycleService(session)
-    return await service.stream_agents(
-        request=request,
-        board_id=board_id,
-        since=since,
-        ctx=ctx,
-    )
+    async with async_session_maker() as session:
+        auth = await get_auth_context(request=request, credentials=None, session=session)
+        ctx = await require_org_member(auth=auth, session=session)
+        ctx = await require_org_admin(ctx=ctx)
+        service = AgentLifecycleService(session)
+        return await service.stream_agents(
+            request=request,
+            board_id=board_id,
+            since=since,
+            ctx=ctx,
+        )
 
 
 @router.post("", response_model=AgentRead)

@@ -15,6 +15,7 @@ from sqlmodel import col, select
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import ActorContext, require_org_member, require_user_or_agent
+from app.core.auth import get_auth_context
 from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
@@ -334,16 +335,17 @@ async def stream_task_comment_feed(
     request: Request,
     board_id: UUID | None = BOARD_ID_QUERY,
     since: str | None = SINCE_QUERY,
-    db_session: AsyncSession = SESSION_DEP,
-    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> EventSourceResponse:
     """Stream task-comment events for accessible boards."""
+    async with async_session_maker() as session:
+        auth = await get_auth_context(request=request, credentials=None, session=session)
+        ctx = await require_org_member(auth=auth, session=session)
+        board_ids = await list_accessible_board_ids(
+            session,
+            member=ctx.member,
+            write=False,
+        )
     since_dt = _parse_since(since) or utcnow()
-    board_ids = await list_accessible_board_ids(
-        db_session,
-        member=ctx.member,
-        write=False,
-    )
     allowed_ids = set(board_ids)
     if board_id is not None and board_id not in allowed_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
@@ -367,8 +369,23 @@ async def stream_task_comment_feed(
                     rows = [row for row in rows if row[1].board_id in allowed_ids]
                 else:
                     rows = []
-            for event, task, board, agent in rows:
-                event_id = event.id
+                payload_events: list[tuple[UUID, datetime, dict[str, object]]] = []
+                for event, task, board, agent in rows:
+                    payload_events.append(
+                        (
+                            event.id,
+                            event.created_at,
+                            {
+                                "comment": _feed_item(
+                                    event,
+                                    task,
+                                    board,
+                                    agent,
+                                ).model_dump(mode="json"),
+                            },
+                        )
+                    )
+            for event_id, created_at, payload in payload_events:
                 if event_id in seen_ids:
                     continue
                 seen_ids.add(event_id)
@@ -376,15 +393,7 @@ async def stream_task_comment_feed(
                 if len(seen_queue) > SSE_SEEN_MAX:
                     oldest = seen_queue.popleft()
                     seen_ids.discard(oldest)
-                last_seen = max(event.created_at, last_seen)
-                payload = {
-                    "comment": _feed_item(
-                        event,
-                        task,
-                        board,
-                        agent,
-                    ).model_dump(mode="json"),
-                }
+                last_seen = max(created_at, last_seen)
                 yield {"event": "comment", "data": json.dumps(payload)}
             await asyncio.sleep(STREAM_POLL_SECONDS)
 

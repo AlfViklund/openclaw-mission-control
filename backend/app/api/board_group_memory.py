@@ -22,6 +22,7 @@ from app.api.deps import (
     require_org_member,
     require_user_or_agent,
 )
+from app.core.auth import get_auth_context
 from app.core.config import settings
 from app.core.time import utcnow
 from app.db.pagination import paginate
@@ -373,12 +374,22 @@ async def list_board_group_memory(
 @group_router.get("/stream")
 async def stream_board_group_memory(
     request: Request,
-    group: BoardGroup = GROUP_READ_DEP,
+    group_id: UUID,
     *,
     since: str | None = SINCE_QUERY,
     is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
     """Stream memory entries for a board group via server-sent events."""
+    async with async_session_maker() as session:
+        auth = await get_auth_context(request=request, credentials=None, session=session)
+        ctx = await require_org_member(auth=auth, session=session)
+        group = await _require_group_access(
+            session,
+            group_id=group_id,
+            ctx=ctx,
+            write=False,
+        )
+        resolved_group_id = group.id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -390,13 +401,16 @@ async def stream_board_group_memory(
             async with async_session_maker() as s:
                 memories = await _fetch_memory_events(
                     s,
-                    group.id,
+                    resolved_group_id,
                     last_seen,
                     is_chat=is_chat,
                 )
-            for memory in memories:
-                last_seen = max(memory.created_at, last_seen)
-                payload = {"memory": _serialize_memory(memory)}
+                payload_events = [
+                    (memory.created_at, {"memory": _serialize_memory(memory)})
+                    for memory in memories
+                ]
+            for created_at, payload in payload_events:
+                last_seen = max(created_at, last_seen)
                 yield {"event": "memory", "data": json.dumps(payload)}
             await asyncio.sleep(STREAM_POLL_SECONDS)
 
@@ -525,12 +539,19 @@ async def list_board_group_memory_for_board(
 async def stream_board_group_memory_for_board(
     request: Request,
     *,
-    board: Board = BOARD_READ_DEP,
+    board_id: UUID,
     since: str | None = SINCE_QUERY,
     is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
     """Stream linked-group memory via SSE for near-real-time coordination."""
-    group_id = board.board_group_id
+    async with async_session_maker() as session:
+        actor = await require_user_or_agent(request=request, session=session)
+        board = await get_board_for_actor_read(
+            board_id=board_id,
+            session=session,
+            actor=actor,
+        )
+        group_id = board.board_group_id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -549,9 +570,12 @@ async def stream_board_group_memory_for_board(
                     last_seen,
                     is_chat=is_chat,
                 )
-            for memory in memories:
-                last_seen = max(memory.created_at, last_seen)
-                payload = {"memory": _serialize_memory(memory)}
+                payload_events = [
+                    (memory.created_at, {"memory": _serialize_memory(memory)})
+                    for memory in memories
+                ]
+            for created_at, payload in payload_events:
+                last_seen = max(created_at, last_seen)
                 yield {"event": "memory", "data": json.dumps(payload)}
             await asyncio.sleep(STREAM_POLL_SECONDS)
 

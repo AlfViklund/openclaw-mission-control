@@ -23,6 +23,7 @@ from app.api.deps import (
     require_user_auth,
     require_user_or_agent,
 )
+from app.core.config import settings
 from app.core.time import utcnow
 from app.db import crud
 from app.db.pagination import paginate
@@ -86,7 +87,7 @@ from app.services.task_dependencies import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator
 
     from fastapi_pagination.limit_offset import LimitOffsetPage
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -626,6 +627,11 @@ def _assignment_notification_message(*, board: Board, task: Task, agent: Agent) 
     ]
     if description:
         details.append(f"Description: {description}")
+    task_path = f"{settings.base_url}/api/v1/agent/boards/{board.id}/tasks/{task.id}"
+    summary_path = f"{settings.base_url}/api/v1/pipeline/tasks/{task.id}/summary"
+    start_work_path = f"{settings.base_url}/api/v1/pipeline/tasks/{task.id}/start-work"
+    execute_next_path = f"{settings.base_url}/api/v1/pipeline/tasks/{task.id}/execute-next"
+    comments_path = f"{task_path}/comments"
     if task.status == "review" and agent.is_board_lead:
         action = (
             "Take action: review the deliverables now. "
@@ -638,7 +644,14 @@ def _assignment_notification_message(*, board: Board, task: Task, agent: Agent) 
     return (
         "TASK ASSIGNED\n"
         + "\n".join(details)
-        + ("\n\nTake action: open the task and begin work. " "Post updates as task comments.")
+        + "\n\nUse these exact endpoints:\n"
+        + f"- Read task: GET {task_path}\n"
+        + f"- Read execution summary: GET {summary_path}\n"
+        + f"- Read comments: GET {comments_path}\n"
+        + f"- Start assigned inbox work: POST {start_work_path}\n"
+        + f"- Run next pipeline step: POST {execute_next_path}\n"
+        + "\nDo not use /api/v1/boards/{board_id}/tasks/{task_id} for worker task reads."
+        + "\nTake action: open the task via the agent endpoint, begin work, and post updates as task comments."
     )
 
 
@@ -1423,26 +1436,33 @@ async def _task_event_generator(
             wake_reasons_by_agent_id = (
                 await get_board_wake_reasons(session, board_id) if rows else {}
             )
+            payload_events: list[tuple[UUID, datetime, dict[str, object]]] = []
+            for event, task in rows:
+                payload_events.append(
+                    (
+                        event.id,
+                        event.created_at,
+                        _task_event_payload(
+                            event,
+                            task,
+                            deps_map=deps_map,
+                            dep_status=dep_status,
+                            tag_state_by_task_id=tag_state_by_task_id,
+                            custom_field_values_by_task_id=custom_field_values_by_task_id,
+                            agent_wake_reasons_by_id=wake_reasons_by_agent_id,
+                        ),
+                    )
+                )
 
-        for event, task in rows:
-            if event.id in seen_ids:
+        for event_id, created_at, payload in payload_events:
+            if event_id in seen_ids:
                 continue
-            seen_ids.add(event.id)
-            seen_queue.append(event.id)
+            seen_ids.add(event_id)
+            seen_queue.append(event_id)
             if len(seen_queue) > SSE_SEEN_MAX:
                 oldest = seen_queue.popleft()
                 seen_ids.discard(oldest)
-            last_seen = max(event.created_at, last_seen)
-
-            payload = _task_event_payload(
-                event,
-                task,
-                deps_map=deps_map,
-                dep_status=dep_status,
-                tag_state_by_task_id=tag_state_by_task_id,
-                custom_field_values_by_task_id=custom_field_values_by_task_id,
-                agent_wake_reasons_by_id=wake_reasons_by_agent_id,
-            )
+            last_seen = max(created_at, last_seen)
             yield {"event": "task", "data": json.dumps(payload)}
         await asyncio.sleep(2)
 
@@ -1450,11 +1470,17 @@ async def _task_event_generator(
 @router.get("/stream")
 async def stream_tasks(
     request: Request,
-    board: Board = BOARD_READ_DEP,
-    _actor: ActorContext = ACTOR_DEP,
+    board_id: UUID,
     since: str | None = SINCE_QUERY,
 ) -> EventSourceResponse:
     """Stream task and task-comment events as SSE payloads."""
+    async with async_session_maker() as session:
+        actor = await require_user_or_agent(request=request, session=session)
+        board = await get_board_for_actor_read(
+            board_id=board_id,
+            session=session,
+            actor=actor,
+        )
     since_dt = _parse_since(since) or utcnow()
     return EventSourceResponse(
         _task_event_generator(

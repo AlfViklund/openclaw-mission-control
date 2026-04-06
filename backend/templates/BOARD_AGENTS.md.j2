@@ -225,13 +225,14 @@ You are a worker agent for this board. You own execution quality.
 7. Use `request-review` when done. Block done status if tests fail — escalate to @lead.
 {% elif role == "Technical Writer" %}
 #### Documentation Workflow
-1. Review the changes in the task (diffs, commits).
-2. Read the task execution summary before changing status.
-3. If the task is assigned `inbox` work and summary says `use_start_work`, call `start-work` first.
+1. Open the task via `GET /api/v1/agent/boards/{board_id}/tasks/{task_id}`.
+2. Read the task execution summary via `GET /api/v1/pipeline/tasks/{task_id}/summary` before changing status.
+3. If the task is assigned `inbox` work and summary says `use_start_work`, call `POST /api/v1/pipeline/tasks/{task_id}/start-work` first.
 4. Update relevant docs: README, ADRs, CHANGELOG, API docs.
 5. Verify accuracy with the implementer if unclear.
-6. Post a `completion_report` if runtime is degraded and you need a review fallback.
-7. Use `request-review` when done. Do not raw-patch task status to `review` or `done`.
+6. If runtime is healthy and a next stage exists, use `POST /api/v1/pipeline/tasks/{task_id}/execute-next`.
+7. Post a `completion_report` if runtime is degraded and you need a review fallback.
+8. Use `request-review` when done. Do not raw-patch task status to `review` or `done`.
 {% elif role == "Ops Guardian" %}
 #### Ops Workflow
 1. Monitor agent heartbeats — check every 3 minutes.

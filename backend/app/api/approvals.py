@@ -325,11 +325,18 @@ async def list_approvals(
 @router.get("/stream")
 async def stream_approvals(
     request: Request,
-    board: Board = BOARD_READ_DEP,
-    _actor: ActorContext = ACTOR_DEP,
+    board_id: UUID,
     since: str | None = SINCE_QUERY,
 ) -> EventSourceResponse:
     """Stream approval updates for a board using server-sent events."""
+    async with async_session_maker() as session:
+        actor = await require_user_or_agent(request=request, session=session)
+        board = await get_board_for_actor_read(
+            board_id=board_id,
+            session=session,
+            actor=actor,
+        )
+        resolved_board_id = board.id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -339,16 +346,16 @@ async def stream_approvals(
             if await request.is_disconnected():
                 break
             async with async_session_maker() as session:
-                approvals = await _fetch_approval_events(session, board.id, last_seen)
+                approvals = await _fetch_approval_events(session, resolved_board_id, last_seen)
                 approval_reads = await _approval_reads(session, approvals)
                 wake_reasons_by_agent_id = (
-                    await get_board_wake_reasons(session, board.id) if approvals else {}
+                    await get_board_wake_reasons(session, resolved_board_id) if approvals else {}
                 )
                 pending_approvals_count = int(
                     (
                         await session.exec(
                             select(func.count(col(Approval.id)))
-                            .where(col(Approval.board_id) == board.id)
+                            .where(col(Approval.board_id) == resolved_board_id)
                             .where(col(Approval.status) == "pending"),
                         )
                     ).one(),
@@ -360,32 +367,34 @@ async def stream_approvals(
                 }
                 counts_by_task_id = await task_counts_for_board(
                     session,
-                    board_id=board.id,
+                    board_id=resolved_board_id,
                     task_ids=task_ids,
                 )
-            for approval, approval_read in zip(approvals, approval_reads, strict=True):
-                updated_at = _approval_updated_at(approval)
-                last_seen = max(updated_at, last_seen)
-                payload: dict[str, object] = {
-                    "approval": _serialize_approval(approval_read),
-                    "pending_approvals_count": pending_approvals_count,
-                }
-                if wake_reasons_by_agent_id:
-                    payload["agent_wake_reasons"] = wake_reasons_by_agent_id
-                task_counts = [
-                    {
-                        "task_id": str(task_id),
-                        "approvals_count": total,
-                        "approvals_pending_count": pending,
+                payload_events: list[tuple[datetime, dict[str, object]]] = []
+                for approval, approval_read in zip(approvals, approval_reads, strict=True):
+                    payload: dict[str, object] = {
+                        "approval": _serialize_approval(approval_read),
+                        "pending_approvals_count": pending_approvals_count,
                     }
-                    for task_id in approval_read.task_ids
-                    if (counts := counts_by_task_id.get(task_id)) is not None
-                    for total, pending in [counts]
-                ]
-                if len(task_counts) == 1:
-                    payload["task_counts"] = task_counts[0]
-                elif task_counts:
-                    payload["task_counts"] = task_counts
+                    if wake_reasons_by_agent_id:
+                        payload["agent_wake_reasons"] = wake_reasons_by_agent_id
+                    task_counts = [
+                        {
+                            "task_id": str(task_id),
+                            "approvals_count": total,
+                            "approvals_pending_count": pending,
+                        }
+                        for task_id in approval_read.task_ids
+                        if (counts := counts_by_task_id.get(task_id)) is not None
+                        for total, pending in [counts]
+                    ]
+                    if len(task_counts) == 1:
+                        payload["task_counts"] = task_counts[0]
+                    elif task_counts:
+                        payload["task_counts"] = task_counts
+                    payload_events.append((_approval_updated_at(approval), payload))
+            for updated_at, payload in payload_events:
+                last_seen = max(updated_at, last_seen)
                 yield {"event": "approval", "data": json.dumps(payload)}
             await asyncio.sleep(STREAM_POLL_SECONDS)
 
