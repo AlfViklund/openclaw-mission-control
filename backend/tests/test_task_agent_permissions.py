@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,8 @@ from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.organizations import Organization
 from app.models.runs import Run
+from app.models.tags import Tag
+from app.models.task_custom_fields import BoardTaskCustomField, TaskCustomFieldDefinition
 from app.models.tasks import Task
 from app.schemas.tasks import TaskUpdate
 
@@ -768,6 +771,386 @@ async def test_lead_moves_review_task_to_inbox_and_reassigns_last_worker_with_re
             final_message = worker_messages[-1]["message"]
             assert "CHANGES REQUESTED" in final_message
             assert "Please update error handling and add tests for edge cases." in final_message
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lead_can_move_in_progress_task_to_review_with_admin_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            org_id = uuid4()
+            board_id = uuid4()
+            gateway_id = uuid4()
+            worker_id = uuid4()
+            lead_id = uuid4()
+            task_id = uuid4()
+
+            session.add(Organization(id=org_id, name="org"))
+            session.add(
+                Gateway(
+                    id=gateway_id,
+                    organization_id=org_id,
+                    name="gateway",
+                    url="https://gateway.local",
+                    workspace_root="/tmp/workspace",
+                ),
+            )
+            session.add(
+                Board(
+                    id=board_id,
+                    organization_id=org_id,
+                    name="board",
+                    slug="board",
+                    gateway_id=gateway_id,
+                ),
+            )
+            session.add(
+                Agent(
+                    id=worker_id,
+                    name="worker",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                ),
+            )
+            session.add(
+                Agent(
+                    id=lead_id,
+                    name="Lead Agent",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                    is_board_lead=True,
+                ),
+            )
+            session.add(
+                Task(
+                    id=task_id,
+                    board_id=board_id,
+                    title="assigned task",
+                    description="",
+                    status="in_progress",
+                    assigned_agent_id=worker_id,
+                    in_progress_at=utcnow(),
+                ),
+            )
+            session.add(_successful_build_run(task_id=task_id, agent_id=worker_id))
+            await session.commit()
+
+            class _FakeDispatch:
+                def __init__(self, _session: AsyncSession) -> None:
+                    pass
+
+                async def optional_gateway_config_for_board(self, _board: Board) -> object:
+                    return object()
+
+            monkeypatch.setattr(tasks_api, "GatewayDispatchService", _FakeDispatch)
+            monkeypatch.setattr(tasks_api, "_send_agent_task_message", AsyncMock(return_value=None))
+
+            task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
+            assert task is not None
+            lead = (await session.exec(select(Agent).where(col(Agent.id) == lead_id))).first()
+            assert lead is not None
+
+            updated = await tasks_api.update_task(
+                payload=TaskUpdate(status="review", comment="Lead moving to review."),
+                task=task,
+                session=session,
+                actor=ActorContext(actor_type="agent", agent=lead),
+            )
+
+            assert updated.status == "review"
+            assert updated.assigned_agent_id == lead_id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lead_can_use_admin_style_patch_fields_in_single_request() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            org_id = uuid4()
+            board_id = uuid4()
+            gateway_id = uuid4()
+            lead_id = uuid4()
+            worker_id = uuid4()
+            task_id = uuid4()
+            tag_id = uuid4()
+            custom_field_definition_id = uuid4()
+
+            session.add(Organization(id=org_id, name="org"))
+            session.add(
+                Gateway(
+                    id=gateway_id,
+                    organization_id=org_id,
+                    name="gateway",
+                    url="https://gateway.local",
+                    workspace_root="/tmp/workspace",
+                ),
+            )
+            session.add(
+                Board(
+                    id=board_id,
+                    organization_id=org_id,
+                    name="board",
+                    slug="board",
+                    gateway_id=gateway_id,
+                ),
+            )
+            session.add(
+                Agent(
+                    id=lead_id,
+                    name="Lead Agent",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                    is_board_lead=True,
+                ),
+            )
+            session.add(
+                Agent(
+                    id=worker_id,
+                    name="worker",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                ),
+            )
+            session.add(
+                Tag(
+                    id=tag_id,
+                    organization_id=org_id,
+                    name="Urgent",
+                    slug="urgent",
+                    color="ff0000",
+                )
+            )
+            session.add(
+                TaskCustomFieldDefinition(
+                    id=custom_field_definition_id,
+                    organization_id=org_id,
+                    field_key="owner",
+                    label="Owner",
+                    field_type="text",
+                )
+            )
+            session.add(
+                BoardTaskCustomField(
+                    board_id=board_id,
+                    task_custom_field_definition_id=custom_field_definition_id,
+                    organization_id=org_id,
+                )
+            )
+            session.add(
+                Task(
+                    id=task_id,
+                    board_id=board_id,
+                    title="task",
+                    description="",
+                    status="inbox",
+                ),
+            )
+            await session.commit()
+
+            task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
+            assert task is not None
+            lead = (await session.exec(select(Agent).where(col(Agent.id) == lead_id))).first()
+            assert lead is not None
+
+            updated = await tasks_api.update_task(
+                payload=TaskUpdate(
+                    status="in_progress",
+                    assigned_agent_id=worker_id,
+                    tag_ids=[tag_id],
+                    custom_field_values={"owner": "lead"},
+                    comment="Lead assigned and started task.",
+                ),
+                task=task,
+                session=session,
+                actor=ActorContext(actor_type="agent", agent=lead),
+            )
+
+            assert updated.status == "in_progress"
+            assert updated.assigned_agent_id == worker_id
+            assert updated.tag_ids == [tag_id]
+            assert updated.custom_field_values == {"owner": "lead"}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lead_can_force_status_override_with_reason() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            org_id = uuid4()
+            board_id = uuid4()
+            gateway_id = uuid4()
+            lead_id = uuid4()
+            task_id = uuid4()
+
+            session.add(Organization(id=org_id, name="org"))
+            session.add(
+                Gateway(
+                    id=gateway_id,
+                    organization_id=org_id,
+                    name="gateway",
+                    url="https://gateway.local",
+                    workspace_root="/tmp/workspace",
+                ),
+            )
+            session.add(
+                Board(
+                    id=board_id,
+                    organization_id=org_id,
+                    name="board",
+                    slug="board",
+                    gateway_id=gateway_id,
+                    execution_runtime_state={
+                        "runtime": "opencode_cli",
+                        "status": "ready",
+                        "failure_kind": None,
+                        "cooldown_until": None,
+                        "cooldown_message": None,
+                    },
+                ),
+            )
+            session.add(
+                Agent(
+                    id=lead_id,
+                    name="Lead Agent",
+                    board_id=board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                    is_board_lead=True,
+                ),
+            )
+            session.add(
+                Task(
+                    id=task_id,
+                    board_id=board_id,
+                    title="task",
+                    description="",
+                    status="in_progress",
+                    assigned_agent_id=lead_id,
+                    in_progress_at=utcnow(),
+                ),
+            )
+            await session.commit()
+
+            task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
+            assert task is not None
+            lead = (await session.exec(select(Agent).where(col(Agent.id) == lead_id))).first()
+            assert lead is not None
+
+            updated = await tasks_api.update_task(
+                payload=TaskUpdate(
+                    status="review",
+                    force_status_override=True,
+                    override_reason="Manual review after verified completion evidence.",
+                ),
+                task=task,
+                session=session,
+                actor=ActorContext(actor_type="agent", agent=lead),
+            )
+
+            events = (
+                await session.exec(
+                    select(ActivityEvent)
+                    .where(col(ActivityEvent.task_id) == task_id)
+                    .where(col(ActivityEvent.event_type) == "task.status_override")
+                )
+            ).all()
+
+            assert updated.status == "review"
+            assert events
+            assert "Manual review after verified completion evidence." in (events[-1].message or "")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lead_cannot_update_task_from_another_board() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            org_id = uuid4()
+            lead_board_id = uuid4()
+            other_board_id = uuid4()
+            gateway_id = uuid4()
+            lead_id = uuid4()
+            task_id = uuid4()
+
+            session.add(Organization(id=org_id, name="org"))
+            session.add(
+                Gateway(
+                    id=gateway_id,
+                    organization_id=org_id,
+                    name="gateway",
+                    url="https://gateway.local",
+                    workspace_root="/tmp/workspace",
+                ),
+            )
+            session.add(
+                Board(
+                    id=lead_board_id,
+                    organization_id=org_id,
+                    name="lead-board",
+                    slug="lead-board",
+                    gateway_id=gateway_id,
+                ),
+            )
+            session.add(
+                Board(
+                    id=other_board_id,
+                    organization_id=org_id,
+                    name="other-board",
+                    slug="other-board",
+                    gateway_id=gateway_id,
+                ),
+            )
+            session.add(
+                Agent(
+                    id=lead_id,
+                    name="Lead Agent",
+                    board_id=lead_board_id,
+                    gateway_id=gateway_id,
+                    status="online",
+                    is_board_lead=True,
+                ),
+            )
+            session.add(
+                Task(
+                    id=task_id,
+                    board_id=other_board_id,
+                    title="other task",
+                    description="",
+                    status="in_progress",
+                ),
+            )
+            await session.commit()
+
+            task = (await session.exec(select(Task).where(col(Task.id) == task_id))).first()
+            assert task is not None
+            lead = (await session.exec(select(Agent).where(col(Agent.id) == lead_id))).first()
+            assert lead is not None
+
+            with pytest.raises(HTTPException) as exc:
+                await tasks_api.update_task(
+                    payload=TaskUpdate(status="review"),
+                    task=task,
+                    session=session,
+                    actor=ActorContext(actor_type="agent", agent=lead),
+                )
+
+            assert exc.value.status_code == 403
+            assert isinstance(exc.value.detail, dict)
+            assert exc.value.detail["code"] == "task_board_mismatch"
     finally:
         await engine.dispose()
 

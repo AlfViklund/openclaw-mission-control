@@ -510,10 +510,15 @@ export const TaskBoard = memo(function TaskBoard({
                       isBlocked={task.is_blocked}
                       blockedByCount={task.blocked_by_task_ids?.length ?? 0}
                       reviewMode={task.review_mode}
-                      runtimeBlocked={task.execution_summary?.runtime_blocker_code === "cooldown"}
+                      runtimeBlocked={
+                        task.status !== "review" &&
+                        task.execution_summary?.runtime_blocker_code === "cooldown"
+                      }
                       runtimeBlockedLabel={
                         task.review_mode === "degraded_pipeline"
                           ? "Degraded review pending"
+                          : task.review_mode === "manual_evidence"
+                            ? "Manual evidence review"
                           : task.execution_summary?.runtime_blocker_code === "cooldown"
                             ? "Pipeline cooldown"
                             : null

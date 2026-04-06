@@ -34,6 +34,7 @@ from app.services.pipeline_policy import (
 )
 from app.services.pipeline_runtime_state import (
     clear_runtime_state,
+    is_runtime_quota_blocked,
     parse_cooldown_until,
     runtime_state_for_board,
     set_runtime_state,
@@ -66,6 +67,8 @@ NORMAL_STAGE_ORDER = ["plan", "build"]
 ALL_STAGE_ORDER = ["plan", "build"]
 
 ACTIVE_RUN_STATUSES = {"running", "queued"}
+MANUAL_EVIDENCE_REVIEW_MODE = "manual_evidence"
+DEGRADED_PIPELINE_REVIEW_MODE = "degraded_pipeline"
 
 STAGE_TO_TASK_STATUS = {
     "plan": "in_progress",
@@ -134,6 +137,15 @@ DEGRADED_RUNTIME_FAILURE_KINDS = {
 }
 
 
+class PipelineRuntimeBlockedError(ValueError):
+    """Raised when a runtime is explicitly blocked and the API should return structured 409 detail."""
+
+    def __init__(self, detail: dict[str, Any]):
+        message = str(detail.get("message") or "Runtime is blocked for execution.")
+        super().__init__(message)
+        self.detail = detail
+
+
 def _resolve_local_workspace_path(workspace_path: str | None) -> str | None:
     """Resolve a workspace path for local execution inside the backend container."""
     if not workspace_path:
@@ -183,6 +195,26 @@ def _parse_runtime_state_datetime(value: object) -> datetime | None:
 
 def _is_degraded_runtime_failure(failure_kind: str | None) -> bool:
     return failure_kind in DEGRADED_RUNTIME_FAILURE_KINDS
+
+
+def _review_mode_banner(review_mode: str | None) -> str:
+    if review_mode == DEGRADED_PIPELINE_REVIEW_MODE:
+        return " (DEGRADED PIPELINE)"
+    if review_mode == MANUAL_EVIDENCE_REVIEW_MODE:
+        return " (MANUAL EVIDENCE)"
+    return ""
+
+
+def _quota_block_message(
+    *,
+    cooldown_message: str | None,
+    cooldown_until: datetime | None,
+) -> str:
+    if cooldown_message:
+        return cooldown_message
+    if cooldown_until is not None:
+        return "OpenCode CLI provider quota is exhausted. New runs are blocked until the cooldown window ends."
+    return "OpenCode CLI daily limit is active. New runs are blocked until the runtime is reset."
 
 
 class PipelineService:
@@ -311,6 +343,61 @@ class PipelineService:
         )
         return not blocked_by
 
+    def _runtime_quota_block_detail(self, *, board: Board | None, runtime: str) -> dict[str, Any] | None:
+        if runtime != "opencode_cli" or not is_runtime_quota_blocked(board, runtime=runtime):
+            return None
+        runtime_state = runtime_state_for_board(board)
+        cooldown_until = _parse_runtime_state_datetime(runtime_state.get("cooldown_until"))
+        cooldown_message = (
+            str(runtime_state.get("cooldown_message"))
+            if runtime_state.get("cooldown_message")
+            else None
+        )
+        return {
+            "code": "runtime_quota_blocked",
+            "runtime": runtime,
+            "failure_kind": "quota_exhausted",
+            "cooldown_until": cooldown_until.isoformat() if cooldown_until is not None else None,
+            "message": _quota_block_message(
+                cooldown_message=cooldown_message,
+                cooldown_until=cooldown_until,
+            ),
+        }
+
+    async def _fail_queued_runs_for_runtime_block(
+        self,
+        *,
+        board_id: UUID,
+        runtime: str,
+        error_message: str,
+        failure_kind: str = "quota_exhausted",
+    ) -> int:
+        queued_runs = (
+            await self._session.exec(
+                select(Run)
+                .join(Task, col(Task.id) == col(Run.task_id))
+                .where(
+                    col(Task.board_id) == board_id,
+                    col(Run.runtime) == runtime,
+                    col(Run.status) == "queued",
+                )
+                .order_by(col(Run.created_at))
+            )
+        ).all()
+        if not queued_runs:
+            return 0
+
+        finished_at = utcnow()
+        for queued_run in queued_runs:
+            queued_run.status = "failed"
+            queued_run.finished_at = finished_at
+            queued_run.error_message = error_message
+            queued_run.failure_kind = failure_kind
+            queued_run.retryable = False
+            self._session.add(queued_run)
+        await self._session.commit()
+        return len(queued_runs)
+
     async def execute_stage(
         self,
         task_id: UUID,
@@ -339,6 +426,9 @@ class PipelineService:
         if board and board.is_paused:
             raise ValueError(f"Board '{board.name}' is paused. Resume it before executing pipeline stages.")
         effective_runtime = runtime or default_pipeline_runtime(board)
+        quota_block_detail = self._runtime_quota_block_detail(board=board, runtime=effective_runtime)
+        if quota_block_detail is not None:
+            raise PipelineRuntimeBlockedError(quota_block_detail)
 
         if not agent_id and task.assigned_agent_id:
             agent_id = task.assigned_agent_id
@@ -524,6 +614,7 @@ class PipelineService:
                     runtime=effective_runtime,
                     model=run.model,
                     failure_kind=failure_kind,
+                    retryable=retryable,
                     error_message=result.error or result.output,
                 )
                 await self._drain_board_queue(board.id)
@@ -564,6 +655,7 @@ class PipelineService:
                     runtime=effective_runtime,
                     model=run.model,
                     failure_kind=failure_kind,
+                    retryable=retryable,
                     error_message=str(exc),
                 )
                 await self._drain_board_queue(board.id)
@@ -584,13 +676,20 @@ class PipelineService:
 
     async def _drain_board_queue(self, board_id: UUID) -> dict[str, Any] | None:
         """Claim and execute the next queued run for a board."""
+        board = await Board.objects.by_id(board_id).first(self._session)
+        quota_block_detail = self._runtime_quota_block_detail(board=board, runtime="opencode_cli")
+        if quota_block_detail is not None:
+            await self._fail_queued_runs_for_runtime_block(
+                board_id=board_id,
+                runtime="opencode_cli",
+                error_message=str(quota_block_detail["message"]),
+            )
         next_run = await claim_next_queued_board_run(self._session, board_id=board_id)
         if next_run is None:
             return None
         task = await Task.objects.by_id(next_run.task_id).first(self._session)
         if task is None:
             return None
-        board = await Board.objects.by_id(board_id).first(self._session)
         agent = await Agent.objects.by_id(next_run.agent_id).first(self._session) if next_run.agent_id else None
         return await self._execute_started_run(
             run=next_run,
@@ -650,6 +749,14 @@ class PipelineService:
                 "status": existing_active_run.status,
                 "reason": "stage_already_active",
             }
+        quota_block_detail = self._runtime_quota_block_detail(board=board, runtime=run.runtime)
+        if quota_block_detail is not None:
+            return {
+                "auto_triggered": False,
+                "stage": next_stage,
+                "reason": quota_block_detail["code"],
+                "detail": quota_block_detail,
+            }
         next_run = await create_run(
             self._session,
             task_id=run.task_id,
@@ -707,6 +814,21 @@ class PipelineService:
         if summary.use_start_work and summary.can_start_work:
             raise ValueError("Use start-work before executing pipeline stages for an assigned inbox task.")
         if not summary.runtime_ready:
+            if summary.runtime_blocker_code == "quota_exhausted":
+                raise PipelineRuntimeBlockedError(
+                    {
+                        "code": "runtime_quota_blocked",
+                        "runtime": summary.recommended_runtime,
+                        "failure_kind": "quota_exhausted",
+                        "cooldown_until": (
+                            summary.cooldown_until.isoformat()
+                            if summary.cooldown_until is not None
+                            else None
+                        ),
+                        "message": summary.runtime_blocker
+                        or "OpenCode CLI daily limit is active. New runs are blocked until the runtime is reset.",
+                    }
+                )
             raise ValueError(summary.runtime_blocker or "Runtime is not ready for execution.")
         result = await self.execute_stage(
             task_id=task_id,
@@ -742,25 +864,6 @@ class PipelineService:
                 "task_summary": summary.model_dump(mode="json"),
             }
 
-        should_auto_execute = (
-            summary.execution_mode == "pipeline"
-            and summary.next_required_stage is not None
-            and summary.runtime_ready
-        )
-        if should_auto_execute:
-            await self.execute_next_stage(task_id, agent_id=agent_id, model=model)
-            task = await Task.objects.by_id(task_id).first(self._session)
-            if task is None:
-                raise ValueError(f"Task {task_id} not found")
-            summary = await self.get_task_summary(task_id)
-            if task.status == "review":
-                return {
-                    "status": "review_requested",
-                    "task_id": str(task.id),
-                    "review_mode": task.review_mode or "pipeline",
-                    "task_summary": summary.model_dump(mode="json"),
-                }
-
         if summary.ready_for_review:
             await self._move_task_to_review(
                 task=task,
@@ -776,22 +879,41 @@ class PipelineService:
                 "task_summary": refreshed_summary.model_dump(mode="json"),
             }
 
-        if summary.degraded_allowed and summary.latest_completion_report is not None:
+        if (
+            not summary.runtime_ready
+            and summary.degraded_allowed
+            and summary.latest_completion_report is not None
+        ):
             await self._move_task_to_review(
                 task=task,
                 acting_agent=agent,
                 board=board,
-                review_mode="degraded_pipeline",
+                review_mode=DEGRADED_PIPELINE_REVIEW_MODE,
             )
             refreshed_summary = await self.get_task_summary(task_id)
             return {
                 "status": "review_requested",
                 "task_id": str(task.id),
-                "review_mode": "degraded_pipeline",
+                "review_mode": DEGRADED_PIPELINE_REVIEW_MODE,
                 "task_summary": refreshed_summary.model_dump(mode="json"),
             }
 
-        if summary.degraded_allowed and summary.latest_completion_report is None:
+        if summary.latest_completion_report is not None:
+            await self._move_task_to_review(
+                task=task,
+                acting_agent=agent,
+                board=board,
+                review_mode=MANUAL_EVIDENCE_REVIEW_MODE,
+            )
+            refreshed_summary = await self.get_task_summary(task_id)
+            return {
+                "status": "review_requested",
+                "task_id": str(task.id),
+                "review_mode": MANUAL_EVIDENCE_REVIEW_MODE,
+                "task_summary": refreshed_summary.model_dump(mode="json"),
+            }
+
+        if not summary.runtime_ready and summary.degraded_allowed and summary.latest_completion_report is None:
             raise ValueError("Completion evidence is required before degraded review can be requested.")
         if not summary.runtime_ready:
             raise ValueError(summary.runtime_blocker or "Runtime is blocked. Wait for recovery or use degraded review with evidence.")
@@ -959,10 +1081,14 @@ class PipelineService:
         failure_kind = runtime_state.get("failure_kind") if isinstance(runtime_state.get("failure_kind"), str) else None
         degraded_allowed = _is_degraded_runtime_failure(failure_kind)
         if runtime_state.get("status") == "cooldown":
-            blocker = cooldown_message or "OpenCode CLI provider cooldown is active."
+            blocker_code = "quota_exhausted" if failure_kind == "quota_exhausted" else "cooldown"
+            blocker = _quota_block_message(
+                cooldown_message=(str(cooldown_message) if cooldown_message else None),
+                cooldown_until=cooldown_until,
+            ) if failure_kind == "quota_exhausted" else (cooldown_message or "OpenCode CLI provider cooldown is active.")
             return (
                 False,
-                "cooldown",
+                blocker_code,
                 blocker,
                 cooldown_until,
                 cooldown_message,
@@ -1101,8 +1227,10 @@ class PipelineService:
             return "start_work"
         if ready_for_review:
             return "request_review"
-        if degraded_allowed and latest_completion_report is not None:
+        if degraded_allowed and not runtime_ready and latest_completion_report is not None:
             return "request_degraded_review"
+        if latest_completion_report is not None:
+            return "request_manual_review"
         if degraded_allowed and not runtime_ready:
             return "submit_completion_evidence"
         if next_required_stage is not None and runtime_ready and latest_failed_stage == next_required_stage:
@@ -1120,22 +1248,41 @@ class PipelineService:
         runtime: str,
         model: str | None,
         failure_kind: str | None,
+        retryable: bool | None,
         error_message: str | None,
     ) -> None:
         if runtime != "opencode_cli":
             return
         if failure_kind == "quota_exhausted":
-            cooldown_until, cooldown_message = parse_cooldown_until(error_message)
+            hard_quota_block = retryable is False
+            cooldown_until, cooldown_message = parse_cooldown_until(
+                error_message,
+                fallback_minutes=None if hard_quota_block else 30,
+            )
+            quota_message = _quota_block_message(
+                cooldown_message=cooldown_message or error_message,
+                cooldown_until=_parse_runtime_state_datetime(cooldown_until),
+            )
             set_runtime_state(
                 board,
                 runtime=runtime,
                 status="cooldown",
                 failure_kind=failure_kind,
                 cooldown_until=cooldown_until,
-                cooldown_message=cooldown_message,
+                cooldown_message=quota_message,
                 provider="opencode_cli",
                 model=model,
             )
+            self._session.add(board)
+            await self._session.commit()
+            if hard_quota_block and board.id is not None:
+                await self._fail_queued_runs_for_runtime_block(
+                    board_id=board.id,
+                    runtime=runtime,
+                    error_message=quota_message,
+                    failure_kind=failure_kind,
+                )
+            return
         elif failure_kind in {"timeout", "binary_missing", "workspace_missing", "permissions_error"}:
             set_runtime_state(
                 board,
@@ -1363,7 +1510,7 @@ class PipelineService:
         if description:
             details.append(f"Description: {description[:500]}")
         message = (
-            f"TASK READY FOR LEAD REVIEW{' (DEGRADED PIPELINE)' if task.review_mode == 'degraded_pipeline' else ''}\n"
+            f"TASK READY FOR LEAD REVIEW{_review_mode_banner(task.review_mode)}\n"
             + "\n".join(details)
             + "\n\nTake action: review the deliverables now. Approve by moving to done or return to inbox with clear feedback."
         )

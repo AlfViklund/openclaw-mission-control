@@ -49,6 +49,7 @@ export function TaskCard({
   const needsLeadReview =
     status === "review" && !isBlocked && !hasPendingApproval;
   const degradedReviewPending = reviewMode === "degraded_pipeline" && status === "review";
+  const manualEvidenceReviewPending = reviewMode === "manual_evidence" && status === "review";
   const leftBarClassName = isBlocked
     ? "bg-rose-400"
     : hasPendingApproval
@@ -127,7 +128,11 @@ export function TaskCard({
           {needsLeadReview ? (
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
               <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-              {degradedReviewPending ? "Degraded review pending" : "Waiting for lead review"}
+              {degradedReviewPending
+                ? "Degraded review pending"
+                : manualEvidenceReviewPending
+                  ? "Manual evidence review"
+                  : "Waiting for lead review"}
             </div>
           ) : null}
           {runtimeBlocked ? (

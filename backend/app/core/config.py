@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     request_log_slow_ms: int = Field(default=1000, ge=0)
     request_log_include_health: bool = False
 
+    # Watchdog / local-runtime protection
+    watchdog_run_timeout_minutes: int = Field(default=30, ge=1)
+    watchdog_opencode_plan_timeout_minutes: int = Field(default=90, ge=1)
+
     # Artifact storage
     artifact_storage_path: str = ""
 

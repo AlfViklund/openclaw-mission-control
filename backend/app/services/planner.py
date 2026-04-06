@@ -11,7 +11,8 @@ import asyncio
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from uuid import UUID
 
 from sqlmodel import col, select
@@ -51,8 +52,12 @@ PLANNER_PHASE_LABELS = {
 PLANNER_PHASE_ORDER = tuple(PLANNER_PHASE_LABELS.keys())
 PLANNER_EXPANSION_RUNNING_STATUSES = frozenset({"running"})
 PLANNER_EXPANSION_AUTO_TRIGGERS = frozenset({"backlog_low", "dependency_unblocked", "task_done"})
+PLANNER_EXPANSION_HEARTBEAT_INTERVAL_SECONDS = 15
+PLANNER_EXPANSION_STALE_TIMEOUT_SECONDS = 90
+PLANNER_GATEWAY_POLL_FAILURE_THRESHOLD = 3
 DEFAULT_EXPANSION_MODE = "buffered_auto"
 DEFAULT_MAX_ACTIVE_EPICS = 3
+_UNSET = object()
 PLANNER_DOCUMENT_BLUEPRINTS = (
     {
         "key": "spec_digest",
@@ -110,6 +115,27 @@ PLANNER_DOCUMENT_BLUEPRINTS = (
         ),
     },
 )
+
+
+class PlannerExpansionConflictError(RuntimeError):
+    """Raised when a live planner expansion run blocks a manual restart."""
+
+    def __init__(self, active_run: PlannerExpansionRun) -> None:
+        self.active_run = active_run
+        super().__init__(f"Expansion round {active_run.round_number} is still running.")
+
+    def to_detail(self) -> dict[str, object]:
+        detail: dict[str, object] = {
+            "code": "planner_expansion_active",
+            "message": str(self),
+            "id": str(self.active_run.id),
+            "round_number": self.active_run.round_number,
+            "status": self.active_run.status,
+        }
+        if self.active_run.summary:
+            detail["summary"] = self.active_run.summary
+        return detail
+
 
 PLANNER_SYSTEM_PROMPT = """You are a staff-level product planning lead. Analyze the specification and produce an execution-ready backlog for a multi-agent software delivery team.
 
@@ -1311,6 +1337,7 @@ async def _call_llm_via_gateway(
     preferred_role: str = "lead",
     role_agents: dict[str, list[Agent]] | None = None,
     lead_agent: Agent | None = None,
+    on_progress: Callable[[], Awaitable[None]] | None = None,
 ) -> str:
     """Send a planning request through the OpenClaw Gateway to a planner agent.
 
@@ -1375,6 +1402,7 @@ async def _call_llm_via_gateway(
             history_cursor=0,
             request_marker=f"[PLANNER_RESPONSE:{request_id}]",
             timeout=300,
+            on_progress=on_progress,
         )
     finally:
         from app.services.openclaw.gateway_rpc import delete_session
@@ -1447,6 +1475,7 @@ async def _wait_for_agent_response(
     history_cursor: int = 0,
     request_marker: str | None = None,
     timeout: int = 300,
+    on_progress: Callable[[], Awaitable[None]] | None = None,
 ) -> str:
     """Poll gateway chat history until the agent responds.
 
@@ -1460,6 +1489,9 @@ async def _wait_for_agent_response(
     from app.services.openclaw.gateway_rpc import openclaw_call
 
     start = time.time()
+    last_progress = start
+    consecutive_errors = 0
+    last_error: Exception | None = None
 
     while time.time() - start < timeout:
         try:
@@ -1490,10 +1522,19 @@ async def _wait_for_agent_response(
                             fallback_response = content
                 if fallback_response:
                     return fallback_response
-        except Exception:
-            pass
+            consecutive_errors = 0
+        except Exception as exc:
+            last_error = exc
+            consecutive_errors += 1
+            if consecutive_errors >= PLANNER_GATEWAY_POLL_FAILURE_THRESHOLD:
+                raise _planner_gateway_poll_error(exc) from exc
+        if on_progress is not None and (time.time() - last_progress) >= PLANNER_EXPANSION_HEARTBEAT_INTERVAL_SECONDS:
+            await on_progress()
+            last_progress = time.time()
         await asyncio.sleep(2)
 
+    if last_error is not None:
+        raise _planner_gateway_poll_error(last_error) from last_error
     raise RuntimeError("Timeout waiting for agent response")
 
 
@@ -1781,16 +1822,129 @@ async def _latest_planner_expansion_run(
     )
 
 
+def _is_planner_expansion_run_stale(
+    run: PlannerExpansionRun,
+    *,
+    now: Any | None = None,
+) -> bool:
+    if run.status not in PLANNER_EXPANSION_RUNNING_STATUSES:
+        return False
+    reference_time = run.updated_at or run.created_at
+    if reference_time is None:
+        return False
+    current_time = now or utcnow()
+    return (current_time - reference_time) > timedelta(
+        seconds=PLANNER_EXPANSION_STALE_TIMEOUT_SECONDS
+    )
+
+
+def _normalize_planner_expansion_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = exc.__class__.__name__
+    if len(message) > 500:
+        message = message[:497].rstrip() + "..."
+    return message
+
+
+def _planner_gateway_poll_error(exc: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"Planner gateway polling failed: {_normalize_planner_expansion_error(exc)}"
+    )
+
+
+async def _persist_expansion_run_state(
+    session: AsyncSession,
+    expansion_run: PlannerExpansionRun,
+    *,
+    status: str | None = None,
+    summary: str | object = _UNSET,
+    error_message: str | None | object = _UNSET,
+) -> None:
+    if status is not None:
+        expansion_run.status = status
+    if summary is not _UNSET:
+        expansion_run.summary = summary if isinstance(summary, str) else None
+    if error_message is not _UNSET:
+        expansion_run.error_message = (
+            error_message if isinstance(error_message, str) or error_message is None else None
+        )
+    expansion_run.updated_at = utcnow()
+    session.add(expansion_run)
+    await session.commit()
+    await session.refresh(expansion_run)
+
+
+async def _heartbeat_expansion_run(
+    session: AsyncSession,
+    expansion_run: PlannerExpansionRun,
+    *,
+    summary: str,
+) -> None:
+    reference_time = expansion_run.updated_at or expansion_run.created_at
+    if reference_time is not None and (
+        utcnow() - reference_time
+    ) < timedelta(seconds=PLANNER_EXPANSION_HEARTBEAT_INTERVAL_SECONDS):
+        return
+    await _persist_expansion_run_state(
+        session,
+        expansion_run,
+        summary=summary,
+    )
+
+
+async def _running_planner_expansion_runs(
+    session: AsyncSession,
+    *,
+    planner_output_id: UUID,
+) -> list[PlannerExpansionRun]:
+    return list(
+        await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output_id)
+        .filter(col(PlannerExpansionRun.status).in_(tuple(PLANNER_EXPANSION_RUNNING_STATUSES)))
+        .order_by(col(PlannerExpansionRun.created_at).desc())
+        .all(session)
+    )
+
+
+async def _cleanup_stale_planner_expansion_runs(
+    session: AsyncSession,
+    *,
+    planner_output_id: UUID,
+    stale_reason: str,
+) -> list[PlannerExpansionRun]:
+    runs = await _running_planner_expansion_runs(
+        session,
+        planner_output_id=planner_output_id,
+    )
+    now = utcnow()
+    stale_runs = [
+        run for run in runs if _is_planner_expansion_run_stale(run, now=now)
+    ]
+    if not stale_runs:
+        return runs
+    for run in stale_runs:
+        run.status = "failed"
+        run.summary = run.summary or "Planner expansion heartbeat expired."
+        run.error_message = stale_reason
+        run.updated_at = now
+        session.add(run)
+    await session.commit()
+    return [run for run in runs if run not in stale_runs]
+
+
 async def _active_planner_expansion_run(
     session: AsyncSession,
     *,
     planner_output_id: UUID,
 ) -> PlannerExpansionRun | None:
-    return (
-        await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output_id)
-        .filter(col(PlannerExpansionRun.status).in_(tuple(PLANNER_EXPANSION_RUNNING_STATUSES)))
-        .first(session)
+    runs = await _running_planner_expansion_runs(
+        session,
+        planner_output_id=planner_output_id,
     )
+    for run in runs:
+        if not _is_planner_expansion_run_stale(run):
+            return run
+    return None
 
 
 async def _latest_applied_planner_output_for_board(
@@ -2154,6 +2308,11 @@ async def get_board_execution_coverage(
             (planner_output.expansion_policy or {}).get("initial_task_budget") or len(planner_output.tasks) or 8
         ),
     )
+    await _cleanup_stale_planner_expansion_runs(
+        session,
+        planner_output_id=planner_output.id,
+        stale_reason="Planner expansion heartbeat expired.",
+    )
     active_run = await _active_planner_expansion_run(
         session,
         planner_output_id=planner_output.id,
@@ -2272,11 +2431,23 @@ async def queue_planner_expansion(
         planner_output=planner_output,
     )
 
+    stale_reason = (
+        "Stale expansion replaced by manual restart."
+        if trigger == "manual"
+        else "Planner expansion heartbeat expired."
+    )
+    await _cleanup_stale_planner_expansion_runs(
+        session,
+        planner_output_id=planner_output.id,
+        stale_reason=stale_reason,
+    )
     active_run = await _active_planner_expansion_run(
         session,
         planner_output_id=planner_output.id,
     )
     if active_run is not None:
+        if trigger == "manual":
+            raise PlannerExpansionConflictError(active_run)
         return planner_output
 
     role_agents, lead_agent = await _resolve_board_agents_for_planner(
@@ -2401,213 +2572,265 @@ async def _run_planner_expansion(
         expansion_run = await PlannerExpansionRun.objects.by_id(expansion_run_id).first(session)
         if planner_output is None or expansion_run is None:
             return
-        board = await Board.objects.by_id(planner_output.board_id).first(session)
-        if board is None:
-            expansion_run.status = "failed"
-            expansion_run.error_message = f"Board {planner_output.board_id} not found"
-            expansion_run.updated_at = utcnow()
-            session.add(expansion_run)
-            await session.commit()
-            return
+        try:
+            await _persist_expansion_run_state(
+                session,
+                expansion_run,
+                summary="Preparing planner expansion context.",
+            )
+            board = await Board.objects.by_id(planner_output.board_id).first(session)
+            if board is None:
+                raise ValueError(f"Board {planner_output.board_id} not found")
 
-        await _backfill_existing_planner_package_state(
-            session,
-            planner_output=planner_output,
-        )
+            await _backfill_existing_planner_package_state(
+                session,
+                planner_output=planner_output,
+            )
 
-        role_agents, lead_agent = await _resolve_board_agents_for_planner(
-            session,
-            board_id=planner_output.board_id,
-        )
-        policy = _normalize_expansion_policy(
-            planner_output.expansion_policy,
-            online_assignable_agents=_count_assignable_planner_agents(role_agents, lead_agent),
-            initial_task_budget=int(
-                (planner_output.expansion_policy or {}).get("initial_task_budget")
-                or len(planner_output.tasks)
-                or 8
-            ),
-        )
-        planner_output.expansion_policy = policy
-        task_snapshots = await _load_materialized_task_snapshots(
-            session,
-            board_id=planner_output.board_id,
-            planner_output_id=planner_output.id,
-        )
-        planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
-            planner_output,
-            materialized_tasks=task_snapshots,
-        )
-        max_total_tasks = max_new_tasks or int(policy.get("max_new_tasks_per_round") or 1)
-        per_epic_limit = min(
-            int(policy.get("max_new_tasks_per_epic") or 1),
-            max_total_tasks,
-        )
-        epic_map = {str(epic.get("id") or ""): epic for epic in planner_output.epics}
-        selected_states = _pick_epics_for_expansion(
-            planner_output=planner_output,
-            max_active_epics=int(policy.get("max_active_epics") or DEFAULT_MAX_ACTIVE_EPICS),
-        )
-        expansion_run.source_epic_ids = [
-            str(state.get("epic_id") or "")
-            for state in selected_states
-            if state.get("epic_id")
-        ]
-        if not selected_states:
-            expansion_run.status = "skipped"
-            expansion_run.summary = "No eligible epics remained for expansion."
-            expansion_run.updated_at = utcnow()
-            session.add(expansion_run)
-            await session.commit()
-            return
-
-        candidate_tasks: list[dict[str, Any]] = []
-        state_updates: list[dict[str, Any]] = []
-        scope_suggestions: list[str] = []
-        for state in selected_states:
-            epic_id = str(state.get("epic_id") or "")
-            epic = epic_map.get(epic_id)
-            if epic is None:
-                continue
-            existing_epic_tasks = [
-                task for task in task_snapshots if str(task.get("planner_epic_id") or task.get("epic_id") or "") == epic_id
-            ]
-            response_text = await _call_llm_via_gateway(
-                session=session,
-                board=board,
-                system_prompt=PLANNER_EXPANSION_SYSTEM_PROMPT,
-                user_prompt=(
-                    f"Materialize the next batch for epic '{epic.get('title', 'Untitled Epic')}'.\n\n"
-                    f"Epic description: {epic.get('description', '')}\n"
-                    f"Current epic status: {state.get('status', 'planned')}\n"
-                    f"Remaining work summary: {state.get('remaining_work_summary') or 'Not recorded yet.'}\n"
-                    f"Open acceptance items: {json.dumps(list(state.get('open_acceptance_items') or []))}\n"
-                    f"Task budget: up to {per_epic_limit} tasks.\n\n"
-                    "--- EXISTING MATERIALIZED TASKS ---\n\n"
-                    f"{_compact_existing_epic_tasks(existing_epic_tasks)}\n\n"
-                    "--- DOSSIER ---\n\n"
-                    f"{_document_context_for_prompt(planner_output.documents or [])}"
+            role_agents, lead_agent = await _resolve_board_agents_for_planner(
+                session,
+                board_id=planner_output.board_id,
+            )
+            policy = _normalize_expansion_policy(
+                planner_output.expansion_policy,
+                online_assignable_agents=_count_assignable_planner_agents(role_agents, lead_agent),
+                initial_task_budget=int(
+                    (planner_output.expansion_policy or {}).get("initial_task_budget")
+                    or len(planner_output.tasks)
+                    or 8
                 ),
-                preferred_role="lead",
-                role_agents=role_agents,
-                lead_agent=lead_agent,
             )
-            parsed = _extract_json_from_response(response_text)
-            if not parsed:
-                raise ValueError(f"Failed to parse expansion response for epic {epic_id}")
-            scope_suggestions.extend(
-                [
-                    str(item).strip()
-                    for item in parsed.get("scope_suggestions", [])
-                    if isinstance(item, str) and str(item).strip()
-                ]
+            planner_output.expansion_policy = policy
+            task_snapshots = await _load_materialized_task_snapshots(
+                session,
+                board_id=planner_output.board_id,
+                planner_output_id=planner_output.id,
             )
-            normalized_tasks = _normalize_expansion_tasks(
-                epic,
-                parsed,
-                round_number=expansion_run.round_number,
+            planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+                planner_output,
+                materialized_tasks=task_snapshots,
             )
-            deduped = _dedupe_expansion_tasks(
-                candidate_tasks=normalized_tasks,
-                existing_tasks=task_snapshots + candidate_tasks,
-                max_new_tasks=max_total_tasks - len(candidate_tasks),
+            max_total_tasks = max_new_tasks or int(policy.get("max_new_tasks_per_round") or 1)
+            per_epic_limit = min(
+                int(policy.get("max_new_tasks_per_epic") or 1),
+                max_total_tasks,
             )
-            candidate_tasks.extend(deduped)
-            state_updates.append(
-                _build_epic_state(
-                    epic=epic,
-                    payload=parsed,
-                    materialized_tasks=int(state.get("materialized_tasks") or 0) + len(deduped),
-                    done_tasks=int(state.get("done_tasks") or 0),
+            epic_map = {str(epic.get("id") or ""): epic for epic in planner_output.epics}
+            selected_states = _pick_epics_for_expansion(
+                planner_output=planner_output,
+                max_active_epics=int(policy.get("max_active_epics") or DEFAULT_MAX_ACTIVE_EPICS),
+            )
+            expansion_run.source_epic_ids = [
+                str(state.get("epic_id") or "")
+                for state in selected_states
+                if state.get("epic_id")
+            ]
+            if not selected_states:
+                await _persist_expansion_run_state(
+                    session,
+                    expansion_run,
+                    status="skipped",
+                    summary="No eligible epics remained for expansion.",
+                    error_message=None,
                 )
-            )
-            if len(candidate_tasks) >= max_total_tasks:
-                break
+                return
 
-        if candidate_tasks:
-            try:
-                dependency_response = await _call_llm_via_gateway(
+            candidate_tasks: list[dict[str, Any]] = []
+            state_updates: list[dict[str, Any]] = []
+            scope_suggestions: list[str] = []
+            total_states = len(selected_states)
+            for index, state in enumerate(selected_states, start=1):
+                epic_id = str(state.get("epic_id") or "")
+                epic = epic_map.get(epic_id)
+                if epic is None:
+                    continue
+                epic_title = str(epic.get("title") or "Untitled Epic")
+                existing_epic_tasks = [
+                    task
+                    for task in task_snapshots
+                    if str(task.get("planner_epic_id") or task.get("epic_id") or "") == epic_id
+                ]
+                await _persist_expansion_run_state(
+                    session,
+                    expansion_run,
+                    summary=f"Planning epic {index}/{total_states}: {epic_title}",
+                )
+                response_text = await _call_llm_via_gateway(
                     session=session,
                     board=board,
-                    system_prompt=PLANNER_DEPENDENCY_SYSTEM_PROMPT,
+                    system_prompt=PLANNER_EXPANSION_SYSTEM_PROMPT,
                     user_prompt=(
-                        "Normalize the task dependencies for this next-batch task list.\n\n"
-                        f"--- TASK OUTLINE ---\n\n{_compact_task_outline(candidate_tasks)}"
+                        f"Materialize the next batch for epic '{epic_title}'.\n\n"
+                        f"Epic description: {epic.get('description', '')}\n"
+                        f"Current epic status: {state.get('status', 'planned')}\n"
+                        f"Remaining work summary: {state.get('remaining_work_summary') or 'Not recorded yet.'}\n"
+                        f"Open acceptance items: {json.dumps(list(state.get('open_acceptance_items') or []))}\n"
+                        f"Task budget: up to {per_epic_limit} tasks.\n\n"
+                        "--- EXISTING MATERIALIZED TASKS ---\n\n"
+                        f"{_compact_existing_epic_tasks(existing_epic_tasks)}\n\n"
+                        "--- DOSSIER ---\n\n"
+                        f"{_document_context_for_prompt(planner_output.documents or [])}"
                     ),
                     preferred_role="lead",
                     role_agents=role_agents,
                     lead_agent=lead_agent,
+                    on_progress=lambda summary=f"Waiting for planner response for {epic_title}": _heartbeat_expansion_run(
+                        session,
+                        expansion_run,
+                        summary=summary,
+                    ),
                 )
-                parsed = _extract_json_from_response(dependency_response)
-                if parsed:
-                    normalized = _normalize_dependency_patch(candidate_tasks, parsed)
-                    if validate_dag(normalized) is None:
-                        candidate_tasks = normalized
-            except Exception:
-                pass
+                parsed = _extract_json_from_response(response_text)
+                if not parsed:
+                    raise ValueError(f"Failed to parse expansion response for epic {epic_id}")
+                scope_suggestions.extend(
+                    [
+                        str(item).strip()
+                        for item in parsed.get("scope_suggestions", [])
+                        if isinstance(item, str) and str(item).strip()
+                    ]
+                )
+                normalized_tasks = _normalize_expansion_tasks(
+                    epic,
+                    parsed,
+                    round_number=expansion_run.round_number,
+                )
+                deduped = _dedupe_expansion_tasks(
+                    candidate_tasks=normalized_tasks,
+                    existing_tasks=task_snapshots + candidate_tasks,
+                    max_new_tasks=max_total_tasks - len(candidate_tasks),
+                )
+                candidate_tasks.extend(deduped)
+                state_updates.append(
+                    _build_epic_state(
+                        epic=epic,
+                        payload=parsed,
+                        materialized_tasks=int(state.get("materialized_tasks") or 0) + len(deduped),
+                        done_tasks=int(state.get("done_tasks") or 0),
+                    )
+                )
+                if len(candidate_tasks) >= max_total_tasks:
+                    break
 
-        if not candidate_tasks:
-            expansion_run.status = "skipped"
-            expansion_run.summary = (
-                "No new in-scope tasks were materialized."
-                + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
+            if candidate_tasks:
+                try:
+                    await _persist_expansion_run_state(
+                        session,
+                        expansion_run,
+                        summary="Normalizing dependencies for the next task batch.",
+                    )
+                    dependency_response = await _call_llm_via_gateway(
+                        session=session,
+                        board=board,
+                        system_prompt=PLANNER_DEPENDENCY_SYSTEM_PROMPT,
+                        user_prompt=(
+                            "Normalize the task dependencies for this next-batch task list.\n\n"
+                            f"--- TASK OUTLINE ---\n\n{_compact_task_outline(candidate_tasks)}"
+                        ),
+                        preferred_role="lead",
+                        role_agents=role_agents,
+                        lead_agent=lead_agent,
+                        on_progress=lambda: _heartbeat_expansion_run(
+                            session,
+                            expansion_run,
+                            summary="Waiting for dependency normalization response.",
+                        ),
+                    )
+                    parsed = _extract_json_from_response(dependency_response)
+                    if parsed:
+                        normalized = _normalize_dependency_patch(candidate_tasks, parsed)
+                        if validate_dag(normalized) is None:
+                            candidate_tasks = normalized
+                except Exception:
+                    pass
+
+            if not candidate_tasks:
+                planner_output.epic_states = _merge_epic_state_updates(
+                    current_states=planner_output.epic_states or [],
+                    updated_states=state_updates,
+                )
+                session.add(planner_output)
+                await session.commit()
+                await _persist_expansion_run_state(
+                    session,
+                    expansion_run,
+                    status="skipped",
+                    summary=(
+                        "No new in-scope tasks were materialized."
+                        + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
+                    ),
+                    error_message=None,
+                )
+                return
+
+            await _persist_expansion_run_state(
+                session,
+                expansion_run,
+                summary=f"Creating {len(candidate_tasks)} new board task(s).",
             )
-            expansion_run.updated_at = utcnow()
+            created_ids = await _create_board_tasks_from_planner_tasks(
+                session,
+                planner_output=planner_output,
+                board=board,
+                tasks=candidate_tasks,
+                role_agents=role_agents,
+                lead_agent=lead_agent,
+                materialized_from="expansion",
+                expansion_round=expansion_run.round_number,
+            )
+            task_snapshots = await _load_materialized_task_snapshots(
+                session,
+                board_id=planner_output.board_id,
+                planner_output_id=planner_output.id,
+            )
             planner_output.epic_states = _merge_epic_state_updates(
                 current_states=planner_output.epic_states or [],
                 updated_states=state_updates,
             )
+            planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
+                planner_output,
+                materialized_tasks=task_snapshots,
+            )
+            planner_output.materialized_task_count = len(task_snapshots)
+            planner_output.remaining_scope_count = _estimate_remaining_scope_count(
+                planner_output.epic_states,
+            )
+            planner_output.latest_expansion_at = utcnow()
+            expansion_run.status = "succeeded"
+            expansion_run.created_task_ids = [str(task_id) for task_id in created_ids]
+            expansion_run.summary = (
+                f"Created {len(created_ids)} tasks across "
+                f"{len(expansion_run.source_epic_ids)} epic(s)."
+                + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
+            )
+            expansion_run.error_message = None
+            expansion_run.updated_at = utcnow()
             session.add(planner_output)
             session.add(expansion_run)
             await session.commit()
-            return
-
-        created_ids = await _create_board_tasks_from_planner_tasks(
-            session,
-            planner_output=planner_output,
-            board=board,
-            tasks=candidate_tasks,
-            role_agents=role_agents,
-            lead_agent=lead_agent,
-            materialized_from="expansion",
-            expansion_round=expansion_run.round_number,
-        )
-        task_snapshots = await _load_materialized_task_snapshots(
-            session,
-            board_id=planner_output.board_id,
-            planner_output_id=planner_output.id,
-        )
-        planner_output.epic_states = _merge_epic_state_updates(
-            current_states=planner_output.epic_states or [],
-            updated_states=state_updates,
-        )
-        planner_output.epic_states = _sync_epic_states_with_materialized_tasks(
-            planner_output,
-            materialized_tasks=task_snapshots,
-        )
-        planner_output.materialized_task_count = len(task_snapshots)
-        planner_output.remaining_scope_count = _estimate_remaining_scope_count(
-            planner_output.epic_states,
-        )
-        planner_output.latest_expansion_at = utcnow()
-        expansion_run.status = "succeeded"
-        expansion_run.created_task_ids = [str(task_id) for task_id in created_ids]
-        expansion_run.summary = (
-            f"Created {len(created_ids)} tasks across "
-            f"{len(expansion_run.source_epic_ids)} epic(s)."
-            + (f" Suggestions: {'; '.join(scope_suggestions[:3])}" if scope_suggestions else "")
-        )
-        expansion_run.updated_at = utcnow()
-        session.add(planner_output)
-        session.add(expansion_run)
-        await session.commit()
-        await _notify_lead_of_expansion(
-            session,
-            planner_output=planner_output,
-            lead_agent=lead_agent,
-            expansion_run=expansion_run,
-            created_titles=[task.get("title", "Untitled") for task in candidate_tasks],
-        )
+            await _notify_lead_of_expansion(
+                session,
+                planner_output=planner_output,
+                lead_agent=lead_agent,
+                expansion_run=expansion_run,
+                created_titles=[task.get("title", "Untitled") for task in candidate_tasks],
+            )
+        except Exception as exc:
+            normalized_error = _normalize_planner_expansion_error(exc)
+            try:
+                await _persist_expansion_run_state(
+                    session,
+                    expansion_run,
+                    status="failed",
+                    summary="Planner expansion failed.",
+                    error_message=normalized_error,
+                )
+            except Exception:
+                logger.exception(
+                    "planner.expansion_run_state_persist_failed",
+                    extra={"expansion_run_id": str(expansion_run_id)},
+                )
+            raise
 
 
 def _normalize_role_name(value: str | None) -> str | None:

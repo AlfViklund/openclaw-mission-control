@@ -42,4 +42,6 @@ def test_assignment_notification_message_uses_agent_safe_task_endpoints() -> Non
     assert f"GET {settings.base_url}/api/v1/pipeline/tasks/{task.id}/summary" in message
     assert f"POST {settings.base_url}/api/v1/pipeline/tasks/{task.id}/start-work" in message
     assert f"POST {settings.base_url}/api/v1/pipeline/tasks/{task.id}/execute-next" in message
+    assert f"POST {task_path}/comments" in message
+    assert "kind=completion_report" in message
     assert "Do not use /api/v1/boards/{board_id}/tasks/{task_id}" in message

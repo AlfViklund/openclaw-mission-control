@@ -106,7 +106,18 @@ async function executeNext(taskId: string) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Execute failed: ${res.status} ${text}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: { message?: string } | string };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      } else if (parsed.detail?.message) {
+        message = parsed.detail.message;
+      }
+    } catch {
+      // Keep the raw text when the response is not JSON.
+    }
+    throw new Error(`Execute failed: ${res.status} ${message}`);
   }
   return res.json();
 }
@@ -270,6 +281,8 @@ export function PipelineVisualization({
         return "Request review";
       case "request_degraded_review":
         return "Request degraded review";
+      case "request_manual_review":
+        return "Request review from evidence";
       case "submit_completion_evidence":
         return "Submit completion evidence";
       case "await_lead_review":
@@ -287,7 +300,7 @@ export function PipelineVisualization({
     if (summary.recommended_action === "submit_completion_evidence") {
       return !showEvidenceForm || completionReportValid;
     }
-    return ["start_work", "run_next_step", "retry_stage", "request_review", "request_degraded_review"].includes(
+    return ["start_work", "run_next_step", "retry_stage", "request_review", "request_degraded_review", "request_manual_review"].includes(
       summary.recommended_action ?? "",
     );
   }, [canWrite, completionReportValid, showEvidenceForm, summary]);
@@ -313,7 +326,8 @@ export function PipelineVisualization({
         await executeNext(taskId);
       } else if (
         summary.recommended_action === "request_review" ||
-        summary.recommended_action === "request_degraded_review"
+        summary.recommended_action === "request_degraded_review" ||
+        summary.recommended_action === "request_manual_review"
       ) {
         const updated = await requestReview(taskId);
         onTaskUpdated?.(updated.task_summary ? { status: "review" } : updated);

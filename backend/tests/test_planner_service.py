@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from datetime import timedelta
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.agents import Agent
@@ -100,6 +100,31 @@ class TestWaitForAgentResponse:
                     request_marker="[PLANNER_RESPONSE:xyz]",
                     timeout=1,
                 )
+
+    @pytest.mark.asyncio
+    async def test_raises_specific_error_after_repeated_gateway_failures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services.planner import _wait_for_agent_response
+
+        async def fake_openclaw_call(method, params=None, config=None):
+            raise TimeoutError("gateway poll timed out")
+
+        async def fast_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("app.services.openclaw.gateway_rpc.openclaw_call", fake_openclaw_call)
+        monkeypatch.setattr("app.services.planner.asyncio.sleep", fast_sleep)
+
+        with pytest.raises(RuntimeError, match="Planner gateway polling failed: gateway poll timed out"):
+            await _wait_for_agent_response(
+                session_key="test-session",
+                config=None,
+                history_cursor=1,
+                request_marker="[PLANNER_RESPONSE:xyz]",
+                timeout=30,
+            )
 
     @pytest.mark.asyncio
     async def test_ignores_non_assistant_roles(self) -> None:
@@ -679,6 +704,314 @@ class TestPlannerGenerationLifecycle:
             assert runs[0].status == "running"
             assert runs[0].trigger == "manual"
             assert launched == [(planner_output.id, runs[0].id, 3)]
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_queue_planner_expansion_replaces_stale_running_run_for_manual_restart(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.core.time import utcnow
+        from app.models.planner_expansion_runs import PlannerExpansionRun
+        from app.services.planner import (
+            PLANNER_EXPANSION_STALE_TIMEOUT_SECONDS,
+            queue_planner_expansion,
+        )
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                epics=[{"id": "epic_1", "title": "Ship product"}],
+                tasks=[{"id": "epic_1_task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                documents=[],
+                epic_states=[
+                    {
+                        "epic_id": "epic_1",
+                        "status": "active",
+                        "coverage_summary": "Core implementation started.",
+                        "remaining_work_summary": "Need follow-up.",
+                        "materialized_tasks": 1,
+                        "done_tasks": 0,
+                        "open_acceptance_items": ["Follow-up task"],
+                        "next_focus_roles": ["qa"],
+                    }
+                ],
+                expansion_policy={"auto_expand_enabled": True, "initial_task_budget": 8},
+            )
+            stale_run = PlannerExpansionRun(
+                planner_output_id=planner_output.id,
+                board_id=board.id,
+                round_number=4,
+                status="running",
+                trigger="manual",
+                source_epic_ids=[],
+                created_task_ids=[],
+                summary="Waiting for planner response.",
+                updated_at=utcnow() - timedelta(seconds=PLANNER_EXPANSION_STALE_TIMEOUT_SECONDS + 5),
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            session.add(stale_run)
+            await session.commit()
+
+            launched: list[tuple[UUID, UUID, int | None]] = []
+
+            def fake_launch(*, planner_output_id: UUID, expansion_run_id: UUID, max_new_tasks: int | None) -> None:
+                launched.append((planner_output_id, expansion_run_id, max_new_tasks))
+
+            monkeypatch.setattr("app.services.planner._launch_planner_expansion", fake_launch)
+
+            await queue_planner_expansion(
+                session,
+                planner_output=planner_output,
+                trigger="manual",
+                max_new_tasks=2,
+            )
+
+            runs = list(
+                await PlannerExpansionRun.objects.filter_by(planner_output_id=planner_output.id)
+                .order_by(col(PlannerExpansionRun.created_at).desc())
+                .all(session)
+            )
+            assert len(runs) == 2
+            assert runs[0].status == "running"
+            assert runs[0].round_number == 5
+            assert runs[1].status == "failed"
+            assert runs[1].error_message == "Stale expansion replaced by manual restart."
+            assert launched == [(planner_output.id, runs[0].id, 2)]
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_queue_planner_expansion_rejects_live_manual_restart(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.models.planner_expansion_runs import PlannerExpansionRun
+        from app.services.planner import PlannerExpansionConflictError, queue_planner_expansion
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                epics=[{"id": "epic_1", "title": "Ship product"}],
+                tasks=[{"id": "epic_1_task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                documents=[],
+                epic_states=[
+                    {
+                        "epic_id": "epic_1",
+                        "status": "active",
+                        "coverage_summary": "Core implementation started.",
+                        "remaining_work_summary": "Need follow-up.",
+                        "materialized_tasks": 1,
+                        "done_tasks": 0,
+                        "open_acceptance_items": ["Follow-up task"],
+                        "next_focus_roles": ["qa"],
+                    }
+                ],
+                expansion_policy={"auto_expand_enabled": True, "initial_task_budget": 8},
+            )
+            live_run = PlannerExpansionRun(
+                planner_output_id=planner_output.id,
+                board_id=board.id,
+                round_number=4,
+                status="running",
+                trigger="manual",
+                source_epic_ids=[],
+                created_task_ids=[],
+                summary="Still planning.",
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            session.add(live_run)
+            await session.commit()
+
+            def fake_launch(*, planner_output_id: UUID, expansion_run_id: UUID, max_new_tasks: int | None) -> None:
+                raise AssertionError("launch should not run when live expansion already exists")
+
+            monkeypatch.setattr("app.services.planner._launch_planner_expansion", fake_launch)
+
+            with pytest.raises(PlannerExpansionConflictError) as exc_info:
+                await queue_planner_expansion(
+                    session,
+                    planner_output=planner_output,
+                    trigger="manual",
+                    max_new_tasks=2,
+                )
+
+            assert exc_info.value.active_run.round_number == 4
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_run_planner_expansion_marks_failed_on_gateway_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.models.planner_expansion_runs import PlannerExpansionRun
+        from app.services.planner import _run_planner_expansion
+
+        session, engine = await _build_session()
+        try:
+            organization = Organization(name="Acme")
+            gateway = Gateway(
+                organization_id=organization.id,
+                name="Gateway",
+                url="http://gateway.local",
+                token="token",
+                workspace_root="/tmp/workspace",
+            )
+            board = Board(
+                organization_id=organization.id,
+                gateway_id=gateway.id,
+                name="Planner Board",
+                slug="planner-board",
+                description="",
+                board_type="general",
+            )
+            lead = Agent(
+                board_id=board.id,
+                gateway_id=gateway.id,
+                name="Lead Agent",
+                status="online",
+                is_board_lead=True,
+                identity_profile={"role": "Board Lead"},
+            )
+            planner_output = PlannerOutput(
+                board_id=board.id,
+                artifact_id=uuid4(),
+                status="applied",
+                epics=[{"id": "epic_1", "title": "Ship product", "description": "Test epic"}],
+                tasks=[{"id": "epic_1_task_1", "epic_id": "epic_1", "title": "Implement feature"}],
+                documents=[],
+                epic_states=[
+                    {
+                        "epic_id": "epic_1",
+                        "status": "active",
+                        "coverage_summary": "Core implementation started.",
+                        "remaining_work_summary": "Need follow-up.",
+                        "materialized_tasks": 1,
+                        "done_tasks": 0,
+                        "open_acceptance_items": ["Follow-up task"],
+                        "next_focus_roles": ["qa"],
+                    }
+                ],
+                expansion_policy={"auto_expand_enabled": True, "initial_task_budget": 8},
+            )
+            expansion_run = PlannerExpansionRun(
+                planner_output_id=planner_output.id,
+                board_id=board.id,
+                round_number=4,
+                status="running",
+                trigger="manual",
+                source_epic_ids=[],
+                created_task_ids=[],
+            )
+            session.add(organization)
+            session.add(gateway)
+            session.add(board)
+            session.add(lead)
+            session.add(planner_output)
+            session.add(expansion_run)
+            await session.commit()
+
+            async def fake_resolve(_session: AsyncSession, *, board_id: UUID):
+                return ({}, lead)
+
+            async def fake_call(*args, **kwargs):
+                raise RuntimeError("gateway offline")
+
+            class BoundSessionFactory:
+                def __call__(self):
+                    current_session = session
+
+                    class BoundSessionContext:
+                        async def __aenter__(self) -> AsyncSession:
+                            return current_session
+
+                        async def __aexit__(self, exc_type, exc, tb) -> bool:
+                            return False
+
+                    return BoundSessionContext()
+
+            monkeypatch.setattr("app.services.planner._resolve_board_agents_for_planner", fake_resolve)
+            monkeypatch.setattr("app.services.planner._call_llm_via_gateway", fake_call)
+            monkeypatch.setattr("app.services.planner.async_session_maker", BoundSessionFactory())
+
+            with pytest.raises(RuntimeError, match="gateway offline"):
+                await _run_planner_expansion(
+                    planner_output_id=planner_output.id,
+                    expansion_run_id=expansion_run.id,
+                    max_new_tasks=1,
+                )
+
+            refreshed = await PlannerExpansionRun.objects.by_id(expansion_run.id).first(session)
+            assert refreshed is not None
+            assert refreshed.status == "failed"
+            assert refreshed.error_message == "gateway offline"
         finally:
             await session.close()
             await engine.dispose()

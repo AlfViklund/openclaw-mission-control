@@ -23,6 +23,7 @@ from app.schemas.planner import (
 )
 from app.schemas.common import OkResponse
 from app.services.planner import (
+    PlannerExpansionConflictError,
     apply_planner_output,
     generate_backlog,
     list_planner_expansion_runs,
@@ -32,7 +33,6 @@ from app.services.artifacts import get_artifact_by_id
 from app.services.planner_crud import (
     delete_planner_output,
     get_planner_output_by_id,
-    list_planner_outputs,
     update_planner_output,
 )
 
@@ -214,6 +214,11 @@ async def expand_planner_output_endpoint(
             trigger=payload.trigger or "manual",
             max_new_tasks=payload.max_new_tasks,
         )
+    except PlannerExpansionConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_detail(),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

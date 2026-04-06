@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlmodel import col, select
 
+from app.core.config import settings
 from app.core.time import utcnow
 from app.db.session import async_session_maker
 from app.models.agents import Agent
@@ -18,6 +19,8 @@ from app.models.runs import Run
 from app.models.task_dependencies import TaskDependency
 from app.models.tasks import Task
 from app.services.openclaw.provisioning_db import _effective_offline_tolerance
+from app.services.pipeline_runtime_state import is_runtime_quota_blocked
+from app.services.runs import get_board_id_for_run
 
 if TYPE_CHECKING:
     from sqlmodel.ext.asyncio.session import AsyncSession
@@ -25,11 +28,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_MISSING_TOLERANCE_MULTIPLIER = 3
-MAX_RUN_DURATION_MINUTES = 30
 MAX_RETRY_ATTEMPTS = 3
 ESCALATION_OFFLINE_MINUTES = 15
 ESCALATION_BLOCKED_MINUTES = 60
 ORPHANED_RUNTIME_NAMES = frozenset({"opencode_cli"})
+
+
+def _run_timeout_minutes(run: Run) -> int:
+    if run.runtime == "opencode_cli" and run.stage == "plan":
+        return settings.watchdog_opencode_plan_timeout_minutes
+    return settings.watchdog_run_timeout_minutes
 
 
 async def _board_ids_for_task_ids(session: AsyncSession, task_ids: set[UUID]) -> set[UUID]:
@@ -151,14 +159,16 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
     now = utcnow()
     retried = []
     affected_task_ids: set[UUID] = set()
+    board_runtime_block_cache: dict[UUID, bool] = {}
 
     stuck_runs = await Run.objects.filter_by(status="running").all(session)
     timed_out_ids: set[UUID] = set()
     for run in stuck_runs:
-        if run.started_at and (now - run.started_at) > timedelta(minutes=MAX_RUN_DURATION_MINUTES):
+        timeout_minutes = _run_timeout_minutes(run)
+        if run.started_at and (now - run.started_at) > timedelta(minutes=timeout_minutes):
             run.status = "failed"
             run.finished_at = now
-            run.error_message = f"Run timed out after {MAX_RUN_DURATION_MINUTES} minutes"
+            run.error_message = f"Run timed out after {timeout_minutes} minutes"
             session.add(run)
             timed_out_ids.add(run.id)
             retried.append({
@@ -172,6 +182,21 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
     for run in failed_runs:
         if run.id in timed_out_ids:
             continue
+        if run.retryable is False:
+            continue
+
+        board_id: UUID | None = None
+        if run.runtime == "opencode_cli":
+            board_id = await get_board_id_for_run(session, run)
+            if board_id is not None:
+                if board_id not in board_runtime_block_cache:
+                    board = await Board.objects.by_id(board_id).first(session)
+                    board_runtime_block_cache[board_id] = is_runtime_quota_blocked(
+                        board,
+                        runtime=run.runtime,
+                    )
+                if board_runtime_block_cache[board_id]:
+                    continue
 
         retry_count = sum(
             1 for e in run.evidence_paths if e.get("type") == "retry"

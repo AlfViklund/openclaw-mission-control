@@ -120,3 +120,53 @@ async def test_expand_planner_output_endpoint_queues_expansion(
     )
 
     assert result == planner_output
+
+
+@pytest.mark.asyncio
+async def test_expand_planner_output_endpoint_returns_409_for_live_active_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.planner import PlannerExpansionConflictError
+
+    planner_output_id = uuid4()
+    planner_output = SimpleNamespace(id=planner_output_id, status="applied")
+    active_run = SimpleNamespace(
+        id=uuid4(),
+        round_number=4,
+        status="running",
+        summary="Still planning.",
+    )
+
+    async def _fake_get_planner_output_by_id(_session: object, value: object) -> object:
+        assert value == planner_output_id
+        return planner_output
+
+    async def _fake_queue_planner_expansion(
+        session: object,
+        *,
+        planner_output: object,
+        trigger: str,
+        max_new_tasks: int | None,
+    ) -> object:
+        raise PlannerExpansionConflictError(active_run)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "app.api.planner.get_planner_output_by_id",
+        _fake_get_planner_output_by_id,
+    )
+    monkeypatch.setattr(
+        "app.api.planner.queue_planner_expansion",
+        _fake_queue_planner_expansion,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await expand_planner_output_endpoint(
+            planner_output_id=planner_output_id,
+            payload=PlannerExpandRequest(trigger="manual", max_new_tasks=5),
+            session=object(),  # type: ignore[arg-type]
+            _actor=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "planner_expansion_active"
+    assert exc_info.value.detail["round_number"] == 4

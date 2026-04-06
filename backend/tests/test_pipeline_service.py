@@ -450,7 +450,6 @@ class TestRunWorkspaceBinding:
 
     def test_run_metadata_can_be_empty_without_workspace(self) -> None:
         """Verify that run metadata may omit a workspace path."""
-        from app.services.pipeline import PipelineService
         from app.services.runs import create_run
 
         session = _make_session()

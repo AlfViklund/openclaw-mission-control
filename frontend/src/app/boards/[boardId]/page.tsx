@@ -264,6 +264,40 @@ async function fetchExecutionCoverage(boardId: string): Promise<ExecutionCoverag
   return res.json();
 }
 
+async function readPlannerExpandError(res: Response, boardId: string): Promise<string> {
+  try {
+    const payload = (await res.json()) as {
+      detail?: string | { code?: string; message?: string; round_number?: number; summary?: string };
+    };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+    if (payload.detail && typeof payload.detail === "object") {
+      const message =
+        typeof payload.detail.message === "string" ? payload.detail.message.trim() : "";
+      const summary =
+        typeof payload.detail.summary === "string" ? payload.detail.summary.trim() : "";
+      if (message && summary) {
+        return `${message} ${summary}`;
+      }
+      if (message) {
+        return message;
+      }
+      if (
+        payload.detail.code === "planner_expansion_active" &&
+        typeof payload.detail.round_number === "number"
+      ) {
+        return `Expansion round ${payload.detail.round_number} is still running.`;
+      }
+    }
+  } catch {
+    // Fall back to the raw response body below.
+  }
+  const text = await res.text();
+  const normalized = text.trim();
+  return normalized || `Failed to expand planner for board ${boardId}.`;
+}
+
 async function expandBoardPlanner(boardId: string, plannerOutputId: string): Promise<void> {
   const token = getAuthToken();
   const res = await fetch(`${BASE_URL}/api/v1/planner/${plannerOutputId}/expand`, {
@@ -275,8 +309,8 @@ async function expandBoardPlanner(boardId: string, plannerOutputId: string): Pro
     body: JSON.stringify({ trigger: "manual" }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to expand planner for board ${boardId}: ${text}`);
+    const message = await readPlannerExpandError(res, boardId);
+    throw new Error(message);
   }
 }
 
@@ -1781,6 +1815,8 @@ export default function BoardDetailPage() {
       setIsExecutionActionRunning(false);
     }
   }, [boardId, loadBoard, loadExecutionCoverage]);
+
+  const hasRunningExpansion = executionCoverage?.last_expansion_run?.status === "running";
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -4066,7 +4102,8 @@ export default function BoardDetailPage() {
                       size="sm"
                       variant="outline"
                       onClick={() => void handleExpandNextBatch()}
-                      disabled={isExecutionActionRunning}
+                      disabled={isExecutionActionRunning || hasRunningExpansion}
+                      title={hasRunningExpansion ? executionCoverage?.next_expansion_reason || undefined : undefined}
                     >
                       {isExecutionActionRunning ? (
                         <RefreshCcw className="mr-2 h-3.5 w-3.5 animate-spin" />
@@ -4168,6 +4205,11 @@ export default function BoardDetailPage() {
                         ? ` · ${executionCoverage.last_expansion_run.summary}`
                         : ""}
                     </p>
+                    {executionCoverage.last_expansion_run.error_message ? (
+                      <p className="mt-2 text-xs text-red-600">
+                        {executionCoverage.last_expansion_run.error_message}
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
                 {executionCoverageError ? (
@@ -5123,7 +5165,7 @@ export default function BoardDetailPage() {
                           onClick={() => void loadBoard()}
                           disabled={isExecutionActionRunning}
                         >
-                          Retry pipeline now
+                          Refresh pipeline state
                         </Button>
                         <Button
                           variant="outline"

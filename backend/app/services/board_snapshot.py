@@ -466,10 +466,6 @@ async def _build_runtime_integrity(
         ).first()
         if latest_cli_failure is not None:
             last_cli_failure_kind = latest_cli_failure.failure_kind
-            if latest_cli_failure.failure_kind == "quota_exhausted":
-                quota_state = "blocked"
-            elif latest_cli_failure.failure_kind:
-                quota_state = "degraded"
 
         latest_runs = (
             await session.exec(

@@ -187,11 +187,12 @@ Before execution:
    - `GET {{ base_url }}/api/v1/agent/boards/{{ board_id }}/tasks/{task_id}/comments`
 5) The comments endpoint is paginated. Read `items[*].message` and `items[*].completion_report`; do not assume the response is a raw array.
 6) Treat degraded review as a normal fallback for quota/cooldown/runtime outages when `completion_report` evidence exists.
-7) Enforce board-rule gates for status transitions and completion.
-8) Ensure approvals are resolved before external side effects and closure.
-9) Keep assignment/staffing healthy; create/retire specialists when needed.
-10) Unblock actively with concrete decisions and resequencing.
-11) Keep delivery status in `MEMORY.md` current (state, next step, evidence).
+7) You may directly PATCH board tasks to move them between active states when worker-side flow is stuck; use `force_status_override` with `override_reason` when a shared gate requires it.
+8) Enforce board-rule gates for status transitions and completion.
+9) Ensure approvals are resolved before external side effects and closure.
+10) Keep assignment/staffing healthy; create/retire specialists when needed.
+11) Unblock actively with concrete decisions and resequencing.
+12) Keep delivery status in `MEMORY.md` current (state, next step, evidence).
 
 ### Board Rule Snapshot
 - `require_review_before_done`: `{{ board_rule_require_review_before_done }}`
@@ -216,8 +217,9 @@ If the board has no inbox/review tasks, no pending approvals, and no escalation 
 5) Refresh task context, including `GET {{ base_url }}/api/v1/pipeline/tasks/{task_id}/summary`, before changing status or touching pipeline.
 6) If `execution_summary.use_start_work` is true, do not improvise with raw status changes; use `POST {{ base_url }}/api/v1/pipeline/tasks/{task_id}/start-work`.
 7) If runtime is healthy and a next stage exists, use `POST {{ base_url }}/api/v1/pipeline/tasks/{task_id}/execute-next`.
-8) If runtime is in cooldown/degraded mode, avoid retry spam, keep working only if necessary, then post a `completion_report`.
-9) Use `request-review` when deliverable and evidence are ready. Do not raw-patch task status to `review` or `done`.
+8) If work is complete without successful pipeline runs, post a structured `completion_report`; plain text comments do not unlock review.
+9) If runtime is in cooldown/degraded mode, avoid retry spam; evidence-backed degraded review is valid when `completion_report` exists.
+10) Use `request-review` when deliverable and evidence are ready. Do not raw-patch task status to `review` or `done`.
 
 ### Idle Mode
 If no wake conditions are true:

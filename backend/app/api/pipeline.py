@@ -15,6 +15,7 @@ from app.services.pipeline_policy import is_pipeline_runtime_allowed
 from app.schemas.pipeline import PipelineTaskSummaryRead
 from app.models.tasks import Task
 from app.services.pipeline import PipelineService, get_pipeline_task_summary
+from app.services.pipeline import PipelineRuntimeBlockedError
 from app.services.pipeline_validation import (
     validate_pipeline_stage,
     validate_task_status_change,
@@ -100,6 +101,11 @@ async def execute_pipeline_stage(
             agent_id=effective_agent_id,
             model=model,
         )
+    except PipelineRuntimeBlockedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.detail,
+        ) from exc
     except ValueError as exc:
         message = str(exc)
         raise HTTPException(
@@ -165,6 +171,11 @@ async def execute_next_pipeline_stage(
             agent_id=effective_agent_id,
             model=model,
         )
+    except PipelineRuntimeBlockedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.detail,
+        ) from exc
     except ValueError as exc:
         message = str(exc)
         raise HTTPException(

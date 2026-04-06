@@ -46,6 +46,19 @@ describe("TaskCard", () => {
     expect(screen.getByText(/Waiting for lead review/i)).toBeInTheDocument();
   });
 
+  it("shows manual evidence review indicator when review mode is manual evidence", () => {
+    render(
+      <TaskCard
+        title="Waiting"
+        status="review"
+        approvalsPendingCount={0}
+        reviewMode="manual_evidence"
+      />,
+    );
+
+    expect(screen.getByText(/Manual evidence review/i)).toBeInTheDocument();
+  });
+
   it("invokes onClick for mouse and keyboard activation", () => {
     const onClick = vi.fn();
 

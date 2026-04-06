@@ -59,24 +59,41 @@ def _cooldown_expired(value: object) -> bool:
         return False
 
 
-def parse_cooldown_until(message: str | None) -> tuple[str | None, str | None]:
+def parse_cooldown_until(
+    message: str | None,
+    *,
+    fallback_minutes: int | None = 30,
+) -> tuple[str | None, str | None]:
     if not message:
         return None, None
     lowered = message.lower()
     for unit, seconds in _DURATION_PATTERNS:
-        match = re.search(rf"(?:after|in|wait)\s+(\d+)\s*{unit}s?", lowered)
+        match = re.search(rf"(?:after|in|wait|reset(?:s)?\s+in)\s+(\d+)\s*{unit}s?", lowered)
         if match:
             duration = int(match.group(1))
             cooldown_until = utcnow() + timedelta(seconds=duration * seconds)
             return cooldown_until.isoformat(), f"Provider cooldown in effect for about {duration} {unit}{'' if duration == 1 else 's'}."
-    fallback = utcnow() + timedelta(minutes=30)
+    if fallback_minutes is None:
+        return None, None
+    fallback = utcnow() + timedelta(minutes=fallback_minutes)
     return fallback.isoformat(), "Provider cooldown in effect. Retry after the cooldown window or reset manually."
+
+
+def is_runtime_quota_blocked(board: Board | None, *, runtime: str = "opencode_cli") -> bool:
+    """Return whether persisted runtime state blocks new runs for the runtime."""
+    if runtime != "opencode_cli":
+        return False
+    runtime_state = runtime_state_for_board(board)
+    return (
+        runtime_state.get("status") == "cooldown"
+        and runtime_state.get("failure_kind") == "quota_exhausted"
+    )
 
 
 def runtime_state_for_board(board: Board | None) -> dict[str, Any]:
     if board is None:
         return normalize_runtime_state(None)
-    return normalize_runtime_state(board.execution_runtime_state)
+    return normalize_runtime_state(getattr(board, "execution_runtime_state", None))
 
 
 def set_runtime_state(

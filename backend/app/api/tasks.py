@@ -110,6 +110,7 @@ SSE_SEEN_MAX = 2000
 TASK_SNIPPET_MAX_LEN = 500
 TASK_SNIPPET_TRUNCATED_LEN = 497
 TASK_EVENT_ROW_LEN = 2
+MANUAL_EVIDENCE_REVIEW_MODE = "manual_evidence"
 BOARD_READ_DEP = Depends(get_board_for_actor_read)
 ACTOR_DEP = Depends(require_user_or_agent)
 SINCE_QUERY = Query(default=None)
@@ -640,6 +641,8 @@ def _assignment_notification_message(*, board: Board, task: Task, agent: Agent) 
         prefix = "TASK READY FOR LEAD REVIEW"
         if getattr(task, "review_mode", None) == "degraded_pipeline":
             prefix += " (DEGRADED PIPELINE)"
+        elif getattr(task, "review_mode", None) == MANUAL_EVIDENCE_REVIEW_MODE:
+            prefix += " (MANUAL EVIDENCE)"
         return prefix + "\n" + "\n".join(details) + f"\n\n{action}"
     return (
         "TASK ASSIGNED\n"
@@ -650,8 +653,10 @@ def _assignment_notification_message(*, board: Board, task: Task, agent: Agent) 
         + f"- Read comments: GET {comments_path}\n"
         + f"- Start assigned inbox work: POST {start_work_path}\n"
         + f"- Run next pipeline step: POST {execute_next_path}\n"
+        + f"- Post structured completion evidence: POST {comments_path} with kind=completion_report\n"
         + "\nDo not use /api/v1/boards/{board_id}/tasks/{task_id} for worker task reads."
         + "\nTake action: open the task via the agent endpoint, begin work, and post updates as task comments."
+        + "\nIf work is completed manually without a successful build run, submit a structured completion_report and then call request-review."
     )
 
 
@@ -1726,7 +1731,12 @@ async def update_task(
         override_reason=override_reason,
     )
     if actor.actor_type == "agent" and actor.agent and actor.agent.is_board_lead:
-        return await _apply_lead_task_update(session, update=update)
+        _require_lead_task_board_scope(update)
+        await _apply_lead_admin_parity_rules(session, update=update)
+        return await _finalize_updated_task(
+            session,
+            update=update,
+        )
 
     if actor.actor_type == "agent":
         await _apply_non_lead_agent_task_rules(session, update=update)
@@ -2097,7 +2107,13 @@ async def _enforce_guarded_pipeline_status_change(
         "recommended_action": summary.recommended_action,
     }
 
-    if update.actor.actor_type == "agent":
+    is_lead_actor = (
+        update.actor.actor_type == "agent"
+        and update.actor.agent is not None
+        and update.actor.agent.is_board_lead
+    )
+
+    if update.actor.actor_type == "agent" and not is_lead_actor:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=detail_payload
@@ -2516,6 +2532,39 @@ async def _apply_lead_task_update(
         session,
         task=update.task,
         board_id=update.board_id,
+    )
+
+
+def _require_lead_task_board_scope(update: _TaskUpdateInput) -> None:
+    if update.actor.actor_type != "agent" or update.actor.agent is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if (
+        update.actor.agent.board_id is not None
+        and update.task.board_id is not None
+        and update.actor.agent.board_id != update.task.board_id
+    ):
+        raise _task_update_forbidden_error(
+            code="task_board_mismatch",
+            message="Board leads can only update tasks for their assigned board.",
+        )
+
+
+async def _apply_lead_admin_parity_rules(
+    session: AsyncSession,
+    *,
+    update: _TaskUpdateInput,
+) -> None:
+    await _apply_admin_task_rules(session, update=update)
+    status_raw = update.updates.get("status")
+    if status_raw != "inbox" or update.previous_status != "review":
+        return
+    if update.actor.actor_type != "agent" or update.actor.agent is None:
+        return
+    update.task.assigned_agent_id = await _last_worker_who_moved_task_to_review(
+        session,
+        task_id=update.task.id,
+        board_id=update.board_id,
+        lead_agent_id=update.actor.agent.id,
     )
 
 
