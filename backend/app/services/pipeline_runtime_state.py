@@ -28,6 +28,7 @@ _DURATION_PATTERNS: tuple[tuple[str, int], ...] = (
     ("min", 60),
     ("day", 86400),
 )
+_RETRY_AFTER_SECONDS_PATTERN = re.compile(r"retry[- ]after(?:[\"'=:\s]+)(\d+)", re.IGNORECASE)
 
 
 def normalize_runtime_state(state: dict[str, Any] | None) -> dict[str, Any]:
@@ -67,6 +68,13 @@ def parse_cooldown_until(
     if not message:
         return None, None
     lowered = message.lower()
+    retry_after_seconds = extract_retry_after_seconds(message)
+    if retry_after_seconds is not None:
+        cooldown_until = utcnow() + timedelta(seconds=retry_after_seconds)
+        return (
+            cooldown_until.isoformat(),
+            _retry_after_message(retry_after_seconds),
+        )
     for unit, seconds in _DURATION_PATTERNS:
         match = re.search(rf"(?:after|in|wait|reset(?:s)?\s+in)\s+(\d+)\s*{unit}s?", lowered)
         if match:
@@ -77,6 +85,29 @@ def parse_cooldown_until(
         return None, None
     fallback = utcnow() + timedelta(minutes=fallback_minutes)
     return fallback.isoformat(), "Provider cooldown in effect. Retry after the cooldown window or reset manually."
+
+
+def extract_retry_after_seconds(message: str | None) -> int | None:
+    if not message:
+        return None
+    match = _RETRY_AFTER_SECONDS_PATTERN.search(message)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _retry_after_message(retry_after_seconds: int) -> str:
+    if retry_after_seconds < 60:
+        return f"Provider cooldown in effect for about {retry_after_seconds} seconds."
+    if retry_after_seconds < 3600:
+        minutes = max(1, round(retry_after_seconds / 60))
+        return f"Provider cooldown in effect for about {minutes} minutes."
+    hours = retry_after_seconds / 3600
+    rounded_hours = round(hours, 1)
+    return f"Provider cooldown in effect for about {rounded_hours:g} hours."
 
 
 def is_runtime_quota_blocked(board: Board | None, *, runtime: str = "opencode_cli") -> bool:

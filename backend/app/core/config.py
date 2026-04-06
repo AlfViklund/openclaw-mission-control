@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     # Watchdog / local-runtime protection
     watchdog_run_timeout_minutes: int = Field(default=30, ge=1)
     watchdog_opencode_plan_timeout_minutes: int = Field(default=90, ge=1)
+    opencode_retry_after_abort_seconds: int = Field(default=300, ge=1)
 
     # Artifact storage
     artifact_storage_path: str = ""

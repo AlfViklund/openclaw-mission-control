@@ -365,6 +365,37 @@ async def test_daily_quota_failure_fails_queued_opencode_runs_for_board() -> Non
 
 
 @pytest.mark.asyncio
+async def test_long_retry_after_quota_failure_sets_cooldown_until_from_provider_window() -> None:
+    engine = await _make_engine()
+    try:
+        async with await _make_session(engine) as session:
+            board, task, _agent = await _seed_board_bundle(session)
+            task.status = "in_progress"
+            task.in_progress_at = task.created_at
+            session.add(task)
+            await session.commit()
+
+            service = PipelineService(session)
+            await service._record_runtime_failure_state(
+                board=board,
+                runtime="opencode_cli",
+                model="opencode/qwen",
+                failure_kind="quota_exhausted",
+                retryable=False,
+                error_message='Rate limit exceeded. Please try again later. retry-after":"14524"',
+            )
+            await session.refresh(board)
+
+            runtime_state = board.execution_runtime_state or {}
+            assert runtime_state.get("status") == "cooldown"
+            assert runtime_state.get("failure_kind") == "quota_exhausted"
+            assert runtime_state.get("cooldown_until") is not None
+            assert "hours" in str(runtime_state.get("cooldown_message", "")).lower()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_execute_next_endpoint_returns_structured_409_for_quota_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

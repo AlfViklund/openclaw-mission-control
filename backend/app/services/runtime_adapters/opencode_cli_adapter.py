@@ -6,15 +6,31 @@ import asyncio
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.core.config import BACKEND_ROOT
+from app.core.config import BACKEND_ROOT, settings
+from app.services.pipeline_runtime_state import extract_retry_after_seconds, parse_cooldown_until
 from app.services.runtime_adapters.base import RunResult, RuntimeAdapter, RuntimeAdapterError
 
 EVIDENCE_DIR = BACKEND_ROOT / "storage" / "evidence"
+OPENCODE_LOG_DIR = Path.home() / ".local" / "share" / "opencode" / "log"
 KNOWN_MODEL_VARIANTS = frozenset({"low", "medium", "high"})
+
+
+@dataclass
+class _QuotaAbortSignal:
+    message: str
+    retry_after_seconds: int | None
+
+
+@dataclass
+class _LogTailState:
+    path: Path | None = None
+    offset: int = 0
+    buffer: str = ""
 
 
 class OpenCodeCLIAdapter(RuntimeAdapter):
@@ -47,6 +63,7 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
         evidence_dir = EVIDENCE_DIR / run_id
         evidence_dir.mkdir(parents=True, exist_ok=True)
         normalized_model, variant = self._normalize_model_and_variant(model)
+        existing_log_paths = self._existing_log_paths()
 
         cmd = [
             "opencode", "run",
@@ -76,16 +93,79 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
                 env={**os.environ, "OPENCODE_TEMPERATURE": str(temperature)} if temperature else None,
             )
             self._active_processes[run_id] = proc
+            if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+                raise RuntimeAdapterError("OpenCode CLI process streams were not initialized.")
 
-            stdout_data, stderr_data = await proc.communicate(input=prompt.encode())
+            proc.stdin.write(prompt.encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+            await proc.stdin.wait_closed()
+
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+            stdout_task = asyncio.create_task(self._read_stream(proc.stdout, stdout_chunks))
+            stderr_task = asyncio.create_task(self._read_stream(proc.stderr, stderr_chunks))
+            wait_task = asyncio.create_task(proc.wait())
+            log_state = _LogTailState()
+            quota_abort: _QuotaAbortSignal | None = None
+
+            while True:
+                done, _pending = await asyncio.wait({wait_task}, timeout=0.5)
+                log_delta = self._read_log_delta(log_state, existing_log_paths=existing_log_paths)
+                if log_delta:
+                    quota_abort = self._detect_long_retry_after(
+                        stdout_text="".join(stdout_chunks),
+                        stderr_text="".join(stderr_chunks),
+                        log_text=log_state.buffer,
+                    )
+                else:
+                    quota_abort = self._detect_long_retry_after(
+                        stdout_text="".join(stdout_chunks),
+                        stderr_text="".join(stderr_chunks),
+                        log_text=log_state.buffer,
+                    )
+                if quota_abort is not None and proc.returncode is None:
+                    proc.kill()
+                    await wait_task
+                    break
+                if wait_task in done:
+                    break
+
+            await asyncio.gather(stdout_task, stderr_task)
+            stdout_data = "".join(stdout_chunks).encode("utf-8")
+            stderr_text = "".join(stderr_chunks)
+            if quota_abort is not None and quota_abort.message not in stderr_text:
+                stderr_text = (
+                    f"{stderr_text}\n{quota_abort.message}".strip()
+                    if stderr_text
+                    else quota_abort.message
+                )
 
             events = self._parse_json_events(stdout_data)
-            error_output = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+            error_output = stderr_text
             event_error = self._extract_error(events)
 
             evidence = self._save_evidence(
                 run_id, evidence_dir, prompt, events, error_output,
             )
+
+            if quota_abort is not None:
+                self._active_runs[run_id]["status"] = "failed"
+                output = self._extract_output(events)
+                return RunResult(
+                    success=False,
+                    output=output,
+                    error=quota_abort.message,
+                    evidence_paths=evidence,
+                    metadata={
+                        "model": normalized_model,
+                        "variant": variant,
+                        "agent": agent,
+                        "run_id": run_id,
+                        "events": len(events),
+                        "retry_after_seconds": quota_abort.retry_after_seconds,
+                    },
+                )
 
             if proc.returncode == 0 and event_error is None:
                 self._active_runs[run_id]["status"] = "succeeded"
@@ -140,6 +220,8 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
         except Exception as exc:
             self._active_runs[run_id]["status"] = "failed"
             raise RuntimeAdapterError(f"OpenCode CLI run failed: {exc}") from exc
+        finally:
+            self._active_processes.pop(run_id, None)
 
     async def cancel(self, run_id: str) -> bool:
         proc = self._active_processes.get(run_id)
@@ -161,6 +243,88 @@ class OpenCodeCLIAdapter(RuntimeAdapter):
         if proc and proc.returncode is None:
             return "running"
         return run_info.get("status", "unknown")
+
+    async def _read_stream(
+        self,
+        stream: asyncio.StreamReader,
+        chunks: list[str],
+    ) -> None:
+        while True:
+            data = await stream.readline()
+            if not data:
+                break
+            chunks.append(data.decode("utf-8", errors="replace"))
+
+    def _existing_log_paths(self) -> set[Path]:
+        if not OPENCODE_LOG_DIR.exists():
+            return set()
+        return {path for path in OPENCODE_LOG_DIR.glob("*.log") if path.is_file()}
+
+    def _read_log_delta(
+        self,
+        state: _LogTailState,
+        *,
+        existing_log_paths: set[Path],
+    ) -> str:
+        if not OPENCODE_LOG_DIR.exists():
+            return ""
+        if state.path is None:
+            current_candidates = [
+                path for path in OPENCODE_LOG_DIR.glob("*.log")
+                if path.is_file() and path not in existing_log_paths
+            ]
+            if not current_candidates:
+                current_candidates = [path for path in OPENCODE_LOG_DIR.glob("*.log") if path.is_file()]
+            if not current_candidates:
+                return ""
+            state.path = max(current_candidates, key=lambda path: path.stat().st_mtime)
+            state.offset = 0
+
+        if state.path is None or not state.path.exists():
+            return ""
+
+        with state.path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(state.offset)
+            delta = handle.read()
+            state.offset = handle.tell()
+        if delta:
+            state.buffer = (state.buffer + delta)[-20000:]
+        return delta
+
+    def _detect_long_retry_after(
+        self,
+        *,
+        stdout_text: str,
+        stderr_text: str,
+        log_text: str,
+    ) -> _QuotaAbortSignal | None:
+        candidates = [text for text in (stdout_text, stderr_text, log_text) if text]
+        if not candidates:
+            return None
+        combined = "\n".join(candidates)
+        retry_after_seconds = extract_retry_after_seconds(combined)
+        if retry_after_seconds is None:
+            return None
+        if retry_after_seconds <= settings.opencode_retry_after_abort_seconds:
+            return None
+        lowered = combined.lower()
+        if not any(
+            marker in lowered
+            for marker in ("429", "rate limit", "freeusagelimiterror", "too many requests")
+        ):
+            return None
+        _cooldown_until, cooldown_message = parse_cooldown_until(combined, fallback_minutes=None)
+        message = (
+            cooldown_message
+            or f"Provider retry-after {retry_after_seconds} seconds is too long for an interactive run."
+        )
+        return _QuotaAbortSignal(
+            message=(
+                f"{message} retry-after {retry_after_seconds} seconds. "
+                "Run aborted early and runtime blocked for manual retry."
+            ),
+            retry_after_seconds=retry_after_seconds,
+        )
 
     def _parse_json_events(self, stdout_data: bytes) -> list[dict]:
         """Parse newline-delimited JSON events from OpenCode stdout."""

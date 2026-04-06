@@ -397,6 +397,16 @@ class TestRuntimeFailureClassification:
         assert failure_kind == "quota_exhausted"
         assert retryable is False
 
+    def test_long_retry_after_is_non_retryable_quota_exhausted(self) -> None:
+        failure_kind, retryable = _classify_run_failure(
+            'Rate limit exceeded. Please try again later. retry-after":"14524"',
+            runtime="opencode_cli",
+            stage="plan",
+        )
+
+        assert failure_kind == "quota_exhausted"
+        assert retryable is False
+
 
 class TestRetryDelayPolicy:
     def test_retry_delay_enabled_for_retryable_opencode_quota_failure(self) -> None:

@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import desc
 from sqlmodel import col, select
 
+from app.core.config import settings
 from app.core.time import utcnow
 from app.models.activity_events import ActivityEvent
 from app.models.agents import Agent
@@ -34,6 +35,7 @@ from app.services.pipeline_policy import (
 )
 from app.services.pipeline_runtime_state import (
     clear_runtime_state,
+    extract_retry_after_seconds,
     is_runtime_quota_blocked,
     parse_cooldown_until,
     runtime_state_for_board,
@@ -156,6 +158,9 @@ def _resolve_local_workspace_path(workspace_path: str | None) -> str | None:
 def _classify_run_failure(error_message: str | None, *, runtime: str, stage: str) -> tuple[str, bool]:
     normalized = (error_message or "").strip().lower()
     if runtime == "opencode_cli":
+        retry_after_seconds = extract_retry_after_seconds(error_message)
+        if retry_after_seconds is not None and retry_after_seconds > settings.opencode_retry_after_abort_seconds:
+            return "quota_exhausted", False
         if any(pattern in normalized for pattern in TRANSIENT_RATE_LIMIT_PATTERNS):
             return "quota_exhausted", True
         for failure_kind, patterns in RUN_FAILURE_PATTERNS.items():
