@@ -42,8 +42,9 @@ from app.core.logging import configure_logging, get_logger
 from app.core.rate_limit import validate_rate_limit_redis
 from app.core.rate_limit_backend import RateLimitBackend
 from app.core.security_headers import SecurityHeadersMiddleware
-from app.db.session import init_db
+from app.db.session import async_session_maker, init_db
 from app.schemas.health import HealthStatusResponse
+from app.services.watchdog import recover_orphaned_running_runs
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -466,6 +467,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         settings.db_auto_migrate,
     )
     await init_db()
+    async with async_session_maker() as startup_session:
+        recovered_runs = await recover_orphaned_running_runs(startup_session)
+    if recovered_runs:
+        logger.warning("app.lifecycle.recovered_orphaned_runs count=%s", len(recovered_runs))
     if settings.rate_limit_backend == RateLimitBackend.REDIS:
         validate_rate_limit_redis(settings.rate_limit_redis_url)
         logger.info("app.lifecycle.rate_limit backend=redis")

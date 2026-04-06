@@ -27,6 +27,7 @@ MAX_RUN_DURATION_MINUTES = 30
 MAX_RETRY_ATTEMPTS = 3
 ESCALATION_OFFLINE_MINUTES = 15
 ESCALATION_BLOCKED_MINUTES = 60
+ORPHANED_RUNTIME_NAMES = frozenset({"opencode_cli"})
 
 
 async def check_agent_heartbeats(session: AsyncSession) -> list[dict]:
@@ -117,6 +118,39 @@ async def retry_stuck_runs(session: AsyncSession) -> list[dict]:
         await session.commit()
 
     return retried
+
+
+async def recover_orphaned_running_runs(session: AsyncSession) -> list[dict]:
+    """Fail local-runtime runs that cannot survive a backend process restart."""
+    now = utcnow()
+    recovered = []
+
+    orphaned_runs = await Run.objects.filter(
+        col(Run.status) == "running",
+        col(Run.runtime).in_(ORPHANED_RUNTIME_NAMES),
+    ).all(session)
+
+    for run in orphaned_runs:
+        run.status = "failed"
+        run.finished_at = now
+        run.failure_kind = "runtime_restarted"
+        run.error_message = (
+            "Run was interrupted by backend restart; local runtime process state was lost"
+        )
+        session.add(run)
+        recovered.append(
+            {
+                "run_id": str(run.id),
+                "task_id": str(run.task_id),
+                "runtime": run.runtime,
+                "reason": "orphaned_after_backend_restart",
+            }
+        )
+
+    if recovered:
+        await session.commit()
+
+    return recovered
 
 
 async def reassign_tasks_from_offline_agents(session: AsyncSession) -> list[dict]:
